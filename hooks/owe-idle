@@ -1,0 +1,19 @@
+#!/bin/bash
+# owe idle hooks for hypridle. Add to ~/.config/hypr/hypridle.conf:
+#
+#   listener {
+#     timeout = 300
+#     on-timeout = owe-idle on
+#     on-resume = owe-idle off
+#   }
+#
+# Install with: install -Dm755 hooks/owe-idle ~/.local/bin/owe-idle
+set -u
+
+SOCK="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/owe/owed.sock"
+
+case "${1:-}" in
+  on) printf '{"cmd":"pause"}\n' | socat - "UNIX-CONNECT:$SOCK" >/dev/null 2>&1 || true ;;
+  off) printf '{"cmd":"resume"}\n' | socat - "UNIX-CONNECT:$SOCK" >/dev/null 2>&1 || true ;;
+  *) echo "Usage: owe-idle on|off" >&2; exit 1 ;;
+esac

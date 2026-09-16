@@ -1,0 +1,25 @@
+# owe config. Copy to ~/.config/owe/config.toml and run `owe reload-config`.
+[pause]
+# Pause video when a fullscreen window shows. On by default.
+fullscreen = true
+# Pause video when any window shows. Off by default so the wallpaper moves.
+# Turn this on to save power on busy desktops. Stills stay visible regardless.
+occupied_workspace = false
+# Show a still poster instead of video while on battery. Off by default so
+# the wallpaper keeps moving on battery. Turn on for longer battery life.
+battery_poster = false
+# Process names that force pause while running. Example: ["obs", "steam"].
+blocklist = []
+
+[transcode]
+# GIF transcode frame rate. GIF sources rarely need more than 20.
+gif_fps = 20
+# H.264 CRF for GIF transcodes. Lower is larger and sharper.
+gif_crf = 20
+# GIF transcode max size. Larger GIFs scale down once at transcode time.
+max_width = 2560
+max_height = 1440
+
+[render]
+# Still to still fade in milliseconds. 0 disables the fade.
+fade_ms = 250

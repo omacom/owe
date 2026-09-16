@@ -1,0 +1,78 @@
+# Architecture
+
+## Processes
+
+`owed` owns policy. `owe-render` owns pixels. `owe` owns control.
+`owed` spawns `owe-render` as a child and restarts it on crash.
+`systemd` manages `owed` only. One supervisor keeps recovery in one place.
+
+## Renderer
+
+One `mpv_handle` plus one `mpv_render_context` with type
+`MPV_RENDER_API_TYPE_OPENGL` and `MPV_RENDER_PARAM_WL_DISPLAY`.
+One `zwlr_layer_surface_v1` per output on the background layer.
+Full anchor, `exclusive_zone=-1`, empty input region, namespace
+`owe-background`. The window buffer is sized `width*scale` by
+`height*scale` and the surface carries `buffer_scale=scale`.
+
+`libmpv` options are forced in code. User `mpv.conf` never loads.
+`hwdec` defaults to `auto-safe` and `OWE_HWDEC` overrides it.
+Audio stays off with `audio=no` and `aid=no`. `panscan=1.0` crops
+video to cover the output at its native aspect ratio.
+
+Video rendering is paced by `mpv_render_context_update` frame flags
+delivered over a self-pipe. The renderer draws only when the decoder
+produces a frame, so a 30 fps video costs 30 renders per second on any
+display. `mpv_render_context_render` writes directly into the window
+framebuffer. No intermediate framebuffer or blit exists.
+
+The blit shader owns one VAO, one VBO, and one program. Still images
+apply a cover crop in the fragment shader: the visible UV sub-rect is
+centered and scaled to fill the output without distortion.
+
+Stills decode once through `libavformat`, `libavcodec`, and `libswscale`.
+The decode target is capped to the largest output size, so a 100 MP photo
+never allocates a full-resolution RGBA buffer. The renderer uploads one
+texture, presents a short fade, then stops the frame loop. Sustained
+still cost is zero CPU.
+
+Pause sets `pause` to `yes`. Decode stops, update callbacks stop,
+and the last frame stays presented. No frame callbacks get requested
+while paused, so the main loop sleeps in `poll`.
+
+## Daemon
+
+`owed` watches `~/.local/state/omarchy/current/` with `inotify` and
+resolves `background` with `readlink -f`. It watches the directory
+because `ln -nsf` swaps the entry atomically.
+
+It connects to the Hyprland event socket for `fullscreen`, `openwindow`,
+`closewindow`, `movewindow`, `workspace`, and monitor events. It queries
+client and monitor state over the Hyprland request socket with receive
+timeouts and parses JSON with vendored `yyjson`. It never spawns
+`hyprctl` per event. A 2 second tick refreshes monitor state so DPMS
+changes are caught even when Hyprland emits no event.
+
+It uses `sd-bus` for UPower `OnBattery`, logind lock, and
+`PrepareForSleep`. Poster extraction and GIF transcodes run on a worker
+thread and report back over a pipe, so the event loop stays responsive.
+The `GIF` cache key hashes the source path, size, mtime, fps, CRF, and
+size caps.
+
+The daemon tracks what the renderer currently shows. A load is sent only
+when the target path or kind changes. Pause and resume are sent only on
+state transitions. The renderer child is reaped on `SIGCHLD` and
+restarted with the current media when it dies.
+
+## IPC
+
+Both sockets use JSON lines. Each command gets one reply line.
+`owed.sock` serves CLI and hook clients. `render.sock` serves the
+daemon and direct debug clients. No broadcast exists. Each reply
+goes to its own requester.
+
+## Shutdown
+
+`owe shutdown` stops the daemon. The daemon stops the renderer child,
+frees the bus, and unlinks its socket. The renderer unlinks its own
+socket on exit.
