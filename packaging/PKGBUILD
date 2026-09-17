@@ -6,8 +6,8 @@ pkgdesc="High-performance wallpaper engine for Omarchy (mp4, gif, stills)"
 arch=('x86_64')
 url="https://github.com/example/owe"
 license=('MIT')
-depends=('mpv' 'ffmpeg' 'wayland' 'libepoxy' 'systemd-libs' 'socat')
-makedepends=('meson' 'ninja' 'gcc' 'pkgconf' 'wayland-protocols')
+depends=('mpv' 'ffmpeg' 'wayland' 'libglvnd' 'libepoxy' 'systemd-libs' 'socat')
+makedepends=('meson' 'ninja' 'gcc' 'pkgconf' 'wayland-protocols' 'python')
 source=("${pkgname}-${pkgver}.tar.gz")
 sha256sums=('SKIP')
 

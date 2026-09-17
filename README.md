@@ -19,6 +19,16 @@ It changes no packaged Omarchy file.
 
 ## Quick start
 
+Install the build and runtime packages on Omarchy first. Packages already
+installed are skipped:
+
+```bash
+omarchy pkg add meson ninja gcc pkgconf wayland wayland-protocols libglvnd \
+  libepoxy mpv ffmpeg systemd-libs socat python
+```
+
+Then build and install `owe`:
+
 ```bash
 ./packaging/install.sh
 owe status
@@ -181,8 +191,9 @@ meson test -C build-sanitize --print-errorlogs
 `test/owe-live-test` requires a running test daemon and a video wallpaper.
 To check live playback and IPC, run `build/test/owe-live-test`.
 
-Build deps: `meson`, `ninja`, `gcc`, `pkgconf`, `wayland`, `wayland-protocols`,
-`libepoxy`, `mpv`, `ffmpeg` libs, `systemd-libs`.
+Build and install deps: `meson`, `ninja`, `gcc`, `pkgconf`, `wayland`,
+`wayland-protocols`, `libglvnd`, `libepoxy`, `mpv`, `ffmpeg`, `systemd-libs`,
+`socat`, `python`.
 Runtime deps: `mpv`, `ffmpeg`, `socat`.
 
 Docs: `docs/architecture.md`, `docs/theme-contract.md`, `docs/benchmarks.md`.
