@@ -15,6 +15,7 @@ void owe_mpv_set_paused(struct owe_mpv *m, bool paused);
 
 bool owe_mpv_has_video(struct owe_mpv *m);
 bool owe_mpv_is_paused(struct owe_mpv *m);
+bool owe_mpv_ready(struct owe_mpv *m);
 const char *owe_mpv_path(struct owe_mpv *m);
 
 int owe_mpv_fd(struct owe_mpv *m);

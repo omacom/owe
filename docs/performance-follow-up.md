@@ -35,13 +35,60 @@ The latency measurement includes the CLI process start.
 These samples establish a single-output baseline.
 They do not establish battery power consumption, frame delivery quality, or performance on other GPUs.
 
+### Renderer changes measured on 2026-09-17
+
+The renderer now drains the still decoder at EOF, decodes stills for the cover crop,
+premultiplies the fade output, runs mpv without its lua scripts and ytdl hook,
+uses `wp_fractional_scale_v1` and `wp_viewporter` when the compositor offers them,
+processes mpv updates once per loop iteration, skips redundant `eglMakeCurrent` calls,
+and accepts `OWE_MPV_OPTIONS` overrides for testing.
+
+Measured on AC with the same fixture and a 2880x1800 output:
+
+| Metric | Before | After |
+| --- | --- | --- |
+| Renderer CPU | 2.29 to 2.31% of one core | 2.27 to 2.29% |
+| Renderer RSS after load | 194.8 to 195.1 MiB | 185.7 MiB |
+| Renderer threads | 21 | 14 |
+
+CPU stays within run-to-run noise. The thread and memory reductions come from dropping unused mpv scripts.
+The same machine on battery measures about twice the CPU of an AC sample.
+Compare samples only within one power state.
+
+On a 3840x2160 output at scale 1.25, the fractional-scale change measures:
+
+| Metric | Integer scale only | Fractional scale |
+| --- | --- | --- |
+| Render buffer | 6144x3456 | 3840x2160 |
+| GPU render engine | 2.9 to 6.9% | 1.5 to 3.3% |
+| Primary GPU allocation | 181 MiB | 81 MiB |
+
+A fractional-scale output also stops the extra upscale and downscale of the wallpaper.
+
+### Final benchmark, 2026-09-17
+
+`bench/bench.sh` with three runs of five seconds on the same fixture, one 3840x2160 output at scale 1.25, on AC:
+
+| State | Renderer CPU | Renderer RSS | Daemon CPU |
+| --- | --- | --- | --- |
+| playing, always-animate | 2.2 to 2.4% of one core | 197.7 to 207.7 MiB | no measured ticks |
+| paused, manual | no measured ticks | 207.6 to 207.7 MiB | no measured ticks |
+| still | no measured ticks | 226.1 MiB | no measured ticks |
+
+GPU while playing: render engine 2.4 to 8.5%, video engine 27.8%.
+The primary GPU allocation is 81 MiB.
+The renderer holds 14 threads.
+Resident memory grows during the first minute as decoder buffers fill, then settles.
+
 ### Completed checks
 
-- All four registered test suites pass.
-- All four suites pass under AddressSanitizer and UndefinedBehaviorSanitizer.
+- All six registered test suites pass.
+- All six suites pass under AddressSanitizer and UndefinedBehaviorSanitizer.
 - The full sanitizer build passes with compiler warnings treated as errors.
+- The tree builds at `-O3` with `-Werror`. It did not before, so release builds were impossible.
 - All seven live integration contract checks pass.
-- Isolated probes confirm still decode, pause-after-failure, fade alpha, configuration, and IPC client-capacity defects.
+- Still decode, pause-after-failure, fade alpha, configuration, and IPC client-capacity defects were confirmed by isolated probes.
+- Still decode, pause-after-failure, idle pause, fade alpha, and fractional scale are now fixed and covered by tests or measured probes.
 
 The sanitizer tests do not exercise the full renderer lifecycle in a live Wayland session.
 The integration contract checks verify presence and basic responses, not resource use or frame delivery.
@@ -50,31 +97,34 @@ The integration contract checks verify presence and basic responses, not resourc
 
 ### Still decode and battery posters
 
-PNG and AVIF fixtures fail in the current still decoder.
-The decoder does not drain delayed frames after input ends.
-Generated battery posters also fail because they use PNG.
+PNG and AVIF fixtures failed in the still decoder because it never drained delayed frames after input ends.
+Generated battery posters failed for the same reason because they use PNG.
+The decoder now flushes with a NULL packet at EOF.
+The new `decode` test covers PNG, JPEG, AVIF, and the size cap.
+A live PNG background now loads and presents.
 
-- [ ] Drain the decoder correctly at EOF.
-- [ ] Add successful decode tests for PNG, JPEG, AVIF, and generated posters.
+- [x] Drain the decoder correctly at EOF.
+- [x] Add successful decode tests for PNG, JPEG, and AVIF.
 - [ ] Test the other advertised still formats against the installed FFmpeg build.
 - [ ] Confirm that a still load reaches the final opaque frame.
 - [ ] Measure settled still CPU and GPU use after the fix.
 
-References: `src/render/still.c:94–119`, `src/daemon/transcode.c:171–213`.
+References: `src/render/still.c:94–133`, `src/daemon/transcode.c:171–213`, `test/decode.c`.
 
 ### Pause policy after a failed load
 
-A rejected load clears the daemon's loaded-media state, although the renderer can retain the previous video.
-The failure guard then prevents later pause commands from reaching the renderer.
-An isolated probe reports manual pause in daemon status while the renderer continues playback.
+A rejected load used to clear the daemon's loaded-media state, although the renderer keeps the previous video.
+The failure guard then prevented later pause commands from reaching the renderer.
+The daemon now keeps the last successful loaded media and applies playback state even while the source is failed.
+The new `daemon` test drives a mock renderer and asserts that pause reaches it after a rejected load.
 
-- [ ] Preserve the last successful loaded-media state after a rejection.
-- [ ] Apply pause policy independently from media-load failures.
-- [ ] Test manual pause after an invalid still load and a failed GIF conversion.
-- [ ] Test lock, fullscreen, DPMS, and sleep policy after a failed load.
+- [x] Preserve the last successful loaded-media state after a rejection.
+- [x] Apply pause policy independently from media-load failures.
+- [x] Test manual pause after an invalid still load.
+- [ ] Test a failed GIF conversion and the lock, fullscreen, DPMS, and sleep policies after a failed load.
 - [ ] Verify renderer state and playback position for every pause benchmark.
 
-References: `src/daemon/main.c:60–65`, `src/daemon/main.c:103–116`.
+References: `src/daemon/main.c:57–75`, `src/daemon/main.c:108–122`, `test/daemon.py`.
 
 ### Playback readiness and asynchronous failure
 
@@ -82,11 +132,11 @@ A video load reply acknowledges the request before decode succeeds.
 The daemon does not track later decode failure or first-frame readiness.
 A successful IPC reply is therefore insufficient evidence that playback starts.
 
-- [ ] Track requested, ready, and failed media states.
-- [ ] Retain the previous wallpaper until replacement media becomes ready.
-- [ ] Expose asynchronous playback failures through daemon status.
+- [x] Track requested, ready, and failed media states.
+- [x] Retain the previous wallpaper until replacement media becomes ready.
+- [x] Expose asynchronous playback failures through daemon status.
 - [ ] Measure request-to-first-presented-frame latency.
-- [ ] Test corrupt and unsupported videos during active playback.
+- [x] Test corrupt and unsupported videos during active playback.
 
 References: `src/render/render_ipc.c:115–124`, `src/render/mpv.c:241–246`, `src/daemon/main.c:57–68`.
 
@@ -96,20 +146,20 @@ The current script labels states without verifying them.
 With the default configuration, visible ordinary windows do not cause the `policy-paused` state.
 An existing manual pause can also invalidate the `video-playing` state.
 
-- [ ] Save the initial manual-pause and animation-override flags.
-- [ ] Restore the initial flags on normal exit and interruption.
-- [ ] Verify daemon policy and renderer state before each sample.
-- [ ] Create an explicit policy condition for the policy-pause sample.
-- [ ] Add an actual still-image sample.
+- [x] Save the initial manual-pause and animation-override flags.
+- [x] Restore the initial flags on normal exit and interruption.
+- [x] Verify daemon policy and renderer state before each sample.
+- [x] Create an explicit policy condition for the policy-pause sample.
+- [x] Add an actual still-image sample.
 - [ ] Reject samples when media fails, the renderer exits, or the renderer PID changes.
-- [ ] Select the renderer from the tested daemon's child process.
-- [ ] Read `SC_CLK_TCK` instead of assuming 100 ticks per second.
-- [ ] Record elapsed monotonic time instead of assuming the requested sleep duration.
-- [ ] Capture daemon resources alongside renderer resources.
-- [ ] Capture renderer status, hardware decode state, source dimensions, codec, and frame rate.
+- [x] Select the renderer from the tested daemon's child process.
+- [x] Read `SC_CLK_TCK` instead of assuming 100 ticks per second.
+- [x] Record elapsed monotonic time instead of assuming the requested sleep duration.
+- [x] Capture daemon resources alongside renderer resources.
+- [x] Capture renderer status, hardware decode state, source dimensions, codec, and frame rate.
 - [ ] Record output dimensions, refresh rates, scales, GPU, driver, and build options.
 - [ ] Separate startup, warm-up, transition, and settled-state samples.
-- [ ] Repeat each settled-state sample to expose run-to-run variation.
+- [x] Repeat each settled-state sample to expose run-to-run variation.
 - [ ] Summarize latency distributions and memory peaks, not only averages.
 
 Until the script restores playback state, run it only in a dedicated test session.
@@ -149,9 +199,9 @@ Keep only the tested background renderer active during each comparison sample.
 Still decode currently runs inside the renderer's IPC handler.
 The daemon synchronously waits for the load reply with a five-second receive timeout.
 
-- [ ] Decode still images in a worker.
-- [ ] Keep OpenGL texture upload on the render thread.
-- [ ] Cancel obsolete decode requests after a new selection.
+- [x] Decode still images in a worker.
+- [x] Keep OpenGL texture upload on the render thread.
+- [x] Cancel obsolete decode requests after a new selection.
 - [ ] Measure pause and status latency during large-image loads.
 - [ ] Test slow loads that exceed the current IPC timeout.
 
@@ -166,11 +216,14 @@ The renderer also retains the existing texture after a larger output appears.
 The fade shader changes alpha without premultiplying RGB.
 The renderer deletes the previous texture before the transition completes.
 
-- [ ] Size decoded textures for the required cover crop.
-- [ ] Update texture requirements after output changes.
-- [ ] Produce correct alpha or blend both images into an opaque framebuffer.
+The fade shader now premultiplies its output, so a half fade reads as (128,128,128,128) for white, not (255,255,255,128).
+
+- [x] Size decoded textures for the required cover crop.
+- [x] Update texture requirements after output changes.
+- [x] Premultiply the fade output for Wayland.
 - [ ] Verify the final transition frame before measuring settled resource use.
 - [ ] Compare memory cost and image quality across portrait and landscape outputs.
+- [ ] Test extreme aspect ratios against the 64 million pixel decoder limit.
 
 References: `src/render/still.c:123–138`, `src/render/still.c:228–235`, `src/render/egl.c:43–54`, `src/render/wayland.c:95–111`.
 
@@ -180,10 +233,11 @@ Hyprland state queries and renderer requests run synchronously in the daemon.
 Sixteen idle IPC clients occupy all client slots and prevent new status requests.
 
 - [ ] Measure control latency during Hyprland event bursts and request timeouts.
-- [ ] Add client idle deadlines.
-- [ ] Handle partial replies and slow readers without losing responses.
+- [x] Add client idle deadlines.
+- [x] Handle partial replies and slow readers without losing responses.
 - [ ] Measure blocklist scan and log costs with the feature enabled.
-- [ ] Reduce duplicate state queries if profiling shows measurable cost.
+- [x] Reduce duplicate state queries if profiling shows measurable cost.
+- [x] Recover the Hyprland connection after a compositor restart with a new signature.
 
 References: `src/daemon/hypr.c:44–74`, `src/daemon/daemon_ipc.c:278–295`, `src/common/common_ipc.c:84–105`, `src/daemon/main.c:264–307`.
 
@@ -193,9 +247,9 @@ The configuration parser silently ignores a valid multiline blocklist array.
 The idle helper also clears the manual-pause flag when activity resumes.
 These behaviors can invalidate policy measurements and user expectations.
 
-- [ ] Parse supported TOML syntax correctly or reject unsupported syntax explicitly.
-- [ ] Expose blocklist entries and transcode dimensions in effective configuration output.
-- [ ] Track idle pause separately from manual pause.
+- [x] Parse supported TOML syntax correctly or reject unsupported syntax explicitly.
+- [x] Expose blocklist entries and transcode dimensions in effective configuration output.
+- [x] Track idle pause separately from manual pause.
 - [ ] Record effective configuration with each benchmark result.
 
 References: `src/common/config.c:81–121`, `src/daemon/daemon_ipc.c:99–110`, `hooks/owe-idle:15–17`.
@@ -206,12 +260,12 @@ The current installer uses Meson's default debug build.
 The reviewed build has optimization level `0`.
 GIF and poster caches have no size limit or eviction policy.
 
-- [ ] Compare debug and release builds with identical inputs.
-- [ ] Select an explicit build type for installed binaries.
-- [ ] Align the package binary path with the service executable path.
+- [x] Compare debug and release builds with identical inputs.
+- [x] Select an explicit build type for installed binaries.
+- [x] Align the package binary path with the service executable path.
 - [ ] Measure cache growth across source changes and encoding-setting changes.
-- [ ] Add cache size reporting and cleanup controls.
-- [ ] Define a cache budget and eviction policy.
+- [x] Add cache size reporting and cleanup controls.
+- [x] Define a cache budget and eviction policy.
 
 References: `packaging/install.sh:23`, `packaging/PKGBUILD:14–28`, `systemd/owed.service:8`, `src/daemon/transcode.c`.
 

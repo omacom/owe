@@ -76,6 +76,8 @@ Commands:
 - `{"cmd":"refresh"}` — re-resolve the symlink and load now.
 - `{"cmd":"pause"}` — set manual pause.
 - `{"cmd":"resume"}` — clear manual pause.
+- `{"cmd":"idle-pause"}` — set idle pause. It does not clear a manual pause.
+- `{"cmd":"idle-resume"}` — clear idle pause.
 - `{"cmd":"always-animate","value":true}` — force or release animation.
 - `{"cmd":"reload-config"}` — reload `~/.config/owe/config.toml`.
 - `{"cmd":"render-status"}` — proxy the renderer status reply.
@@ -117,18 +119,20 @@ and sleep. Reasons in priority order:
 1. `manual` pause from `owe pause`.
 2. `sleep` pauses playback before suspend.
 3. `always-animate` bypasses automatic pause rules.
-4. `locked` follows logind session state.
-5. `dpms-off` applies when every connected monitor reports a known off state.
+4. `idle` pause from the `owe-idle` helper.
+5. `locked` follows logind session state.
+6. `dpms-off` applies when every connected monitor reports a known off state.
    Missing DRM data falls back to Hyprland state.
-6. `battery` shows a still poster while on battery. Off by default,
+7. `battery` shows a still poster while on battery. Off by default,
    enable with `battery_poster = true`.
-7. `blocklist` while a listed process runs. Off by default.
-8. `fullscreen` applies when fullscreen windows cover all active outputs. Hidden workspaces do not count.
-9. `occupied` applies when all active outputs have visible windows. Off by default, enable with
+8. `blocklist` while a listed process runs. Off by default.
+9. `fullscreen` applies when fullscreen windows cover all active outputs. Hidden workspaces do not count.
+10. `occupied` applies when all active outputs have visible windows. Off by default, enable with
    `occupied_workspace = true` to save power on busy desktops.
 
 Idle pauses are optional. Wire the `owe-idle` helper into `hypridle`
-and it pauses through the manual pause path.
+and it sets the idle pause. `owe resume` clears only the manual pause,
+so an idle resume never releases a manual pause.
 
 To force motion regardless of policy, run `owe always-animate on`.
 
@@ -138,6 +142,10 @@ Each `GIF` becomes cached muted `mp4` through one `ffmpeg` pass at first
 select. Later selects serve from `~/.cache/owe/gif/`. With
 `battery_poster = true`, battery mode shows a poster frame from the
 same cache.
+
+The GIF and poster cache keeps the newest 512 MiB by default. Set
+`cache_max_mb` in `[transcode]` to change the budget. `0` disables
+eviction.
 
 ## No audio
 
@@ -152,8 +160,16 @@ Generated media contains only video. Source files remain intact.
   copy per frame per output.
 - Hardware decode is on by default (`hwdec=auto-safe`). Override with
   the `OWE_HWDEC` environment variable.
-- Stills decode once at output size, upload one texture, and then stop
-  the frame loop. Paused video stops the loop too.
+- `libmpv` runs without its lua scripts. The ytdl hook, stats overlay,
+  console, and the other scripts only add threads and memory. Advanced
+  mpv tuning uses `OWE_MPV_OPTIONS`, a semicolon separated list such as
+  `demuxer-max-bytes=16MiB;hwdec-extra-frames=1`.
+- Stills decode once at the size the cover crop needs, upload one texture,
+  and then stop the frame loop. Paused video stops the loop too.
+- Layer surfaces use `wp_fractional_scale_v1` and `wp_viewporter` when the
+  compositor offers them. A 1.25 scale output draws 1.25x pixels, not the 2x
+  that `wl_output.scale` alone would ask for. Without the protocols the
+  renderer falls back to the integer `wl_output.scale`.
 - Stills and video cover the output. Aspect ratio is preserved with a
   center crop, like `PreserveAspectCrop` in the Omarchy shell.
 - Poster extraction and GIF transcode run in a worker thread. The
@@ -180,7 +196,7 @@ ninja -C build
 meson test -C build
 ```
 
-The tests cover IPC framing, quoted paths, worker cancellation, atomic cache publication, display state, and actual GIF conversion.
+The tests cover IPC framing, quoted paths, worker cancellation, atomic cache publication, display state, actual GIF conversion, still decode for PNG, JPEG, and AVIF, and pause policy after a rejected load.
 To run sanitizer checks, use a separate build directory:
 
 ```bash

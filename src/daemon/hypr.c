@@ -1,10 +1,12 @@
 #include "hypr.h"
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <unistd.h>
 #include "common_ipc.h"
@@ -26,6 +28,68 @@ struct owed_hypr {
     int monitor_count;
 };
 
+/* The session environment keeps the Hyprland signature from login. A
+ * compositor restart starts a new instance with a new signature, so fall
+ * back to the newest runtime instance that has an event socket. */
+static void resolve_sock_dir(struct owed_hypr *h) {
+    const char *runtime = getenv("XDG_RUNTIME_DIR");
+    const char *sig = getenv("HYPRLAND_INSTANCE_SIGNATURE");
+    char root[PATH_MAX];
+    char best[PATH_MAX] = "";
+    time_t best_mtime = 0;
+    DIR *dir;
+    struct dirent *entry;
+
+    h->sock_dir[0] = '\0';
+    if (!runtime || !*runtime) {
+        return;
+    }
+    if (sig && *sig) {
+        char sock[PATH_MAX + 32];
+        snprintf(h->sock_dir, sizeof(h->sock_dir), "%s/hypr/%s", runtime, sig);
+        snprintf(sock, sizeof(sock), "%s/.socket2.sock", h->sock_dir);
+        if (access(sock, F_OK) == 0) {
+            return;
+        }
+    }
+    if (snprintf(root, sizeof(root), "%s/hypr", runtime) >= (int)sizeof(root)) {
+        return;
+    }
+    dir = opendir(root);
+    if (!dir) {
+        return;
+    }
+    while ((entry = readdir(dir))) {
+        char candidate[PATH_MAX];
+        char sock[PATH_MAX + 32];
+        struct stat st;
+        if (entry->d_name[0] == '.') {
+            continue;
+        }
+        if (snprintf(candidate, sizeof(candidate), "%s/%s", root, entry->d_name) >=
+            (int)sizeof(candidate)) {
+            continue;
+        }
+        if (stat(candidate, &st) != 0 || !S_ISDIR(st.st_mode)) {
+            continue;
+        }
+        if (snprintf(sock, sizeof(sock), "%s/.socket2.sock", candidate) >= (int)sizeof(sock)) {
+            continue;
+        }
+        if (access(sock, F_OK) != 0) {
+            continue;
+        }
+        if (!best[0] || st.st_mtime > best_mtime) {
+            snprintf(best, sizeof(best), "%s", candidate);
+            best_mtime = st.st_mtime;
+        }
+    }
+    closedir(dir);
+    if (best[0]) {
+        snprintf(h->sock_dir, sizeof(h->sock_dir), "%s", best);
+    }
+}
+
 static int connect_socket(struct owed_hypr *h, const char *name) {
     char path[PATH_MAX + 32];
     if (!h->sock_dir[0]) return -1;
@@ -37,8 +101,12 @@ static int connect_socket(struct owed_hypr *h, const char *name) {
 
 static void reconnect(struct owed_hypr *h) {
     if (h->event_fd >= 0) return;
+    resolve_sock_dir(h);
     h->event_fd = connect_socket(h, ".socket2.sock");
-    if (h->event_fd >= 0) fcntl(h->event_fd, F_SETFL, O_NONBLOCK);
+    if (h->event_fd >= 0) {
+        fcntl(h->event_fd, F_SETFL, O_NONBLOCK);
+        OWE_INFO("hyprland connected at %s", h->sock_dir);
+    }
 }
 
 static int request(struct owed_hypr *h, const char *cmd, char **out) {
@@ -76,11 +144,12 @@ done:
 
 static void recompute(struct owed_hypr *h) {
     bool fs = h->any_fullscreen, vis = h->any_window_visible, off = h->all_monitors_off;
-    h->any_fullscreen = owe_outputs_covered(h->clients, h->monitors, true);
-    h->any_window_visible = owe_outputs_covered(h->clients, h->monitors, false);
-    yyjson_doc *doc = h->monitors ? yyjson_read(h->monitors, strlen(h->monitors), 0) : NULL;
-    if (doc) {
-        yyjson_val *root = yyjson_doc_get_root(doc), *m;
+    yyjson_doc *clients = h->clients ? yyjson_read(h->clients, strlen(h->clients), 0) : NULL;
+    yyjson_doc *monitors = h->monitors ? yyjson_read(h->monitors, strlen(h->monitors), 0) : NULL;
+    h->any_fullscreen = owe_outputs_covered_docs(clients, monitors, true);
+    h->any_window_visible = owe_outputs_covered_docs(clients, monitors, false);
+    if (monitors) {
+        yyjson_val *root = yyjson_doc_get_root(monitors), *m;
         size_t i, n;
         int lit = 0;
         h->monitor_count = (int)yyjson_arr_size(root);
@@ -90,8 +159,9 @@ static void recompute(struct owed_hypr *h) {
             if (!yyjson_get_bool(yyjson_obj_get(m, "disabled")) && powered) lit++;
         }
         h->all_monitors_off = h->monitor_count > 0 && lit == 0;
-        yyjson_doc_free(doc);
     }
+    yyjson_doc_free(clients);
+    yyjson_doc_free(monitors);
     int drm = owe_drm_all_off("/sys/class/drm");
     if (drm >= 0) h->all_monitors_off = drm != 0;
     if (fs != h->any_fullscreen || vis != h->any_window_visible || off != h->all_monitors_off)
@@ -125,9 +195,8 @@ struct owed_hypr *owed_hypr_new(void) {
     struct owed_hypr *h = calloc(1, sizeof(*h));
     if (!h) return NULL;
     h->event_fd = -1;
-    const char *sig = getenv("HYPRLAND_INSTANCE_SIGNATURE"), *runtime = getenv("XDG_RUNTIME_DIR");
-    if (sig && runtime && snprintf(h->sock_dir, sizeof(h->sock_dir), "%s/hypr/%s", runtime, sig) < (int)sizeof(h->sock_dir)) {
-        reconnect(h);
+    reconnect(h);
+    if (h->event_fd >= 0) {
         owed_hypr_refresh(h);
     }
     return h;

@@ -15,3 +15,5 @@ const char *owed_policy_reason(struct owed_policy *p);
 void owed_policy_set_blocklisted(struct owed_policy *p, bool blocked);
 void owed_policy_set_manual_pause(struct owed_policy *p, bool paused);
 bool owed_policy_manual_pause(struct owed_policy *p);
+void owed_policy_set_idle_pause(struct owed_policy *p, bool paused);
+bool owed_policy_idle_pause(struct owed_policy *p);

@@ -110,28 +110,52 @@ int owe_ipc_recv_line(int fd, char *buf, size_t len) {
     if (!buf || len < 2) {
         return -1;
     }
-    while (off + 1 < len) {
-        char c;
-        ssize_t n = recv(fd, &c, 1, 0);
-        if (n == 0) return -1;
-        if (n < 0) {
+    for (;;) {
+        char chunk[512];
+        ssize_t peek = recv(fd, chunk, sizeof(chunk), MSG_PEEK);
+        char *nl;
+        size_t take;
+        ssize_t got;
+        size_t i;
+        if (peek == 0) {
+            return -1;
+        }
+        if (peek < 0) {
             if (errno == EINTR) {
                 continue;
             }
             return -1;
         }
-        if (c == '\n') {
-            buf[off] = '\0';
-            return off ? 0 : -1;
+        /* Consume only up to the newline. A peek does not disturb bytes
+         * that belong to a later line on the same connection. */
+        nl = memchr(chunk, '\n', (size_t)peek);
+        take = nl ? (size_t)(nl - chunk) + 1 : (size_t)peek;
+        got = recv(fd, chunk, take, 0);
+        if (got <= 0) {
+            if (got < 0 && errno == EINTR) {
+                continue;
+            }
+            return -1;
         }
-        if (c == '\0') return -1;
-        if (c != '\r') {
-            buf[off++] = c;
+        for (i = 0; i < (size_t)got; i++) {
+            char c = chunk[i];
+            if (c == '\n') {
+                buf[off] = '\0';
+                return off ? 0 : -1;
+            }
+            if (c == '\0') {
+                return -1;
+            }
+            if (c != '\r') {
+                if (off + 1 >= len) {
+                    buf[off] = '\0';
+                    errno = EMSGSIZE;
+                    return -1;
+                }
+                buf[off++] = c;
+            }
         }
     }
-    buf[off] = '\0';
-    errno = EMSGSIZE;
-    return -1;
 }
 
 owe_ipc_server_t *owe_ipc_server_new(const char *path) {

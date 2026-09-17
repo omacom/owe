@@ -10,6 +10,7 @@ typedef struct owe_config {
     int gif_crf;
     int transcode_max_width;
     int transcode_max_height;
+    int cache_max_mb;
     int fade_ms;
     char blocklist[16][64];
     int blocklist_count;

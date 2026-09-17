@@ -10,7 +10,13 @@ struct owe_output;
 struct owe_still *owe_still_new(struct owe_wayland *wl, struct owe_egl *egl);
 void owe_still_free(struct owe_still *s);
 
-int owe_still_load(struct owe_still *s, const char *path);
+int owe_still_start(struct owe_still *s, const char *path, int max_w, int max_h);
+int owe_still_poll(struct owe_still *s);
+int owe_still_fd(struct owe_still *s);
+void owe_still_cancel(struct owe_still *s);
+bool owe_still_busy(struct owe_still *s);
+int owe_still_decoded_max(struct owe_still *s, int *w, int *h);
+
 void owe_still_unload(struct owe_still *s);
 bool owe_still_has_image(struct owe_still *s);
 const char *owe_still_path(struct owe_still *s);

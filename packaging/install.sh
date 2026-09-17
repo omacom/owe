@@ -20,7 +20,8 @@ if ((${#missing[@]})); then
 fi
 
 echo "==> build"
-meson setup --reconfigure "${ROOT}/build" "${ROOT}" >/dev/null 2>&1 || meson setup "${ROOT}/build" "${ROOT}"
+meson setup --reconfigure -Dbuildtype=release "${ROOT}/build" "${ROOT}" >/dev/null 2>&1 || \
+  meson setup -Dbuildtype=release "${ROOT}/build" "${ROOT}"
 ninja -C "${ROOT}/build"
 meson test -C "${ROOT}/build"
 

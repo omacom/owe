@@ -6,8 +6,6 @@ struct owed_supervisor *owed_supervisor_new(void);
 void owed_supervisor_free(struct owed_supervisor *s);
 
 int owed_supervisor_ensure_running(struct owed_supervisor *s);
-int owed_supervisor_fd(struct owed_supervisor *s);
-void owed_supervisor_on_child_exit(struct owed_supervisor *s);
 void owed_supervisor_reap(struct owed_supervisor *s);
 void owed_supervisor_stop(struct owed_supervisor *s);
 

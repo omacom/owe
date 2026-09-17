@@ -28,6 +28,7 @@ struct owe_egl {
     EGLDisplay display;
     EGLContext context;
     EGLConfig config;
+    EGLSurface current;
     struct owe_gl_prog blit;
 };
 
@@ -50,7 +51,8 @@ static const char *fs_src = "#version 150\n"
                             "void main() {\n"
                             "  vec2 uv = vuv * uv_scale + uv_offset;\n"
                             "  vec4 c = texture(tex, uv);\n"
-                            "  frag = vec4(c.rgb, c.a * alpha);\n"
+                            "  float a = c.a * alpha;\n"
+                            "  frag = vec4(c.rgb * a, a);\n"
                             "}\n";
 
 static GLuint compile_shader(GLenum type, const char *src) {
@@ -215,7 +217,14 @@ void owe_egl_free(struct owe_egl *egl) {
 }
 
 int owe_egl_make_current(struct owe_egl *egl) {
-    return egl && eglMakeCurrent(egl->display, EGL_NO_SURFACE, EGL_NO_SURFACE, egl->context) ? 0 : -1;
+    if (!egl) {
+        return -1;
+    }
+    if (eglMakeCurrent(egl->display, EGL_NO_SURFACE, EGL_NO_SURFACE, egl->context)) {
+        egl->current = EGL_NO_SURFACE;
+        return 0;
+    }
+    return -1;
 }
 
 void *owe_egl_display(struct owe_egl *egl) {
@@ -260,16 +269,18 @@ int owe_egl_prepare_output(struct owe_egl *egl, struct owe_output *out) {
     if (!egl || !out || !out->egl_surface) {
         return -1;
     }
-    if (!eglMakeCurrent(egl->display, (EGLSurface)out->egl_surface,
-                        (EGLSurface)out->egl_surface, egl->context)) {
-        OWE_ERROR("eglMakeCurrent failed: 0x%x", eglGetError());
-        return -1;
+    if (egl->current != (EGLSurface)out->egl_surface) {
+        if (!eglMakeCurrent(egl->display, (EGLSurface)out->egl_surface,
+                            (EGLSurface)out->egl_surface, egl->context)) {
+            OWE_ERROR("eglMakeCurrent failed: 0x%x", eglGetError());
+            return -1;
+        }
+        egl->current = (EGLSurface)out->egl_surface;
     }
     if (!egl->blit.ready) {
         blit_init(&egl->blit);
     }
-    w = out->width * (out->scale > 0 ? out->scale : 1);
-    h = out->height * (out->scale > 0 ? out->scale : 1);
+    owe_output_buffer_size(out, &w, &h);
     if (out->egl_window && (out->egl_w != w || out->egl_h != h)) {
         wl_egl_window_resize((struct wl_egl_window *)out->egl_window, w, h, 0, 0);
         out->egl_w = w;
@@ -338,8 +349,7 @@ void owe_egl_draw_texture(struct owe_egl *egl, struct owe_output *out, unsigned 
     if (owe_egl_prepare_output(egl, out) != 0) {
         return;
     }
-    out_w = out->width * (out->scale > 0 ? out->scale : 1);
-    out_h = out->height * (out->scale > 0 ? out->scale : 1);
+    owe_output_buffer_size(out, &out_w, &out_h);
     if (tex_w > 0 && tex_h > 0 && out_w > 0 && out_h > 0) {
         src_aspect = (float)tex_w / (float)tex_h;
         dst_aspect = (float)out_w / (float)out_h;

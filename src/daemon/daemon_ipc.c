@@ -3,9 +3,11 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "yyjson.h"
@@ -19,16 +21,19 @@
 #include "power.h"
 #include "owe_spawn.h"
 #include "supervisor.h"
+#include "transcode.h"
 #include "watch.h"
 #include "json.h"
 #include "xdg.h"
 
 #define MAX_CLIENTS OWE_IPC_MAX_CLIENTS
+#define CLIENT_IDLE_MS 120000
 
 struct owed_client {
     int fd;
     char buf[OWE_IPC_MAX_LINE];
     size_t len;
+    int64_t active_ms;
 };
 
 struct owed_ipc {
@@ -37,12 +42,19 @@ struct owed_ipc {
     struct owed_client clients[MAX_CLIENTS];
 };
 
+static int64_t now_ms(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+}
+
 static void client_remove(struct owed_ipc *ipc, int idx) {
     if (ipc->clients[idx].fd >= 0) {
         close(ipc->clients[idx].fd);
     }
     ipc->clients[idx].fd = -1;
     ipc->clients[idx].len = 0;
+    ipc->clients[idx].active_ms = 0;
 }
 
 static void send_ok(struct owed_client *c, const char *extra) {
@@ -71,16 +83,17 @@ static void handle_status(struct owed_client *c) {
     if (asprintf(&line,
              "{\"status\":\"ok\",\"source_path\":%s,\"source_kind\":\"%s\","
              "\"loaded_path\":%s,\"loaded_kind\":\"%s\","
-             "\"job_running\":%s,\"failed_path\":%s,"
-             "\"paused\":%s,\"reason\":\"%s\",\"always_animate\":%s,\"manual_pause\":%s,"
+             "\"job_running\":%s,\"failed_path\":%s,\"media_ready\":%s,"
+             "\"paused\":%s,\"reason\":\"%s\",\"always_animate\":%s,\"manual_pause\":%s,\"idle_pause\":%s,"
              "\"fullscreen\":%s,\"window_visible\":%s,\"monitors_off\":%s,\"monitor_count\":%d,"
              "\"on_battery\":%s,\"locked\":%s,\"render_alive\":%s}",
              source, app->source_kind, loaded, app->loaded_kind,
-             app->job ? "true" : "false", failed,
+             app->job ? "true" : "false", failed, app->media_pending ? "false" : "true",
              app->policy && owed_policy_should_pause(app->policy) ? "true" : "false",
              app->policy ? owed_policy_reason(app->policy) : "",
              app->always_animate ? "true" : "false",
              app->policy && owed_policy_manual_pause(app->policy) ? "true" : "false",
+             app->policy && owed_policy_idle_pause(app->policy) ? "true" : "false",
              app->hypr && owed_hypr_any_fullscreen(app->hypr) ? "true" : "false",
              app->hypr && owed_hypr_any_window_visible(app->hypr) ? "true" : "false",
              app->hypr && owed_hypr_all_monitors_off(app->hypr) ? "true" : "false",
@@ -98,16 +111,47 @@ done:
 
 static void handle_config(struct owed_client *c) {
     owed_app_t *app = owed_app_get();
-    char line[2048];
-    snprintf(line, sizeof(line),
-             "{\"status\":\"ok\",\"pause_fullscreen\":%s,\"pause_occupied_workspace\":%s,"
-             "\"battery_poster\":%s,\"gif_fps\":%d,\"gif_crf\":%d,"
-             "\"fade_ms\":%d,\"blocklist_count\":%d}",
-             app->config.pause_fullscreen ? "true" : "false",
-             app->config.pause_occupied_workspace ? "true" : "false",
-             app->config.battery_poster ? "true" : "false", app->config.gif_fps,
-             app->config.gif_crf, app->config.fade_ms, app->config.blocklist_count);
-    owe_ipc_send_line(c->fd, line);
+    char *blocklist = NULL;
+    char *line = NULL;
+    int i;
+    if (asprintf(&blocklist, "[") < 0) {
+        return;
+    }
+    for (i = 0; i < app->config.blocklist_count; i++) {
+        char *quoted = owe_json_quote(app->config.blocklist[i]);
+        char *next = NULL;
+        if (!quoted || asprintf(&next, "%s%s%s", blocklist, i ? "," : "", quoted) < 0) {
+            free(quoted);
+            free(blocklist);
+            free(next);
+            return;
+        }
+        free(quoted);
+        free(blocklist);
+        blocklist = next;
+    }
+    {
+        char *closed = NULL;
+        if (asprintf(&closed, "%s]", blocklist) >= 0) {
+            free(blocklist);
+            blocklist = closed;
+        }
+    }
+    if (asprintf(&line,
+                 "{\"status\":\"ok\",\"pause_fullscreen\":%s,\"pause_occupied_workspace\":%s,"
+                 "\"battery_poster\":%s,\"gif_fps\":%d,\"gif_crf\":%d,"
+                 "\"max_width\":%d,\"max_height\":%d,\"cache_max_mb\":%d,"
+                 "\"fade_ms\":%d,\"blocklist_count\":%d,\"blocklist\":%s}",
+                 app->config.pause_fullscreen ? "true" : "false",
+                 app->config.pause_occupied_workspace ? "true" : "false",
+                 app->config.battery_poster ? "true" : "false", app->config.gif_fps,
+                 app->config.gif_crf, app->config.transcode_max_width,
+                 app->config.transcode_max_height, app->config.cache_max_mb,
+                 app->config.fade_ms, app->config.blocklist_count, blocklist) >= 0) {
+        owe_ipc_send_line(c->fd, line);
+    }
+    free(line);
+    free(blocklist);
 }
 
 static void handle_set(struct owed_client *c, yyjson_val *root) {
@@ -166,6 +210,14 @@ static void handle_command(struct owed_ipc *ipc, struct owed_client *c, const ch
         owed_policy_set_manual_pause(app->policy, false);
         owed_app_on_policy_changed();
         send_ok(c, NULL);
+    } else if (strcmp(cmd, "idle-pause") == 0) {
+        owed_policy_set_idle_pause(app->policy, true);
+        owed_app_on_policy_changed();
+        send_ok(c, NULL);
+    } else if (strcmp(cmd, "idle-resume") == 0) {
+        owed_policy_set_idle_pause(app->policy, false);
+        owed_app_on_policy_changed();
+        send_ok(c, NULL);
     } else if (strcmp(cmd, "always-animate") == 0) {
         yyjson_val *v = yyjson_obj_get(root, "value");
         if (v && yyjson_is_bool(v)) {
@@ -181,6 +233,7 @@ static void handle_command(struct owed_ipc *ipc, struct owed_client *c, const ch
         owe_config_defaults(&next);
         if (owe_config_path(path, sizeof(path)) == 0 && owe_config_load(&next, path) == 0) {
             app->config = next;
+            owed_transcode_set_cache_limit(app->config.cache_max_mb);
             owed_supervisor_fade(app->supervisor, app->config.fade_ms);
             owed_app_on_policy_changed();
             send_ok(c, NULL);
@@ -286,6 +339,7 @@ void owed_ipc_accept(struct owed_ipc *ipc) {
             if (ipc->clients[i].fd < 0) {
                 ipc->clients[i].fd = fd;
                 ipc->clients[i].len = 0;
+                ipc->clients[i].active_ms = now_ms();
                 break;
             }
         }
@@ -307,6 +361,10 @@ void owed_ipc_poll_clients(struct owed_ipc *ipc) {
         if (c->fd < 0) {
             continue;
         }
+        if (c->len == 0 && now_ms() - c->active_ms > CLIENT_IDLE_MS) {
+            client_remove(ipc, i);
+            continue;
+        }
         n = recv(c->fd, c->buf + c->len, sizeof(c->buf) - c->len - 1, 0);
         if (n == 0) {
             client_remove(ipc, i);
@@ -325,6 +383,7 @@ void owed_ipc_poll_clients(struct owed_ipc *ipc) {
         }
         c->len += (size_t)n;
         c->buf[c->len] = '\0';
+        c->active_ms = now_ms();
         while ((nl = strchr(c->buf, '\n')) != NULL) {
             *nl = '\0';
             if (nl > c->buf && nl[-1] == '\r') {

@@ -6,6 +6,7 @@
 #include <limits.h>
 #include <poll.h>
 #include <signal.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,9 +16,12 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "yyjson.h"
+
 #include "hypr.h"
 #include "daemon_ipc.h"
 #include "common_ipc.h"
+#include "json.h"
 #include "log.h"
 #include "policy.h"
 #include "power.h"
@@ -37,16 +41,43 @@ owed_app_t *owed_app_get(void) {
 }
 
 void owed_app_emit_event(const char *name, const char *detail) {
-    char line[1024];
-    snprintf(line, sizeof(line), "{\"event\":\"%s\",\"detail\":\"%s\"}", name ? name : "",
-             detail ? detail : "");
-    owed_ipc_broadcast(g_app.ipc, line);
+    char *quoted_name = owe_json_quote(name ? name : "");
+    char *quoted_detail = owe_json_quote(detail ? detail : "");
+    char *line = NULL;
+    if (!quoted_name || !quoted_detail) {
+        free(quoted_name);
+        free(quoted_detail);
+        return;
+    }
+    if (asprintf(&line, "{\"event\":%s,\"detail\":%s}", quoted_name, quoted_detail) >= 0) {
+        owed_ipc_broadcast(g_app.ipc, line);
+    }
+    free(line);
+    free(quoted_name);
+    free(quoted_detail);
 }
 
 static bool battery_poster_active(void) {
     owed_app_t *app = &g_app;
     return app->config.battery_poster && app->power && owed_power_on_battery(app->power) &&
            !app->always_animate;
+}
+
+#define MEDIA_READY_TIMEOUT_MS 5000
+
+static int64_t monotonic_ms(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+}
+
+static void copy_path(char *dst, size_t size, const char *src) {
+    size_t len = strlen(src);
+    if (len >= size) {
+        len = size - 1;
+    }
+    memcpy(dst, src, len);
+    dst[len] = '\0';
 }
 
 static int load_if_needed(const char *path, const char *kind) {
@@ -59,13 +90,26 @@ static int load_if_needed(const char *path, const char *kind) {
     }
     if (owed_supervisor_load(app->supervisor, path, kind) != 0) {
         OWE_ERROR("renderer load failed: %s", path);
-        app->loaded_path[0] = '\0';
-        app->loaded_kind[0] = '\0';
-        snprintf(app->fail_path, sizeof(app->fail_path), "%s", app->source_path);
+        /* The renderer keeps its previous media after a rejected load, so
+         * loaded_path stays as the last successful media to keep policy in
+         * control of what is playing. */
+        copy_path(app->fail_path, sizeof(app->fail_path), app->source_path);
         return -1;
     }
-    snprintf(app->loaded_path, sizeof(app->loaded_path), "%s", path);
-    snprintf(app->loaded_kind, sizeof(app->loaded_kind), "%s", kind);
+    /* Snapshot the media that already proved it plays. A video whose decode
+     * fails later falls back to it. */
+    copy_path(app->restore_path, sizeof(app->restore_path), app->last_good_path);
+    copy_path(app->restore_kind, sizeof(app->restore_kind), app->last_good_kind);
+    copy_path(app->loaded_path, sizeof(app->loaded_path), path);
+    copy_path(app->loaded_kind, sizeof(app->loaded_kind), kind);
+    if (strcmp(kind, "video") == 0) {
+        app->media_pending = true;
+        app->media_deadline_ms = monotonic_ms() + MEDIA_READY_TIMEOUT_MS;
+    } else {
+        app->media_pending = false;
+        copy_path(app->last_good_path, sizeof(app->last_good_path), path);
+        copy_path(app->last_good_kind, sizeof(app->last_good_kind), kind);
+    }
     return 0;
 }
 
@@ -87,6 +131,76 @@ static void apply_playback_state(void) {
         if (owed_supervisor_resume(app->supervisor) == 0) {
             app->render_paused = 0;
         }
+    }
+}
+
+static bool render_status_flags(const char *reply, bool *ready, bool *error) {
+    yyjson_doc *doc = reply ? yyjson_read(reply, strlen(reply), 0) : NULL;
+    bool ok = false;
+    *ready = false;
+    *error = false;
+    if (doc) {
+        yyjson_val *root = yyjson_doc_get_root(doc);
+        yyjson_val *status = yyjson_obj_get(root, "status");
+        yyjson_val *ready_val = yyjson_obj_get(root, "ready");
+        yyjson_val *error_val = yyjson_obj_get(root, "error");
+        if (yyjson_is_str(status) && strcmp(yyjson_get_str(status), "ok") == 0) {
+            ok = true;
+        }
+        if (yyjson_is_bool(ready_val)) {
+            *ready = yyjson_get_bool(ready_val);
+        }
+        if (yyjson_is_str(error_val) && yyjson_get_len(error_val) > 0) {
+            *error = true;
+        }
+        yyjson_doc_free(doc);
+    }
+    return ok;
+}
+
+static void media_failed(void) {
+    owed_app_t *app = &g_app;
+    app->media_pending = false;
+    copy_path(app->fail_path, sizeof(app->fail_path), app->source_path);
+    OWE_WARN("media did not start: %s", app->source_path);
+    if (*app->restore_path && strcmp(app->restore_path, app->source_path) != 0 &&
+        strcmp(app->restore_path, app->loaded_path) != 0) {
+        if (load_if_needed(app->restore_path, app->restore_kind) == 0) {
+            OWE_INFO("recovered to %s", app->restore_path);
+            apply_playback_state();
+        }
+    }
+}
+
+/* A video load reply only means the renderer accepted the request. Poll until
+ * the first frame presents, or recover when decode fails or stalls. */
+static void check_media_ready(void) {
+    owed_app_t *app = &g_app;
+    char reply[OWE_IPC_MAX_LINE];
+    bool ready = false;
+    bool error = false;
+    if (!app->media_pending) {
+        return;
+    }
+    if (monotonic_ms() >= app->media_deadline_ms) {
+        media_failed();
+        return;
+    }
+    if (owed_supervisor_send(app->supervisor, "{\"cmd\":\"status\"}", reply, sizeof(reply)) != 0) {
+        return;
+    }
+    if (!render_status_flags(reply, &ready, &error)) {
+        return;
+    }
+    if (error) {
+        media_failed();
+        return;
+    }
+    if (ready) {
+        app->media_pending = false;
+        copy_path(app->last_good_path, sizeof(app->last_good_path), app->loaded_path);
+        copy_path(app->last_good_kind, sizeof(app->last_good_kind), app->loaded_kind);
+        OWE_INFO("media ready: %s", app->loaded_path);
     }
 }
 
@@ -113,8 +227,13 @@ void owed_app_apply_policy(void) {
     if (!*app->source_path) {
         return;
     }
-    if (strcmp(app->fail_path, app->source_path) == 0) return;
-    snprintf(video, sizeof(video), "%s", app->source_path);
+    if (strcmp(app->fail_path, app->source_path) == 0) {
+        /* The new source failed. The renderer still shows the previous
+         * media, so keep pause policy in control of it. */
+        apply_playback_state();
+        return;
+    }
+    copy_path(video, sizeof(video), app->source_path);
 
     if (strcmp(app->source_kind, "gif") == 0) {
         if (owed_transcode_gif_path(app->source_path, app->config.gif_fps, app->config.gif_crf,
@@ -131,7 +250,7 @@ void owed_app_apply_policy(void) {
                                       app->config.transcode_max_height);
             if (!app->job) {
                 OWE_ERROR("cannot start gif job: %s", app->source_path);
-                snprintf(app->fail_path, sizeof(app->fail_path), "%s", app->source_path);
+                copy_path(app->fail_path, sizeof(app->fail_path), app->source_path);
             } else {
                 OWE_INFO("gif transcode started for %s", app->source_path);
             }
@@ -182,10 +301,10 @@ void owed_app_on_job_done(void) {
     snprintf(input, sizeof(input), "%s", owed_async_job_input(app->job));
     if (owed_async_job_finish(app->job, &result) != 0) {
         OWE_WARN("job for %s produced no result", input);
-        snprintf(app->fail_path, sizeof(app->fail_path), "%s", app->source_path);
+        copy_path(app->fail_path, sizeof(app->fail_path), app->source_path);
     } else if (!result.ok) {
         OWE_ERROR("job failed for %s", input);
-        snprintf(app->fail_path, sizeof(app->fail_path), "%s", app->source_path);
+        copy_path(app->fail_path, sizeof(app->fail_path), app->source_path);
     } else {
         OWE_INFO("job done for %s", input);
     }
@@ -199,6 +318,7 @@ void owed_app_on_renderer_restarted(void) {
     g_app.loaded_kind[0] = '\0';
     g_app.render_paused = -1;
     g_app.fail_path[0] = '\0';
+    g_app.media_pending = false;
     owed_supervisor_fade(g_app.supervisor, g_app.config.fade_ms);
     owed_app_apply_policy();
 }
@@ -394,6 +514,7 @@ int main(int argc, char **argv) {
             OWE_INFO("no config at %s, using defaults", config_path);
         }
     }
+    owed_transcode_set_cache_limit(g_app.config.cache_max_mb);
 
     g_app.supervisor = owed_supervisor_new();
     g_app.policy = owed_policy_new();
@@ -452,11 +573,6 @@ int main(int argc, char **argv) {
             pfds[n].events = POLLIN;
             n++;
         }
-        if (owed_power_fd_session(g_app.power) >= 0) {
-            pfds[n].fd = owed_power_fd_session(g_app.power);
-            pfds[n].events = POLLIN;
-            n++;
-        }
         if (owed_ipc_fd(g_app.ipc) >= 0) {
             pfds[n].fd = owed_ipc_fd(g_app.ipc);
             pfds[n].events = POLLIN;
@@ -469,7 +585,7 @@ int main(int argc, char **argv) {
         }
         n += owed_ipc_pollfds(g_app.ipc, &pfds[n]);
 
-        rc = poll(pfds, (nfds_t)n, have_job ? 200 : 1000);
+        rc = poll(pfds, (nfds_t)n, (have_job || g_app.media_pending) ? 200 : 1000);
         if (rc < 0) {
             if (errno == EINTR) {
                 continue;
@@ -504,8 +620,7 @@ int main(int argc, char **argv) {
                 owed_watch_poll(g_app.watch);
             } else if (pfds[i].fd == owed_hypr_event_fd(g_app.hypr)) {
                 owed_hypr_poll(g_app.hypr);
-            } else if (pfds[i].fd == owed_power_fd_system(g_app.power) ||
-                       pfds[i].fd == owed_power_fd_session(g_app.power)) {
+            } else if (pfds[i].fd == owed_power_fd_system(g_app.power)) {
                 owed_power_poll(g_app.power);
             } else if (pfds[i].fd == owed_ipc_fd(g_app.ipc)) {
                 owed_ipc_accept(g_app.ipc);
@@ -517,6 +632,7 @@ int main(int argc, char **argv) {
         if (!g_app.running) break;
         owed_ipc_poll_clients(g_app.ipc);
         if (!g_app.running) break;
+        check_media_ready();
         if (!owed_render_is_alive(g_app.supervisor) &&
             owed_supervisor_ensure_running(g_app.supervisor) == 0)
             owed_app_on_renderer_restarted();

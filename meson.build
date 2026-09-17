@@ -30,10 +30,32 @@ wayland_protos = dependency('wayland-protocols', required : false)
 
 layer_shell_xml = files('protocols/wlr-layer-shell-unstable-v1.xml')
 xdg_shell_xml = files('protocols/xdg-shell.xml')
+viewporter_xml = files('protocols/viewporter.xml')
+fractional_scale_xml = files('protocols/fractional-scale-v1.xml')
 
 xdg_shell_c = custom_target('xdg-shell-code',
   input : xdg_shell_xml,
   output : 'xdg-shell-protocol.c',
+  command : [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'])
+
+viewporter_client_h = custom_target('viewporter-client-header',
+  input : viewporter_xml,
+  output : 'viewporter-client-protocol.h',
+  command : [wayland_scanner, 'client-header', '@INPUT@', '@OUTPUT@'])
+
+viewporter_c = custom_target('viewporter-code',
+  input : viewporter_xml,
+  output : 'viewporter-protocol.c',
+  command : [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'])
+
+fractional_scale_client_h = custom_target('fractional-scale-client-header',
+  input : fractional_scale_xml,
+  output : 'fractional-scale-v1-client-protocol.h',
+  command : [wayland_scanner, 'client-header', '@INPUT@', '@OUTPUT@'])
+
+fractional_scale_c = custom_target('fractional-scale-code',
+  input : fractional_scale_xml,
+  output : 'fractional-scale-v1-protocol.c',
   command : [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'])
 
 layer_shell_client_h = custom_target('layer-shell-client-header',

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "config.h"
 #include "transcode.h"
@@ -29,9 +30,17 @@ typedef struct owed_app {
     char loaded_path[4096];
     char loaded_kind[16];
 
+    /* The media that proved it plays, and the previous media captured when a
+     * new load starts. A video that never presents a frame falls back to it. */
+    char last_good_path[4096];
+    char last_good_kind[16];
+    char restore_path[4096];
+    char restore_kind[16];
+    bool media_pending;
+    int64_t media_deadline_ms;
+
     owed_async_job_t *job;
     char fail_path[4096];
-    int job_restarts;
     int render_paused; /* -1 unknown, 0 playing, 1 paused */
     unsigned long source_generation;
 } owed_app_t;

@@ -24,7 +24,7 @@ struct owe_mpv {
     char path[4096];
     bool has_video;
     bool paused;
-    bool first_frame;
+    bool ready;
     char error[256];
     int wakeup_pipe[2];
 };
@@ -58,6 +58,29 @@ static int set_opt(mpv_handle *h, const char *k, const char *v) {
         return -1;
     }
     return 0;
+}
+
+static void set_extra_options(mpv_handle *h) {
+    const char *extra = getenv("OWE_MPV_OPTIONS");
+    char *copy;
+    char *save = NULL;
+    char *token;
+    if (!extra || !*extra) {
+        return;
+    }
+    copy = strdup(extra);
+    if (!copy) {
+        return;
+    }
+    for (token = strtok_r(copy, ";", &save); token; token = strtok_r(NULL, ";", &save)) {
+        char *eq = strchr(token, '=');
+        if (!eq) {
+            continue;
+        }
+        *eq = '\0';
+        set_opt(h, token, eq + 1);
+    }
+    free(copy);
 }
 
 static void *get_proc_address(void *ctx, const char *name) {
@@ -110,6 +133,17 @@ struct owe_mpv *owe_mpv_new(struct owe_wayland *wl) {
     set_opt(m->handle, "config", "no");
     set_opt(m->handle, "terminal", "no");
     set_opt(m->handle, "osc", "no");
+    /* The wallpaper needs no lua scripts: ytdl_hook opens a network path,
+     * stats and console add threads and memory that never draw a frame. */
+    set_opt(m->handle, "load-scripts", "no");
+    set_opt(m->handle, "load-auto-profiles", "no");
+    set_opt(m->handle, "load-commands", "no");
+    set_opt(m->handle, "load-console", "no");
+    set_opt(m->handle, "load-context-menu", "no");
+    set_opt(m->handle, "load-positioning", "no");
+    set_opt(m->handle, "load-select", "no");
+    set_opt(m->handle, "load-stats-overlay", "no");
+    set_opt(m->handle, "ytdl", "no");
     set_opt(m->handle, "idle", "yes");
     /* Wallpapers loop a local file. No backward cache, small forward cache,
      * and a small decoder frame pool cut resident memory with no visual cost. */
@@ -119,6 +153,7 @@ struct owe_mpv *owe_mpv_new(struct owe_wayland *wl) {
     set_opt(m->handle, "hwdec-extra-frames", "3");
     /* There is no audio track and no A/V sync target. Drop the sync engine. */
     set_opt(m->handle, "video-sync", "desync");
+    set_extra_options(m->handle);
     if (mpv_initialize(m->handle) < 0) {
         OWE_ERROR("mpv_initialize failed");
         mpv_destroy(m->handle);
@@ -185,7 +220,7 @@ int owe_mpv_load(struct owe_mpv *m, const char *path) {
     snprintf(m->path, sizeof(m->path), "%s", path);
     m->error[0] = '\0';
     m->has_video = true;
-    m->first_frame = false;
+    m->ready = false;
     return 0;
 }
 
@@ -197,7 +232,7 @@ void owe_mpv_stop(struct owe_mpv *m) {
     mpv_command(m->handle, cmd);
     m->has_video = false;
     m->path[0] = '\0';
-    m->first_frame = false;
+    m->ready = false;
 }
 
 void owe_mpv_set_paused(struct owe_mpv *m, bool paused) {
@@ -217,6 +252,10 @@ bool owe_mpv_has_video(struct owe_mpv *m) {
 
 bool owe_mpv_is_paused(struct owe_mpv *m) {
     return m && m->paused;
+}
+
+bool owe_mpv_ready(struct owe_mpv *m) {
+    return m && m->ready;
 }
 
 const char *owe_mpv_path(struct owe_mpv *m) {
@@ -283,8 +322,7 @@ void owe_mpv_render_output(struct owe_mpv *m, struct owe_output *out) {
     if (owe_egl_prepare_output(app->egl, out) != 0) {
         return;
     }
-    w = out->width * (out->scale > 0 ? out->scale : 1);
-    h = out->height * (out->scale > 0 ? out->scale : 1);
+    owe_output_buffer_size(out, &w, &h);
     if (w <= 0 || h <= 0) {
         return;
     }
@@ -303,10 +341,7 @@ void owe_mpv_render_output(struct owe_mpv *m, struct owe_output *out) {
     if (mpv_render_context_render(m->ctx, params) < 0) {
         return;
     }
-    if (!m->first_frame) {
-        m->first_frame = true;
-        owe_app_emit_first_frame(m->path);
-    }
+    m->ready = true;
 }
 
 void owe_mpv_report_swap(struct owe_mpv *m) {

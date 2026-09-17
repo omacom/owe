@@ -108,7 +108,6 @@ void owed_power_free(struct owed_power *p) {
 }
 
 int owed_power_fd_system(struct owed_power *p) { return p && p->system ? sd_bus_get_fd(p->system) : -1; }
-int owed_power_fd_session(struct owed_power *p) { (void)p; return -1; }
 int owed_power_poll(struct owed_power *p) {
     if (p && p->system) while (sd_bus_process(p->system, NULL) > 0) {}
     return 0;

@@ -2,3 +2,4 @@ build/
 build-*/
 bench/baseline/
 *.o
+__pycache__/

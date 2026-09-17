@@ -23,6 +23,4 @@ typedef struct owe_app {
 owe_app_t *owe_app_get(void);
 
 void owe_app_request_render(void);
-void owe_app_emit_first_frame(const char *path);
-void owe_app_emit_error(const char *message);
 void owe_app_on_outputs_changed(void);

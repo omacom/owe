@@ -58,7 +58,28 @@ static void test_config_defaults(void) {
     CHECK(!cfg.battery_poster, "default no battery poster");
     CHECK(cfg.gif_fps == 20, "default gif fps");
     CHECK(cfg.gif_crf == 20, "default gif crf");
+    CHECK(cfg.cache_max_mb == 512, "default cache budget");
     CHECK(cfg.fade_ms == 250, "default fade");
+}
+
+static void test_config_multiline(void) {
+    char path[] = "/tmp/owe-config-multiline-XXXXXX";
+    int fd = mkstemp(path);
+    owe_config_t cfg;
+    FILE *f;
+    CHECK(fd >= 0, "mkstemp");
+    f = fdopen(fd, "w");
+    fprintf(f, "[pause]\nblocklist = [\n  \"obs\",\n  'steam',\n]\n"
+               "[transcode]\ncache_max_mb = 128\n"
+               "[unknown]\nkey = 1\n");
+    fclose(f);
+    owe_config_defaults(&cfg);
+    CHECK(owe_config_load(&cfg, path) == 0, "multiline config loads");
+    CHECK(cfg.blocklist_count == 2, "multiline blocklist count");
+    CHECK(strcmp(cfg.blocklist[0], "obs") == 0, "multiline blocklist 0");
+    CHECK(strcmp(cfg.blocklist[1], "steam") == 0, "multiline blocklist 1");
+    CHECK(cfg.cache_max_mb == 128, "cache budget parsed");
+    unlink(path);
 }
 
 static void test_config_load(void) {
@@ -92,6 +113,7 @@ int main(void) {
     test_trim();
     test_config_defaults();
     test_config_load();
+    test_config_multiline();
     if (failures == 0) {
         printf("all unit tests passed\n");
         return 0;

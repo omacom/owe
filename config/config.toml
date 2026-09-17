@@ -19,6 +19,9 @@ gif_crf = 20
 # GIF transcode max size. Larger GIFs scale down once at transcode time.
 max_width = 2560
 max_height = 1440
+# Cache budget for transcoded GIFs and posters, in MiB. The oldest files are
+# removed when the budget is exceeded. 0 disables eviction.
+cache_max_mb = 512
 
 [render]
 # Still to still fade in milliseconds. 0 disables the fade.

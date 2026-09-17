@@ -12,8 +12,13 @@ One `mpv_handle` plus one `mpv_render_context` with type
 `MPV_RENDER_API_TYPE_OPENGL` and `MPV_RENDER_PARAM_WL_DISPLAY`.
 One `zwlr_layer_surface_v1` per output on the background layer.
 Full anchor, `exclusive_zone=-1`, empty input region, namespace
-`owe-background`. The window buffer is sized `width*scale` by
-`height*scale` and the surface carries `buffer_scale=scale`.
+`owe-background`. When the compositor offers `wp_fractional_scale_v1`
+and `wp_viewporter`, the buffer is sized at the preferred fractional
+scale and the viewport maps it to the logical surface size. A 1.25
+scale output then renders 1.25x pixels, not the 2x that an integer
+`wl_output.scale` would ask for. Without those protocols the buffer is
+sized `width*scale` by `height*scale` and the surface carries
+`buffer_scale=scale`.
 
 `libmpv` options are forced in code. User `mpv.conf` never loads.
 `hwdec` defaults to `auto-safe` and `OWE_HWDEC` overrides it.
@@ -31,8 +36,12 @@ apply a cover crop in the fragment shader: the visible UV sub-rect is
 centered and scaled to fill the output without distortion.
 
 Stills decode once through `libavformat`, `libavcodec`, and `libswscale`.
-The RGBA output is capped to the largest output size.
+The RGBA output is decoded for the cover crop, not for the output bounds,
+so a portrait source keeps its detail when the shader crops the sides.
 The decoder rejects images above 64 million pixels.
+A still decodes on a worker thread and uploads its texture on the render
+thread, so a large image does not stall the control loop.
+When an output grows, the current still decodes again at the larger size.
 The renderer uploads one texture, presents the fade, and stops frame requests after the fully opaque final frame.
 
 Pause sets `pause` to `yes`. Decode stops, update callbacks stop,
@@ -62,8 +71,12 @@ Cache keys include the source path, size, nanosecond timestamps, conversion vers
 
 The daemon tracks what the renderer currently shows. A load is sent only
 when the target path or kind changes. Pause and resume are sent only on
-state transitions. The renderer child is reaped on `SIGCHLD` and
-restarted with the current media when it dies.
+state transitions. A video load reply means the renderer accepted the
+request, so the daemon polls the renderer status until the first frame
+presents. A video that fails to decode, or that never presents a frame
+within five seconds, falls back to the last media that proved it plays.
+The renderer child is reaped on `SIGCHLD` and restarted with the current
+media when it dies.
 Retry delays prevent a renderer failure from causing a rapid restart loop.
 
 ## IPC

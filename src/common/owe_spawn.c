@@ -71,7 +71,7 @@ int owe_spawn_capture_cancel(const char *file, char *const argv[], char *out,
     clock_gettime(CLOCK_MONOTONIC, &start);
     while (!exited) {
         struct pollfd pfd = { .fd = eof ? -1 : pipefd[0], .events = POLLIN };
-        int pr = poll(&pfd, 1, 100);
+        int pr = poll(&pfd, 1, 20);
         if (pr > 0 && (pfd.revents & (POLLIN | POLLHUP))) {
             char buf[4096];
             ssize_t n;

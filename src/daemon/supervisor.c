@@ -115,7 +115,7 @@ int owed_supervisor_ensure_running(struct owed_supervisor *s) {
     }
     s->restarts++;
     OWE_INFO("owe-render spawned pid=%d (restart #%d)", (int)s->child, s->restarts);
-    while (waited < 5000) {
+    while (waited < 1000) {
         if (waitpid(s->child, NULL, WNOHANG) == s->child) {
             s->child = 0;
             return -1;
@@ -129,15 +129,6 @@ int owed_supervisor_ensure_running(struct owed_supervisor *s) {
     OWE_ERROR("owe-render socket never appeared");
     owed_supervisor_stop(s);
     return -1;
-}
-
-int owed_supervisor_fd(struct owed_supervisor *s) {
-    (void)s;
-    return -1;
-}
-
-void owed_supervisor_on_child_exit(struct owed_supervisor *s) {
-    owed_supervisor_reap(s);
 }
 
 void owed_supervisor_reap(struct owed_supervisor *s) {
@@ -161,7 +152,7 @@ void owed_supervisor_stop(struct owed_supervisor *s) {
     kill(s->child, SIGTERM);
     {
         int waited = 0;
-        while (waited < 2000) {
+        while (waited < 1000) {
             pid_t w = waitpid(s->child, NULL, WNOHANG);
             if (w == s->child) {
                 break;
@@ -169,7 +160,7 @@ void owed_supervisor_stop(struct owed_supervisor *s) {
             usleep(50000);
             waited += 50;
         }
-        if (waited >= 2000) {
+        if (waited >= 1000) {
             kill(s->child, SIGKILL);
             waitpid(s->child, NULL, 0);
         }

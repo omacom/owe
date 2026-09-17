@@ -11,9 +11,14 @@ Compare each run against the local baseline.
 
 States sampled:
 
-- `video-playing` with `always-animate on`.
-- `policy-paused` with `always-animate off` and windows visible.
-- `manual-paused` after `owe pause`.
+- `playing` with `always-animate on` and a verified `always-animate` or `visible` reason.
+- `paused` after `owe pause`, with a verified `manual` reason.
+- `policy` only when a policy reason other than `visible`, `always-animate`, `manual`, or `resume` is active.
+- `still` when `OWE_BENCH_STILL` names a still image. The previous background is restored.
+
+Each state is sampled three times by default. The summary reports the
+minimum, median, and maximum for renderer and daemon CPU and the resident
+memory range. The initial pause and animation state is restored on exit.
 
 ## Budget
 

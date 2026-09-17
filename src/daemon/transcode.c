@@ -1,5 +1,6 @@
 #include "transcode.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -11,6 +12,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/eventfd.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "log.h"
@@ -43,6 +45,89 @@ static unsigned long fnv1a(const char *s) {
 bool owed_transcode_file_ready(const char *path) {
     struct stat st;
     return path && stat(path, &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0;
+}
+
+static int g_cache_max_mb = 512;
+
+void owed_transcode_set_cache_limit(int max_mb) {
+    g_cache_max_mb = max_mb;
+}
+
+struct cache_entry {
+    char path[PATH_MAX];
+    time_t mtime;
+    off_t size;
+};
+
+static int cache_entry_cmp(const void *a, const void *b) {
+    const struct cache_entry *left = a;
+    const struct cache_entry *right = b;
+    if (left->mtime < right->mtime) return -1;
+    if (left->mtime > right->mtime) return 1;
+    return 0;
+}
+
+/* Remove the oldest cache files until the budget is met. A limit of 0 or
+ * less disables eviction. */
+void owed_transcode_prune_cache(void) {
+    char dir[PATH_MAX];
+    DIR *handle;
+    struct dirent *entry;
+    struct cache_entry *files = NULL;
+    size_t count = 0;
+    size_t capacity = 0;
+    long long total = 0;
+    long long budget;
+    if (g_cache_max_mb <= 0) {
+        return;
+    }
+    if (owe_transcode_cache_dir(dir, sizeof(dir)) != 0) {
+        return;
+    }
+    handle = opendir(dir);
+    if (!handle) {
+        return;
+    }
+    while ((entry = readdir(handle))) {
+        char path[PATH_MAX];
+        struct stat st;
+        if (entry->d_name[0] == '.') {
+            continue;
+        }
+        if (snprintf(path, sizeof(path), "%s/%s", dir, entry->d_name) >= (int)sizeof(path)) {
+            continue;
+        }
+        if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) {
+            continue;
+        }
+        if (count == capacity) {
+            size_t next = capacity ? capacity * 2 : 32;
+            struct cache_entry *grown = realloc(files, next * sizeof(*files));
+            if (!grown) {
+                break;
+            }
+            files = grown;
+            capacity = next;
+        }
+        snprintf(files[count].path, sizeof(files[count].path), "%s", path);
+        files[count].mtime = st.st_mtime;
+        files[count].size = st.st_size;
+        total += st.st_size;
+        count++;
+    }
+    closedir(handle);
+    budget = (long long)g_cache_max_mb * 1024 * 1024;
+    if (total > budget && count > 0) {
+        size_t i;
+        qsort(files, count, sizeof(*files), cache_entry_cmp);
+        for (i = 0; i < count && total > budget; i++) {
+            if (unlink(files[i].path) == 0) {
+                total -= files[i].size;
+                OWE_INFO("cache pruned %s", files[i].path);
+            }
+        }
+    }
+    free(files);
 }
 
 static int gif_cache_path(const char *gif_path, int fps, int crf, int max_w, int max_h, char *out,
@@ -165,6 +250,7 @@ static int run_gif(const owed_async_job_t *job, char *out, unsigned long out_len
     }
     snprintf(out, out_len, "%s", cached);
     OWE_INFO("gif cached %s", cached);
+    owed_transcode_prune_cache();
     return 0;
 }
 
@@ -210,6 +296,7 @@ static int run_poster(const owed_async_job_t *job, char *out, unsigned long out_
         return -1;
     }
     snprintf(out, out_len, "%s", poster);
+    owed_transcode_prune_cache();
     return 0;
 }
 

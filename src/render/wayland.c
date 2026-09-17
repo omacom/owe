@@ -10,6 +10,8 @@
 #include "mpv.h"
 #include "render.h"
 #include "still.h"
+#include "fractional-scale-v1-client-protocol.h"
+#include "viewporter-client-protocol.h"
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
 
 struct owe_wayland {
@@ -17,13 +19,34 @@ struct owe_wayland {
     struct wl_registry *registry;
     struct wl_compositor *compositor;
     struct zwlr_layer_shell_v1 *layer_shell;
+    struct wp_viewporter *viewporter;
+    struct wp_fractional_scale_manager_v1 *fractional_scale;
     struct owe_egl *egl;
     owe_output_t *outputs;
     int output_count;
-    int roundtrip_done;
 };
 
 static void output_free(struct owe_wayland *wl, owe_output_t *out);
+
+void owe_output_buffer_size(const owe_output_t *out, int *w, int *h) {
+    int scale120 = out->scale > 0 ? out->scale * 120 : 120;
+    if (out->fractional && out->preferred_scale > 0) {
+        scale120 = out->preferred_scale;
+    }
+    if (w) {
+        *w = out->width > 0 ? (int)(((int64_t)out->width * scale120 + 119) / 120) : 0;
+    }
+    if (h) {
+        *h = out->height > 0 ? (int)(((int64_t)out->height * scale120 + 119) / 120) : 0;
+    }
+}
+
+static void output_update_size(owe_output_t *out) {
+    owe_output_buffer_size(out, &out->buffer_w, &out->buffer_h);
+    if (out->fractional && out->viewport && out->width > 0 && out->height > 0) {
+        wp_viewport_set_destination(out->viewport, out->width, out->height);
+    }
+}
 
 static void output_geometry(void *data, struct wl_output *wl_output, int32_t x, int32_t y,
                             int32_t physical_width, int32_t physical_height, int32_t subpixel,
@@ -61,13 +84,36 @@ static void output_scale(void *data, struct wl_output *wl_output, int32_t factor
     (void)wl_output;
     if (factor > 0 && factor != out->scale) {
         out->scale = factor;
+        OWE_INFO("output %s scale %d", out->name, factor);
+        if (out->fractional) {
+            return;
+        }
         if (out->surface) {
             wl_surface_set_buffer_scale(out->surface, factor);
         }
+        output_update_size(out);
         out->frame_pending = 1;
         owe_app_request_render();
     }
 }
+
+static void fractional_preferred_scale(void *data, struct wp_fractional_scale_v1 *fractional,
+                                       uint32_t scale) {
+    owe_output_t *out = data;
+    (void)fractional;
+    if (scale == 0 || (int32_t)scale == out->preferred_scale) {
+        return;
+    }
+    out->preferred_scale = (int32_t)scale;
+    output_update_size(out);
+    OWE_INFO("output %s preferred scale %d/120", out->name, out->preferred_scale);
+    out->frame_pending = 1;
+    owe_app_request_render();
+}
+
+static const struct wp_fractional_scale_v1_listener fractional_listener = {
+    .preferred_scale = fractional_preferred_scale,
+};
 
 static void output_name(void *data, struct wl_output *wl_output, const char *name) {
     owe_output_t *out = data;
@@ -101,6 +147,9 @@ static void layer_configure(void *data, struct zwlr_layer_surface_v1 *surface, u
     if (height > 0) {
         out->height = (int32_t)height;
     }
+    output_update_size(out);
+    OWE_DEBUG("layer configure %s %dx%d buffer %dx%d", out->name, out->width, out->height,
+              out->buffer_w, out->buffer_h);
     zwlr_layer_surface_v1_ack_configure(surface, serial);
     if (!out->configured) {
         out->configured = 1;
@@ -160,6 +209,16 @@ static owe_output_t *output_new(struct owe_wayland *wl, struct wl_output *wl_out
         return NULL;
     }
     wl_surface_set_buffer_scale(out->surface, out->scale > 0 ? out->scale : 1);
+    if (wl->viewporter) {
+        out->viewport = wp_viewporter_get_viewport(wl->viewporter, out->surface);
+    }
+    if (wl->fractional_scale) {
+        out->fractional =
+            wp_fractional_scale_manager_v1_get_fractional_scale(wl->fractional_scale, out->surface);
+        if (out->fractional) {
+            wp_fractional_scale_v1_add_listener(out->fractional, &fractional_listener, out);
+        }
+    }
     out->layer = zwlr_layer_shell_v1_get_layer_surface(wl->layer_shell, out->surface, wl_output,
                                                        ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND,
                                                        "owe-background");
@@ -211,6 +270,12 @@ static void output_free(struct owe_wayland *wl, owe_output_t *out) {
     owe_app_t *app = owe_app_get();
     owe_output_t **link;
     if (out->frame_callback) wl_callback_destroy(out->frame_callback);
+    if (out->fractional) {
+        wp_fractional_scale_v1_destroy(out->fractional);
+    }
+    if (out->viewport) {
+        wp_viewport_destroy(out->viewport);
+    }
     if (app && app->egl) {
         owe_egl_destroy_output(app->egl, out);
     }
@@ -243,6 +308,10 @@ static void registry_global(void *data, struct wl_registry *registry, uint32_t n
         wl->compositor = wl_registry_bind(registry, name, &wl_compositor_interface, 4);
     } else if (strcmp(interface, zwlr_layer_shell_v1_interface.name) == 0) {
         wl->layer_shell = wl_registry_bind(registry, name, &zwlr_layer_shell_v1_interface, 1);
+    } else if (strcmp(interface, wp_viewporter_interface.name) == 0) {
+        wl->viewporter = wl_registry_bind(registry, name, &wp_viewporter_interface, 1);
+    } else if (strcmp(interface, wp_fractional_scale_manager_v1_interface.name) == 0) {
+        wl->fractional_scale = wl_registry_bind(registry, name, &wp_fractional_scale_manager_v1_interface, 1);
     } else if (strcmp(interface, wl_output_interface.name) == 0) {
         struct wl_output *wo;
         uint32_t v = version >= 4 ? 4 : version;
@@ -314,6 +383,12 @@ void owe_wayland_destroy_outputs(struct owe_wayland *wl) {
 void owe_wayland_free(struct owe_wayland *wl) {
     if (!wl) return;
     owe_wayland_destroy_outputs(wl);
+    if (wl->fractional_scale) {
+        wp_fractional_scale_manager_v1_destroy(wl->fractional_scale);
+    }
+    if (wl->viewporter) {
+        wp_viewporter_destroy(wl->viewporter);
+    }
     if (wl->layer_shell) {
         zwlr_layer_shell_v1_destroy(wl->layer_shell);
     }
@@ -472,8 +547,8 @@ void owe_wayland_outputs_max_size(struct owe_wayland *wl, int *w, int *h) {
         return;
     }
     for (out = wl->outputs; out; out = out->next) {
-        int ow = out->width * (out->scale > 0 ? out->scale : 1);
-        int oh = out->height * (out->scale > 0 ? out->scale : 1);
+        int ow = out->buffer_w;
+        int oh = out->buffer_h;
         if (ow > mw) {
             mw = ow;
         }

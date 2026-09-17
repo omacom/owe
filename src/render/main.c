@@ -19,6 +19,8 @@
 
 static owe_app_t g_app;
 static int g_sigpipe[2];
+static int g_last_max_w = -1;
+static int g_last_max_h = -1;
 
 owe_app_t *owe_app_get(void) {
     return &g_app;
@@ -34,12 +36,10 @@ void owe_app_on_outputs_changed(void) {
     }
 }
 
-void owe_app_emit_first_frame(const char *path) {
-    owe_render_ipc_emit_first_frame(g_app.ipc, path ? path : "");
-}
-
-void owe_app_emit_error(const char *message) {
-    owe_render_ipc_emit_error(g_app.ipc, message ? message : "unknown error");
+static int fail_init(void) {
+    close(g_sigpipe[0]);
+    close(g_sigpipe[1]);
+    return 1;
 }
 
 static void on_signal(int sig) {
@@ -111,13 +111,13 @@ int main(int argc, char **argv) {
     g_app.wl = owe_wayland_new();
     if (!g_app.wl) {
         OWE_ERROR("wayland init failed");
-        return 1;
+        return fail_init();
     }
     g_app.egl = owe_egl_new(g_app.wl);
     if (!g_app.egl) {
         OWE_ERROR("egl init failed");
         owe_wayland_free(g_app.wl);
-        return 1;
+        return fail_init();
     }
     owe_wayland_set_egl(g_app.wl, g_app.egl);
     owe_app_on_outputs_changed();
@@ -125,32 +125,44 @@ int main(int argc, char **argv) {
     if (!g_app.mpv) {
         OWE_ERROR("libmpv init failed");
         cleanup();
-        return 1;
+        return fail_init();
     }
     g_app.still = owe_still_new(g_app.wl, g_app.egl);
     if (!g_app.still) {
         OWE_ERROR("still init failed");
         cleanup();
-        return 1;
+        return fail_init();
     }
     g_app.ipc = owe_render_ipc_new(socket_path);
     if (!g_app.ipc) {
         OWE_ERROR("ipc init failed");
         cleanup();
-        return 1;
+        return fail_init();
     }
 
     OWE_INFO("ready, socket=%s", socket_path);
 
     while (g_app.running) {
+        int max_w = 0;
+        int max_h = 0;
         if (owe_wayland_dispatch_pending(g_app.wl) < 0) break;
         owe_wayland_render_pending(g_app.wl);
+        owe_wayland_outputs_max_size(g_app.wl, &max_w, &max_h);
+        if (max_w != g_last_max_w || max_h != g_last_max_h) {
+            g_last_max_w = max_w;
+            g_last_max_h = max_h;
+            /* A still texture is cut for the output that decoded it. Give a
+             * larger output the extra detail. */
+            owe_render_ipc_reload_still(g_app.ipc);
+        }
         int wlfd = owe_wayland_fd(g_app.wl);
         int ipcfd = owe_render_ipc_fd(g_app.ipc);
         int mpvfd = owe_mpv_fd(g_app.mpv);
-        struct pollfd pfds[4 + OWE_IPC_MAX_CLIENTS];
+        int stillfd = owe_still_fd(g_app.still);
+        struct pollfd pfds[5 + OWE_IPC_MAX_CLIENTS];
         int n = 0;
         int rc;
+        bool mpv_ready = false;
         pfds[n].fd = g_sigpipe[0];
         pfds[n].events = POLLIN;
         n++;
@@ -169,8 +181,13 @@ int main(int argc, char **argv) {
             pfds[n].events = POLLIN;
             n++;
         }
+        if (stillfd >= 0) {
+            pfds[n].fd = stillfd;
+            pfds[n].events = POLLIN;
+            n++;
+        }
         n += owe_render_ipc_pollfds(g_app.ipc, &pfds[n]);
-        rc = poll(pfds, (nfds_t)n, 1000);
+        rc = poll(pfds, (nfds_t)n, owe_still_busy(g_app.still) ? 200 : 1000);
         if (rc < 0) {
             if (errno == EINTR) {
                 continue;
@@ -196,15 +213,14 @@ int main(int argc, char **argv) {
             } else if (pfds[i].fd == ipcfd) {
                 owe_render_ipc_accept(g_app.ipc);
             } else if (pfds[i].fd == mpvfd) {
-                if (owe_mpv_process_updates(g_app.mpv)) {
-                    owe_app_request_render();
-                }
+                mpv_ready = true;
             }
         }
         if (!g_app.running) break;
         owe_render_ipc_poll_clients(g_app.ipc);
+        owe_render_ipc_poll_still(g_app.ipc);
         owe_wayland_render_pending(g_app.wl);
-        if (mpvfd >= 0 && owe_mpv_process_updates(g_app.mpv)) {
+        if (mpvfd >= 0 && mpv_ready && owe_mpv_process_updates(g_app.mpv)) {
             owe_app_request_render();
             owe_wayland_render_pending(g_app.wl);
         }

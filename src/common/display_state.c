@@ -49,13 +49,11 @@ static bool flag(yyjson_val *value) {
     return yyjson_is_bool(value) ? yyjson_get_bool(value) : yyjson_get_int(value) != 0;
 }
 
-bool owe_outputs_covered(const char *clients, const char *monitors, bool fullscreen_only) {
-    yyjson_doc *c = clients ? yyjson_read(clients, strlen(clients), 0) : NULL;
-    yyjson_doc *m = monitors ? yyjson_read(monitors, strlen(monitors), 0) : NULL;
+bool owe_outputs_covered_docs(yyjson_doc *c, yyjson_doc *m, bool fullscreen_only) {
     yyjson_val *cr = c ? yyjson_doc_get_root(c) : NULL;
     yyjson_val *mr = m ? yyjson_doc_get_root(m) : NULL;
     bool covered = false;
-    if (!yyjson_is_arr(cr) || !yyjson_is_arr(mr)) goto done;
+    if (!yyjson_is_arr(cr) || !yyjson_is_arr(mr)) return false;
     size_t i, imax, j, jmax;
     yyjson_val *monitor, *client;
     yyjson_arr_foreach(mr, i, imax, monitor) {
@@ -64,7 +62,7 @@ bool owe_outputs_covered(const char *clients, const char *monitors, bool fullscr
         if (dpms && !flag(dpms)) continue;
         yyjson_val *active = yyjson_obj_get(yyjson_obj_get(monitor, "activeWorkspace"), "id");
         yyjson_val *special = yyjson_obj_get(yyjson_obj_get(monitor, "specialWorkspace"), "id");
-        if (!yyjson_is_int(active)) { covered = false; goto done; }
+        if (!yyjson_is_int(active)) { covered = false; return false; }
         bool here = false;
         yyjson_arr_foreach(cr, j, jmax, client) {
             if (flag(yyjson_obj_get(client, "hidden"))) continue;
@@ -79,10 +77,16 @@ bool owe_outputs_covered(const char *clients, const char *monitors, bool fullscr
             here = true;
             break;
         }
-        if (!here) { covered = false; goto done; }
+        if (!here) { covered = false; return false; }
         covered = true;
     }
-done:
+    return covered;
+}
+
+bool owe_outputs_covered(const char *clients, const char *monitors, bool fullscreen_only) {
+    yyjson_doc *c = clients ? yyjson_read(clients, strlen(clients), 0) : NULL;
+    yyjson_doc *m = monitors ? yyjson_read(monitors, strlen(monitors), 0) : NULL;
+    bool covered = owe_outputs_covered_docs(c, m, fullscreen_only);
     yyjson_doc_free(c);
     yyjson_doc_free(m);
     return covered;

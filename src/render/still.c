@@ -1,8 +1,13 @@
 #include "still.h"
 
+#include <errno.h>
+#include <fcntl.h>
+#include <pthread.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
@@ -14,15 +19,31 @@
 #include "render.h"
 #include "wayland.h"
 
+struct still_job {
+    pthread_t thread;
+    int done_fd[2];
+    char path[4096];
+    int max_w;
+    int max_h;
+    uint8_t *rgba;
+    int w;
+    int h;
+    int rc;
+    int ready;
+};
+
 struct owe_still {
     struct owe_wayland *wl;
     struct owe_egl *egl;
     unsigned int tex;
     int tex_w;
     int tex_h;
+    int max_w;
+    int max_h;
     char path[4096];
     int fade_ms;
     struct timespec loaded_at;
+    struct still_job *job;
 };
 
 static long elapsed_ms(const struct timespec *a, const struct timespec *b) {
@@ -102,18 +123,33 @@ static int decode_first_frame(const char *path, int max_w, int max_h, uint8_t **
     if (!frame || !rgb || !pkt) {
         goto done;
     }
-    while (av_read_frame(fmt, pkt) >= 0) {
+    for (;;) {
+        int read_rc = av_read_frame(fmt, pkt);
+        int send_rc;
+        if (read_rc < 0) {
+            break;
+        }
         if (pkt->stream_index != video_stream) {
             av_packet_unref(pkt);
             continue;
         }
-        if (avcodec_send_packet(dec, pkt) < 0) {
-            av_packet_unref(pkt);
+        send_rc = avcodec_send_packet(dec, pkt);
+        av_packet_unref(pkt);
+        if (send_rc == AVERROR(EAGAIN)) {
+            continue;
+        }
+        if (send_rc < 0) {
             break;
         }
-        av_packet_unref(pkt);
         if (avcodec_receive_frame(dec, frame) == 0) {
             break;
+        }
+    }
+    if (frame->width <= 0 || frame->height <= 0) {
+        /* PNG, AVIF, and other delayed decoders hold the frame until the
+         * decoder is flushed with a NULL packet. */
+        if (avcodec_send_packet(dec, NULL) == 0) {
+            avcodec_receive_frame(dec, frame);
         }
     }
     if (frame->width <= 0 || frame->height <= 0) {
@@ -123,9 +159,16 @@ static int decode_first_frame(const char *path, int max_w, int max_h, uint8_t **
         int tw = frame->width;
         int th = frame->height;
         if (max_w > 0 && max_h > 0 && (tw > max_w || th > max_h)) {
+            /* Decode for the cover crop, not for the output bounds. The shader
+             * crops the center to cover, so the visible region needs output
+             * resolution even when one source dimension is larger than the
+             * output. */
             double sx = (double)max_w / (double)tw;
             double sy = (double)max_h / (double)th;
-            double s = sx < sy ? sx : sy;
+            double s = sx > sy ? sx : sy;
+            if (s > 1.0) {
+                s = 1.0;
+            }
             tw = (int)(tw * s);
             th = (int)(th * s);
             if (tw < 1) {
@@ -189,59 +232,158 @@ done:
     return rc;
 }
 
-int owe_still_load(struct owe_still *s, const char *path) {
-    uint8_t *rgba = NULL;
-    int w = 0;
-    int h = 0;
-    unsigned int tex;
-    owe_output_t *outs;
+static void *still_job_main(void *arg) {
+    struct still_job *job = arg;
+    job->rc = decode_first_frame(job->path, job->max_w, job->max_h, &job->rgba, &job->w, &job->h);
+    {
+        char c = 'x';
+        ssize_t n = write(job->done_fd[1], &c, 1);
+        (void)n;
+    }
+    return NULL;
+}
+
+static void still_job_release(struct owe_still *s) {
+    if (!s->job) {
+        return;
+    }
+    close(s->job->done_fd[0]);
+    close(s->job->done_fd[1]);
+    free(s->job->rgba);
+    free(s->job);
+    s->job = NULL;
+}
+
+static void still_job_join(struct owe_still *s) {
+    if (!s->job) {
+        return;
+    }
+    pthread_join(s->job->thread, NULL);
+    still_job_release(s);
+}
+
+int owe_still_start(struct owe_still *s, const char *path, int max_w, int max_h) {
+    struct still_job *job;
     if (!s || !path || !*path) {
         return -1;
     }
-    {
-        int max_w = 0;
-        int max_h = 0;
-        owe_wayland_outputs_max_size(s->wl, &max_w, &max_h);
-        if (decode_first_frame(path, max_w > 0 ? max_w : 4096, max_h > 0 ? max_h : 4096, &rgba, &w,
-                               &h) != 0 ||
-            !rgba) {
-            OWE_ERROR("still decode failed: %s", path);
+    if (s->job) {
+        /* A decode cannot be interrupted, so wait for the finished frame
+         * before replacing the request. The event loop only blocks for the
+         * remainder of that one decode. */
+        still_job_join(s);
+    }
+    job = calloc(1, sizeof(*job));
+    if (!job) {
+        return -1;
+    }
+    if (pipe2(job->done_fd, O_CLOEXEC | O_NONBLOCK) != 0) {
+        free(job);
+        return -1;
+    }
+    snprintf(job->path, sizeof(job->path), "%s", path);
+    job->max_w = max_w;
+    job->max_h = max_h;
+    if (pthread_create(&job->thread, NULL, still_job_main, job) != 0) {
+        close(job->done_fd[0]);
+        close(job->done_fd[1]);
+        free(job);
+        return -1;
+    }
+    s->job = job;
+    return 0;
+}
+
+int owe_still_fd(struct owe_still *s) {
+    return s && s->job ? s->job->done_fd[0] : -1;
+}
+
+bool owe_still_busy(struct owe_still *s) {
+    return s && s->job != NULL;
+}
+
+int owe_still_decoded_max(struct owe_still *s, int *w, int *h) {
+    if (!s) {
+        return -1;
+    }
+    if (w) {
+        *w = s->max_w;
+    }
+    if (h) {
+        *h = s->max_h;
+    }
+    return 0;
+}
+
+void owe_still_cancel(struct owe_still *s) {
+    if (s) {
+        still_job_join(s);
+    }
+}
+
+int owe_still_poll(struct owe_still *s) {
+    struct still_job *job;
+    owe_output_t *outs;
+    unsigned int tex;
+    if (!s || !s->job) {
+        return 0;
+    }
+    job = s->job;
+    if (!job->ready) {
+        char c;
+        ssize_t n = read(job->done_fd[0], &c, 1);
+        if (n < 0) {
+            if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+                return 0;
+            }
+            OWE_ERROR("still job read failed");
+            still_job_join(s);
             return -1;
         }
+        pthread_join(job->thread, NULL);
+        if (job->rc != 0 || !job->rgba) {
+            OWE_ERROR("still decode failed: %s", job->path);
+            still_job_release(s);
+            return -1;
+        }
+        job->ready = 1;
     }
     outs = owe_wayland_outputs(s->wl);
     if (!outs || !outs->egl_surface) {
-        free(rgba);
-        OWE_ERROR("no output for still upload");
-        return -1;
+        /* Keep the decoded frame until an output can take the upload. */
+        return 0;
     }
     if (owe_egl_prepare_output(s->egl, outs) != 0) {
-        free(rgba);
+        still_job_release(s);
         return -1;
     }
-    tex = owe_egl_tex_from_rgba(s->egl, rgba, w, h);
-    free(rgba);
+    tex = owe_egl_tex_from_rgba(s->egl, job->rgba, job->w, job->h);
     if (!tex) {
         OWE_ERROR("still texture upload failed");
+        still_job_release(s);
         return -1;
     }
     if (s->tex) {
         owe_egl_tex_free(s->egl, s->tex);
     }
     s->tex = tex;
-    s->tex_w = w;
-    s->tex_h = h;
-    snprintf(s->path, sizeof(s->path), "%s", path);
+    s->tex_w = job->w;
+    s->tex_h = job->h;
+    s->max_w = job->max_w;
+    s->max_h = job->max_h;
+    snprintf(s->path, sizeof(s->path), "%s", job->path);
     clock_gettime(CLOCK_MONOTONIC, &s->loaded_at);
+    OWE_INFO("still loaded %s (%dx%d)", s->path, s->tex_w, s->tex_h);
+    still_job_release(s);
     owe_app_request_render();
-    OWE_INFO("still loaded %s (%dx%d)", path, w, h);
-    return 0;
+    return 1;
 }
 
 void owe_still_unload(struct owe_still *s) {
     if (!s) {
         return;
     }
+    owe_still_cancel(s);
     if (s->tex && s->egl) {
         if (owe_egl_make_current(s->egl) == 0) owe_egl_tex_free(s->egl, s->tex);
     }

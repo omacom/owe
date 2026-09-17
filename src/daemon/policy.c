@@ -14,6 +14,7 @@ struct owed_policy {
     char reason[128];
     bool blocklisted;
     bool manual_pause;
+    bool idle_pause;
 };
 
 struct owed_policy *owed_policy_new(void) {
@@ -52,6 +53,11 @@ void owed_policy_recompute(struct owed_policy *p) {
     }
     if (app->always_animate) {
         reason = "always-animate";
+        goto done;
+    }
+    if (p->idle_pause) {
+        pause = true;
+        reason = "idle";
         goto done;
     }
     if (app->power && owed_power_locked(app->power)) {
@@ -123,4 +129,14 @@ void owed_policy_set_manual_pause(struct owed_policy *p, bool paused) {
 
 bool owed_policy_manual_pause(struct owed_policy *p) {
     return p && p->manual_pause;
+}
+
+void owed_policy_set_idle_pause(struct owed_policy *p, bool paused) {
+    if (p) {
+        p->idle_pause = paused;
+    }
+}
+
+bool owed_policy_idle_pause(struct owed_policy *p) {
+    return p && p->idle_pause;
 }

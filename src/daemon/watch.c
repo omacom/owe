@@ -16,16 +16,25 @@
 int owed_watch_set_current(const char *path) {
     char resolved[PATH_MAX], link[PATH_MAX], tmp[PATH_MAX + 32];
     struct stat st;
+    int attempt;
     if (!path || !realpath(path, resolved) || stat(resolved, &st) != 0 ||
         !S_ISREG(st.st_mode) || access(resolved, R_OK) != 0 ||
         owe_kind_from_path(resolved) == OWE_KIND_UNKNOWN) return -1;
     if (owe_omarchy_background_link(link, sizeof(link)) != 0) return -1;
-    snprintf(tmp, sizeof(tmp), "%s.owe-XXXXXX", link);
-    int fd = mkstemp(tmp);
-    if (fd < 0) return -1;
-    close(fd);
-    unlink(tmp);
-    if (symlink(resolved, tmp) != 0) return -1;
+    /* Create the symlink at a unique name first, then rename it over the
+     * link. A file created in between is never published. */
+    for (attempt = 0; attempt < 16; attempt++) {
+        snprintf(tmp, sizeof(tmp), "%s.owe-%d-%d", link, (int)getpid(), attempt);
+        if (symlink(resolved, tmp) == 0) {
+            break;
+        }
+        if (errno != EEXIST) {
+            return -1;
+        }
+    }
+    if (attempt == 16) {
+        return -1;
+    }
     if (rename(tmp, link) != 0) {
         unlink(tmp);
         return -1;

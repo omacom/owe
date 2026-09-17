@@ -4,9 +4,11 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <poll.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "yyjson.h"
@@ -23,18 +25,28 @@
 #include "xdg.h"
 
 #define MAX_CLIENTS OWE_IPC_MAX_CLIENTS
+#define CLIENT_IDLE_MS 120000
 
 struct owe_client {
     int fd;
     char buf[OWE_IPC_MAX_LINE];
     size_t len;
+    int64_t active_ms;
 };
 
 struct owe_render_ipc {
     owe_ipc_server_t *srv;
     char path[PATH_MAX];
     struct owe_client clients[MAX_CLIENTS];
+    int pending_client;
+    char pending_path[4096];
 };
+
+static int64_t now_ms(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+}
 
 static void client_remove(struct owe_render_ipc *ipc, int idx) {
     if (ipc->clients[idx].fd >= 0) {
@@ -42,6 +54,7 @@ static void client_remove(struct owe_render_ipc *ipc, int idx) {
     }
     ipc->clients[idx].fd = -1;
     ipc->clients[idx].len = 0;
+    ipc->clients[idx].active_ms = 0;
 }
 
 static void client_send(struct owe_client *c, const char *line) {
@@ -78,10 +91,12 @@ static void handle_status(struct owe_client *c) {
         owe_wayland_outputs_max_size(app->wl, &mw, &mh);
     }
     if (asprintf(&line,
-             "{\"status\":\"ok\",\"path\":%s,\"kind\":\"%s\",\"paused\":%s,\"outputs\":%d,"
+             "{\"status\":\"ok\",\"path\":%s,\"kind\":\"%s\",\"paused\":%s,\"ready\":%s,\"outputs\":%d,"
              "\"max_width\":%d,\"max_height\":%d,\"has_video\":%s,\"has_still\":%s,\"time_pos\":%.3f,\"hwdec\":\"%s\",\"error\":%s}",
              path, app ? app->current_kind : "",
-             app && app->paused ? "true" : "false", app && app->wl ? owe_wayland_output_count(app->wl) : 0,
+             app && app->paused ? "true" : "false",
+             app && app->mpv && owe_mpv_ready(app->mpv) ? "true" : "false",
+             app && app->wl ? owe_wayland_output_count(app->wl) : 0,
              mw, mh, app && app->mpv && owe_mpv_has_video(app->mpv) ? "true" : "false",
              app && app->still && owe_still_has_image(app->still) ? "true" : "false",
              app && app->mpv ? owe_mpv_time_pos(app->mpv) : -1.0,
@@ -92,7 +107,22 @@ static void handle_status(struct owe_client *c) {
     free(error);
 }
 
-static void handle_load(struct owe_client *c, yyjson_val *root) {
+static void pending_reply(struct owe_render_ipc *ipc, int ok, const char *message) {
+    if (ipc->pending_client < 0) {
+        return;
+    }
+    if (ipc->clients[ipc->pending_client].fd >= 0) {
+        if (ok) {
+            send_ok(&ipc->clients[ipc->pending_client], NULL);
+        } else {
+            send_err(&ipc->clients[ipc->pending_client], message);
+        }
+    }
+    ipc->pending_client = -1;
+    ipc->pending_path[0] = '\0';
+}
+
+static void handle_load(struct owe_render_ipc *ipc, struct owe_client *c, yyjson_val *root) {
     owe_app_t *app = owe_app_get();
     yyjson_val *vpath;
     yyjson_val *vkind;
@@ -118,6 +148,7 @@ static void handle_load(struct owe_client *c, yyjson_val *root) {
             return;
         }
         owe_still_unload(app->still);
+        pending_reply(ipc, 0, "load superseded");
         owe_mpv_set_paused(app->mpv, app->paused);
         snprintf(app->current_path, sizeof(app->current_path), "%s", path);
         snprintf(app->current_kind, sizeof(app->current_kind), "video");
@@ -125,14 +156,16 @@ static void handle_load(struct owe_client *c, yyjson_val *root) {
         return;
     }
     if (strcmp(kind, "still") == 0) {
-        if (owe_still_load(app->still, path) != 0) {
+        int max_w = 0;
+        int max_h = 0;
+        owe_wayland_outputs_max_size(app->wl, &max_w, &max_h);
+        if (owe_still_start(app->still, path, max_w > 0 ? max_w : 4096,
+                            max_h > 0 ? max_h : 4096) != 0) {
             send_err(c, "still load failed");
             return;
         }
-        owe_mpv_stop(app->mpv);
-        snprintf(app->current_path, sizeof(app->current_path), "%s", path);
-        snprintf(app->current_kind, sizeof(app->current_kind), "still");
-        send_ok(c, NULL);
+        ipc->pending_client = (int)(c - ipc->clients);
+        snprintf(ipc->pending_path, sizeof(ipc->pending_path), "%s", path);
         return;
     }
     send_err(c, "unknown kind");
@@ -157,7 +190,7 @@ static void handle_command(struct owe_render_ipc *ipc, struct owe_client *c, con
     if (strcmp(cmd, "hello") == 0) {
         send_ok(c, "\"version\":1");
     } else if (strcmp(cmd, "load") == 0) {
-        handle_load(c, root);
+        handle_load(ipc, c, root);
     } else if (strcmp(cmd, "pause") == 0) {
         if (app) {
             app->paused = true;
@@ -179,6 +212,7 @@ static void handle_command(struct owe_render_ipc *ipc, struct owe_client *c, con
             app->current_kind[0] = '\0';
             owe_app_request_render();
         }
+        pending_reply(ipc, 0, "load cancelled");
         send_ok(c, NULL);
     } else if (strcmp(cmd, "status") == 0) {
         handle_status(c);
@@ -226,6 +260,7 @@ struct owe_render_ipc *owe_render_ipc_new(const char *socket_path) {
     for (i = 0; i < MAX_CLIENTS; i++) {
         ipc->clients[i].fd = -1;
     }
+    ipc->pending_client = -1;
     fcntl(owe_ipc_server_fd(ipc->srv), F_SETFL, O_NONBLOCK);
     return ipc;
 }
@@ -266,6 +301,7 @@ void owe_render_ipc_accept(struct owe_render_ipc *ipc) {
             if (ipc->clients[i].fd < 0) {
                 ipc->clients[i].fd = fd;
                 ipc->clients[i].len = 0;
+                ipc->clients[i].active_ms = now_ms();
                 break;
             }
         }
@@ -287,6 +323,10 @@ void owe_render_ipc_poll_clients(struct owe_render_ipc *ipc) {
         if (c->fd < 0) {
             continue;
         }
+        if (c->len == 0 && now_ms() - c->active_ms > CLIENT_IDLE_MS) {
+            client_remove(ipc, i);
+            continue;
+        }
         n = recv(c->fd, c->buf + c->len, sizeof(c->buf) - c->len - 1, 0);
         if (n == 0) {
             client_remove(ipc, i);
@@ -305,6 +345,7 @@ void owe_render_ipc_poll_clients(struct owe_render_ipc *ipc) {
         }
         c->len += (size_t)n;
         c->buf[c->len] = '\0';
+        c->active_ms = now_ms();
         while ((nl = strchr(c->buf, '\n')) != NULL) {
             *nl = '\0';
             if (nl > c->buf && nl[-1] == '\r') {
@@ -325,19 +366,53 @@ void owe_render_ipc_poll_clients(struct owe_render_ipc *ipc) {
     }
 }
 
-static void broadcast(struct owe_render_ipc *ipc, const char *line) {
-    (void)ipc;
-    (void)line;
+/* Poll the asynchronous still decode. A finished frame is uploaded here, on
+ * the thread that owns the GL context. */
+void owe_render_ipc_poll_still(struct owe_render_ipc *ipc) {
+    owe_app_t *app = owe_app_get();
+    int rc;
+    if (!ipc || !app || !app->still) {
+        return;
+    }
+    if (!owe_still_busy(app->still) && ipc->pending_client < 0) {
+        return;
+    }
+    rc = owe_still_poll(app->still);
+    if (rc == 0) {
+        return;
+    }
+    if (rc > 0) {
+        owe_mpv_stop(app->mpv);
+        snprintf(app->current_path, sizeof(app->current_path), "%s", ipc->pending_path);
+        snprintf(app->current_kind, sizeof(app->current_kind), "still");
+        pending_reply(ipc, 1, NULL);
+    } else {
+        pending_reply(ipc, 0, "still load failed");
+    }
 }
 
-void owe_render_ipc_emit_first_frame(struct owe_render_ipc *ipc, const char *path) {
-    char line[8192];
-    snprintf(line, sizeof(line), "{\"event\":\"first-frame\",\"path\":\"%s\"}", path ? path : "");
-    broadcast(ipc, line);
-}
-
-void owe_render_ipc_emit_error(struct owe_render_ipc *ipc, const char *message) {
-    char line[2048];
-    snprintf(line, sizeof(line), "{\"event\":\"error\",\"message\":\"%s\"}", message ? message : "");
-    broadcast(ipc, line);
+/* Re-decode the current still when the outputs grew. The texture was cut for
+ * the previous output size, and a larger output needs the extra detail. */
+void owe_render_ipc_reload_still(struct owe_render_ipc *ipc) {
+    owe_app_t *app = owe_app_get();
+    int max_w = 0;
+    int max_h = 0;
+    int old_w = 0;
+    int old_h = 0;
+    if (!ipc || !app || !app->still) {
+        return;
+    }
+    if (!owe_still_has_image(app->still) || owe_still_busy(app->still)) {
+        return;
+    }
+    owe_wayland_outputs_max_size(app->wl, &max_w, &max_h);
+    owe_still_decoded_max(app->still, &old_w, &old_h);
+    if (max_w <= 0 || max_h <= 0 || (max_w <= old_w && max_h <= old_h)) {
+        return;
+    }
+    if (owe_still_start(app->still, owe_still_path(app->still), max_w, max_h) != 0) {
+        return;
+    }
+    ipc->pending_client = -1;
+    snprintf(ipc->pending_path, sizeof(ipc->pending_path), "%s", owe_still_path(app->still));
 }
