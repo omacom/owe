@@ -7,17 +7,17 @@ PREFIX="${HOME}/.local"
 SHELL_JSON="${HOME}/.config/omarchy/shell.json"
 BACKUP="${SHELL_JSON}.bak.owe.$(date +%s)"
 
-need() {
-  command -v "$1" >/dev/null 2>&1 || { echo "missing: $1" >&2; exit 1; }
-}
-
-need meson
-need ninja
-need gcc
-need pkg-config
-need ffmpeg
-need socat
-need python3
+missing=()
+for command in meson ninja gcc pkg-config ffmpeg socat python3; do
+  command -v "$command" >/dev/null 2>&1 || missing+=("$command")
+done
+if ((${#missing[@]})); then
+  printf 'missing: %s\n' "${missing[@]}" >&2
+  printf '%s\n' \
+    'On Omarchy, install the prerequisites with:' \
+    '  omarchy pkg add meson ninja gcc pkgconf wayland wayland-protocols libglvnd libepoxy mpv ffmpeg systemd-libs socat python' >&2
+  exit 1
+fi
 
 echo "==> build"
 meson setup --reconfigure "${ROOT}/build" "${ROOT}" >/dev/null 2>&1 || meson setup "${ROOT}/build" "${ROOT}"
