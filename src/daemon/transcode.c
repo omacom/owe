@@ -4,10 +4,13 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <pthread.h>
+#include <stdatomic.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/eventfd.h>
 #include <unistd.h>
 
 #include "log.h"
@@ -16,8 +19,10 @@
 
 struct owed_async_job {
     pthread_t thread;
-    int read_fd;
-    int write_fd;
+    int event_fd;
+    bool joined;
+    atomic_bool cancel;
+    struct owed_async_result result;
     char input[PATH_MAX];
     int is_gif;
     int fps;
@@ -37,13 +42,13 @@ static unsigned long fnv1a(const char *s) {
 
 bool owed_transcode_file_ready(const char *path) {
     struct stat st;
-    return path && stat(path, &st) == 0 && st.st_size > 0;
+    return path && stat(path, &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0;
 }
 
 static int gif_cache_path(const char *gif_path, int fps, int crf, int max_w, int max_h, char *out,
                           unsigned long out_len) {
     char dir[PATH_MAX];
-    char key[PATH_MAX + 64];
+    char key[PATH_MAX + 256];
     struct stat st;
     if (owe_transcode_cache_dir(dir, sizeof(dir)) != 0) {
         return -1;
@@ -54,15 +59,15 @@ static int gif_cache_path(const char *gif_path, int fps, int crf, int max_w, int
     if (stat(gif_path, &st) != 0) {
         return -1;
     }
-    snprintf(key, sizeof(key), "%s|%lld|%lld|%d|%d|%d|%d", gif_path, (long long)st.st_size,
-             (long long)st.st_mtime, fps, crf, max_w, max_h);
-    snprintf(out, out_len, "%s/%016lx.mp4", dir, fnv1a(key));
-    return 0;
+    snprintf(key, sizeof(key), "gif-v2|%s|%lld|%lld|%ld|%lld|%ld|%d|%d|%d|%d", gif_path,
+             (long long)st.st_size, (long long)st.st_mtim.tv_sec, st.st_mtim.tv_nsec,
+             (long long)st.st_ctim.tv_sec, st.st_ctim.tv_nsec, fps, crf, max_w, max_h);
+    return snprintf(out, out_len, "%s/%016lx.mp4", dir, fnv1a(key)) < (int)out_len ? 0 : -1;
 }
 
 static int poster_cache_path(const char *video_path, char *out, unsigned long out_len) {
     char dir[PATH_MAX];
-    char key[PATH_MAX + 32];
+    char key[PATH_MAX + 256];
     struct stat st;
     if (owe_transcode_cache_dir(dir, sizeof(dir)) != 0) {
         return -1;
@@ -73,9 +78,17 @@ static int poster_cache_path(const char *video_path, char *out, unsigned long ou
     if (stat(video_path, &st) != 0) {
         return -1;
     }
-    snprintf(key, sizeof(key), "poster|%s|%lld|%lld", video_path, (long long)st.st_size,
-             (long long)st.st_mtime);
-    snprintf(out, out_len, "%s/poster-%016lx.png", dir, fnv1a(key));
+    snprintf(key, sizeof(key), "poster-v2|%s|%lld|%lld|%ld|%lld|%ld", video_path,
+             (long long)st.st_size, (long long)st.st_mtim.tv_sec, st.st_mtim.tv_nsec,
+             (long long)st.st_ctim.tv_sec, st.st_ctim.tv_nsec);
+    return snprintf(out, out_len, "%s/poster-%016lx.png", dir, fnv1a(key)) < (int)out_len ? 0 : -1;
+}
+
+static int temp_output(const char *target, const char *suffix, char *tmp, size_t len) {
+    if (snprintf(tmp, len, "%s.part-XXXXXX%s", target, suffix) >= (int)len) return -1;
+    int fd = mkstemps(tmp, (int)strlen(suffix));
+    if (fd < 0) return -1;
+    close(fd);
     return 0;
 }
 
@@ -90,6 +103,7 @@ int owed_transcode_poster_path(const char *video_path, char *out_png, unsigned l
 
 static int run_gif(const owed_async_job_t *job, char *out, unsigned long out_len) {
     char cached[PATH_MAX];
+    char tmp[PATH_MAX + 32];
     char vf[256];
     char fps_s[16];
     char crf_s[16];
@@ -106,20 +120,25 @@ static int run_gif(const owed_async_job_t *job, char *out, unsigned long out_len
     snprintf(fps_s, sizeof(fps_s), "%d", job->fps);
     snprintf(crf_s, sizeof(crf_s), "%d", job->crf);
     snprintf(vf, sizeof(vf),
-             "fps=%d,scale=%d:%d:force_original_aspect_ratio=decrease:flags=lanczos,"
-             "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p",
+             "fps=%d,scale='min(iw,%d)':'min(ih,%d)':force_original_aspect_ratio=decrease:flags=lanczos,"
+             "scale='max(2,trunc(iw/2)*2)':'max(2,trunc(ih/2)*2)',format=yuv420p",
              job->fps, job->max_w, job->max_h);
     argv[ai++] = "ffmpeg";
     argv[ai++] = "-y";
     argv[ai++] = "-v";
     argv[ai++] = "error";
+    argv[ai++] = "-nostdin";
     argv[ai++] = "-i";
     argv[ai++] = (char *)job->input;
+    argv[ai++] = "-map";
+    argv[ai++] = "0:v:0";
     argv[ai++] = "-vf";
     argv[ai++] = vf;
     argv[ai++] = "-an";
     argv[ai++] = "-c:v";
     argv[ai++] = "libx264";
+    argv[ai++] = "-threads";
+    argv[ai++] = "2";
     argv[ai++] = "-preset";
     argv[ai++] = "veryfast";
     argv[ai++] = "-crf";
@@ -128,19 +147,20 @@ static int run_gif(const owed_async_job_t *job, char *out, unsigned long out_len
     argv[ai++] = "+faststart";
     argv[ai++] = "-r";
     argv[ai++] = fps_s;
-    argv[ai++] = cached;
+    if (temp_output(cached, ".mp4", tmp, sizeof(tmp)) != 0) return -1;
+    argv[ai++] = tmp;
     argv[ai] = NULL;
     OWE_INFO("transcoding gif %s -> %s", job->input, cached);
     {
         char log[4096];
-        if (owe_spawn_capture("ffmpeg", argv, log, sizeof(log), 300000) != 0) {
+        if (owe_spawn_capture_cancel("ffmpeg", argv, log, sizeof(log), 300000, &job->cancel) != 0) {
             OWE_ERROR("ffmpeg gif failed: %s", log);
-            unlink(cached);
+            unlink(tmp);
             return -1;
         }
     }
-    if (!owed_transcode_file_ready(cached)) {
-        unlink(cached);
+    if (atomic_load(&job->cancel) || !owed_transcode_file_ready(tmp) || rename(tmp, cached) != 0) {
+        unlink(tmp);
         return -1;
     }
     snprintf(out, out_len, "%s", cached);
@@ -150,7 +170,8 @@ static int run_gif(const owed_async_job_t *job, char *out, unsigned long out_len
 
 static int run_poster(const owed_async_job_t *job, char *out, unsigned long out_len) {
     char poster[PATH_MAX];
-    char *argv[20];
+    char tmp[PATH_MAX + 32];
+    char *argv[24];
     int ai = 0;
     if (poster_cache_path(job->input, poster, sizeof(poster)) != 0) {
         return -1;
@@ -163,24 +184,29 @@ static int run_poster(const owed_async_job_t *job, char *out, unsigned long out_
     argv[ai++] = "-y";
     argv[ai++] = "-v";
     argv[ai++] = "error";
+    argv[ai++] = "-nostdin";
     argv[ai++] = "-i";
     argv[ai++] = (char *)job->input;
+    argv[ai++] = "-an";
+    argv[ai++] = "-map";
+    argv[ai++] = "0:v:0";
     argv[ai++] = "-frames:v";
     argv[ai++] = "1";
     argv[ai++] = "-vf";
     argv[ai++] = "scale=w='min(2560,iw)':h=-2";
-    argv[ai++] = poster;
+    if (temp_output(poster, ".png", tmp, sizeof(tmp)) != 0) return -1;
+    argv[ai++] = tmp;
     argv[ai] = NULL;
     {
         char log[4096];
-        if (owe_spawn_capture("ffmpeg", argv, log, sizeof(log), 120000) != 0) {
+        if (owe_spawn_capture_cancel("ffmpeg", argv, log, sizeof(log), 120000, &job->cancel) != 0) {
             OWE_ERROR("poster extract failed: %s", log);
-            unlink(poster);
+            unlink(tmp);
             return -1;
         }
     }
-    if (!owed_transcode_file_ready(poster)) {
-        unlink(poster);
+    if (atomic_load(&job->cancel) || !owed_transcode_file_ready(tmp) || rename(tmp, poster) != 0) {
+        unlink(tmp);
         return -1;
     }
     snprintf(out, out_len, "%s", poster);
@@ -191,6 +217,7 @@ int owed_transcode_gif(const char *gif_path, int fps, int crf, int max_w, int ma
                        char *out_mp4, unsigned long out_len) {
     owed_async_job_t job;
     memset(&job, 0, sizeof(job));
+    atomic_init(&job.cancel, false);
     job.is_gif = 1;
     job.fps = fps;
     job.crf = crf;
@@ -203,42 +230,34 @@ int owed_transcode_gif(const char *gif_path, int fps, int crf, int max_w, int ma
 int owed_transcode_poster(const char *video_path, char *out_png, unsigned long out_len) {
     owed_async_job_t job;
     memset(&job, 0, sizeof(job));
+    atomic_init(&job.cancel, false);
     snprintf(job.input, sizeof(job.input), "%s", video_path);
     return run_poster(&job, out_png, out_len);
 }
 
 static void *job_main(void *arg) {
     owed_async_job_t *job = arg;
-    struct owed_async_result result;
-    ssize_t n;
-    memset(&result, 0, sizeof(result));
     if (job->is_gif) {
-        result.ok = run_gif(job, result.out, sizeof(result.out)) == 0;
+        job->result.ok = run_gif(job, job->result.out, sizeof(job->result.out)) == 0;
     } else {
-        result.ok = run_poster(job, result.out, sizeof(result.out)) == 0;
+        job->result.ok = run_poster(job, job->result.out, sizeof(job->result.out)) == 0;
     }
-    n = write(job->write_fd, &result, sizeof(result));
-    if (n < 0) {
-        OWE_WARN("async job completion write failed");
-    }
-    close(job->write_fd);
-    job->write_fd = -1;
+    uint64_t done = 1;
+    while (write(job->event_fd, &done, sizeof(done)) < 0 && errno == EINTR) {}
     return NULL;
 }
 
 owed_async_job_t *owed_async_gif(const char *gif_path, int fps, int crf, int max_w, int max_h) {
     owed_async_job_t *job = calloc(1, sizeof(*job));
-    int fds[2];
     if (!job) {
         return NULL;
     }
-    if (pipe2(fds, O_CLOEXEC) != 0) {
+    job->event_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    if (job->event_fd < 0) {
         free(job);
         return NULL;
     }
-    job->read_fd = fds[0];
-    job->write_fd = fds[1];
-    fcntl(job->read_fd, F_SETFL, O_NONBLOCK);
+    atomic_init(&job->cancel, false);
     job->is_gif = 1;
     job->fps = fps;
     job->crf = crf;
@@ -246,8 +265,7 @@ owed_async_job_t *owed_async_gif(const char *gif_path, int fps, int crf, int max
     job->max_h = max_h;
     snprintf(job->input, sizeof(job->input), "%s", gif_path);
     if (pthread_create(&job->thread, NULL, job_main, job) != 0) {
-        close(job->read_fd);
-        close(job->write_fd);
+        close(job->event_fd);
         free(job);
         return NULL;
     }
@@ -256,22 +274,19 @@ owed_async_job_t *owed_async_gif(const char *gif_path, int fps, int crf, int max
 
 owed_async_job_t *owed_async_poster(const char *video_path) {
     owed_async_job_t *job = calloc(1, sizeof(*job));
-    int fds[2];
     if (!job) {
         return NULL;
     }
-    if (pipe2(fds, O_CLOEXEC) != 0) {
+    job->event_fd = eventfd(0, EFD_CLOEXEC | EFD_NONBLOCK);
+    if (job->event_fd < 0) {
         free(job);
         return NULL;
     }
-    job->read_fd = fds[0];
-    job->write_fd = fds[1];
-    fcntl(job->read_fd, F_SETFL, O_NONBLOCK);
+    atomic_init(&job->cancel, false);
     job->is_gif = 0;
     snprintf(job->input, sizeof(job->input), "%s", video_path);
     if (pthread_create(&job->thread, NULL, job_main, job) != 0) {
-        close(job->read_fd);
-        close(job->write_fd);
+        close(job->event_fd);
         free(job);
         return NULL;
     }
@@ -279,7 +294,7 @@ owed_async_job_t *owed_async_poster(const char *video_path) {
 }
 
 int owed_async_job_fd(owed_async_job_t *job) {
-    return job ? job->read_fd : -1;
+    return job ? job->event_fd : -1;
 }
 
 const char *owed_async_job_input(owed_async_job_t *job) {
@@ -287,17 +302,14 @@ const char *owed_async_job_input(owed_async_job_t *job) {
 }
 
 int owed_async_job_finish(owed_async_job_t *job, struct owed_async_result *result) {
-    ssize_t n;
+    uint64_t done;
     if (!job || !result) {
         return -1;
     }
-    n = read(job->read_fd, result, sizeof(*result));
+    if (read(job->event_fd, &done, sizeof(done)) != sizeof(done)) return -1;
     pthread_join(job->thread, NULL);
-    if (n != (ssize_t)sizeof(*result)) {
-        result->ok = 0;
-        result->out[0] = '\0';
-        return -1;
-    }
+    job->joined = true;
+    *result = job->result;
     return 0;
 }
 
@@ -305,11 +317,10 @@ void owed_async_job_free(owed_async_job_t *job) {
     if (!job) {
         return;
     }
-    if (job->read_fd >= 0) {
-        close(job->read_fd);
+    if (!job->joined) {
+        atomic_store(&job->cancel, true);
+        pthread_join(job->thread, NULL);
     }
-    if (job->write_fd >= 0) {
-        close(job->write_fd);
-    }
+    close(job->event_fd);
     free(job);
 }

@@ -23,6 +23,8 @@ struct owe_wayland {
     int roundtrip_done;
 };
 
+static void output_free(struct owe_wayland *wl, owe_output_t *out);
+
 static void output_geometry(void *data, struct wl_output *wl_output, int32_t x, int32_t y,
                             int32_t physical_width, int32_t physical_height, int32_t subpixel,
                             const char *make, const char *model, int32_t transform) {
@@ -42,10 +44,11 @@ static void output_mode(void *data, struct wl_output *wl_output, uint32_t flags,
     owe_output_t *out = data;
     (void)wl_output;
     (void)refresh;
-    if (flags & WL_OUTPUT_MODE_CURRENT) {
-        out->width = width;
-        out->height = height;
-    }
+    /* Layer configure events provide logical dimensions. Output modes are physical. */
+    (void)out;
+    (void)flags;
+    (void)width;
+    (void)height;
 }
 
 static void output_done(void *data, struct wl_output *wl_output) {
@@ -112,7 +115,7 @@ static void layer_closed(void *data, struct zwlr_layer_surface_v1 *surface) {
     owe_output_t *out = data;
     (void)surface;
     OWE_WARN("layer surface closed for output %s", out->name);
-    out->configured = 0;
+    output_free(out->owner, out);
 }
 
 static const struct zwlr_layer_surface_v1_listener layer_listener = {
@@ -130,24 +133,21 @@ static void frame_done(void *data, struct wl_callback *cb, uint32_t time) {
     owe_output_t *out = data;
     (void)time;
     wl_callback_destroy(cb);
-    {
-        owe_app_t *app = owe_app_get();
-        if (app && app->still && owe_still_has_image(app->still) &&
-            owe_still_needs_frames(app->still)) {
-            out->frame_pending = 1;
-        }
-    }
+    out->frame_callback = NULL;
+    /* Present the fully opaque final frame even when the fade timer has expired. */
+    out->frame_pending = 1;
 }
 
 static owe_output_t *output_new(struct owe_wayland *wl, struct wl_output *wl_output, uint32_t name) {
     owe_app_t *app = owe_app_get();
     owe_output_t *out = calloc(1, sizeof(*out));
     struct wl_region *region;
-    (void)name;
     if (!out) {
         return NULL;
     }
     out->wl_output = wl_output;
+    out->owner = wl;
+    out->registry_name = name;
     out->width = 0;
     out->height = 0;
     out->scale = 1;
@@ -210,6 +210,7 @@ static owe_output_t *output_new(struct owe_wayland *wl, struct wl_output *wl_out
 static void output_free(struct owe_wayland *wl, owe_output_t *out) {
     owe_app_t *app = owe_app_get();
     owe_output_t **link;
+    if (out->frame_callback) wl_callback_destroy(out->frame_callback);
     if (app && app->egl) {
         owe_egl_destroy_output(app->egl, out);
     }
@@ -257,9 +258,14 @@ static void registry_global(void *data, struct wl_registry *registry, uint32_t n
 }
 
 static void registry_global_remove(void *data, struct wl_registry *registry, uint32_t name) {
-    (void)data;
+    struct owe_wayland *wl = data;
     (void)registry;
-    (void)name;
+    for (owe_output_t *out = wl->outputs; out; out = out->next) {
+        if (out->registry_name == name) {
+            output_free(wl, out);
+            break;
+        }
+    }
 }
 
 static const struct wl_registry_listener registry_listener = {
@@ -293,7 +299,7 @@ struct owe_wayland *owe_wayland_new(void) {
     return wl;
 }
 
-void owe_wayland_free(struct owe_wayland *wl) {
+void owe_wayland_destroy_outputs(struct owe_wayland *wl) {
     owe_output_t *out;
     owe_output_t *next;
     if (!wl) {
@@ -303,6 +309,11 @@ void owe_wayland_free(struct owe_wayland *wl) {
         next = out->next;
         output_free(wl, out);
     }
+}
+
+void owe_wayland_free(struct owe_wayland *wl) {
+    if (!wl) return;
+    owe_wayland_destroy_outputs(wl);
     if (wl->layer_shell) {
         zwlr_layer_shell_v1_destroy(wl->layer_shell);
     }
@@ -362,13 +373,16 @@ int owe_wayland_dispatch(struct owe_wayland *wl) {
         return 0;
     }
     if (wl_display_read_events(wl->display) < 0) {
-        wl_display_cancel_read(wl->display);
         return -1;
     }
     if (wl_display_dispatch_pending(wl->display) < 0) {
         return -1;
     }
     return 0;
+}
+
+int owe_wayland_dispatch_pending(struct owe_wayland *wl) {
+    return wl ? wl_display_dispatch_pending(wl->display) : -1;
 }
 
 void owe_wayland_flush(struct owe_wayland *wl) {
@@ -421,17 +435,17 @@ void owe_wayland_render_pending(struct owe_wayland *wl) {
             } else {
                 owe_egl_clear_output(app->egl, out, 0.0f, 0.0f, 0.0f, 1.0f);
             }
-            if (need_frame_cb) {
+            if (need_frame_cb && !out->frame_callback) {
                 cb = wl_surface_frame(out->surface);
                 if (cb) {
+                    out->frame_callback = cb;
                     wl_callback_add_listener(cb, &frame_listener, out);
                 }
             }
             owe_egl_swap_output(app->egl, out);
-            if (rendered_video) {
-                owe_mpv_report_swap(app->mpv);
-            }
+            (void)rendered_video;
         }
+        if (want_video) owe_mpv_report_swap(app->mpv);
     }
     wl_display_flush(wl->display);
 }

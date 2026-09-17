@@ -30,14 +30,17 @@ These numbers come from the development machine: Intel Panther Lake Arc
 iGPU on the Xe driver, Hyprland 0.56, one 2880x1800@120 output at scale 2.
 Compare against local results, not across machines.
 
-Renderer CPU while a 1080p60 H.264 video plays with hardware decode,
-measured over 10 seconds from `/proc/<pid>/stat`:
+Renderer CPU while a 4K30 H.264 video plays with hardware decode,
+measured over 15 seconds from `/proc/<pid>/stat`:
 
-- Playing: about 5 percent of one core.
+- Playing: about 2.6 percent of one core.
 - Policy paused: about 0 percent.
 - Manual paused: about 0 percent.
-- 4K30 H.264 playing: about 5 percent of one core, video engine busy
-  in `gputop`.
+- Video engine busy about 25 percent in `gputop`.
+- Resident memory about 220 MB for a 4K source.
+- 1080p60 playing: about 4.8 percent of one core.
+
+The daemon itself costs about 4 MB and near zero CPU.
 
 The video renders at its own frame rate. The display runs at 120 Hz,
 and the renderer does not follow the display.

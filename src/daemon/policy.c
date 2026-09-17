@@ -45,6 +45,11 @@ void owed_policy_recompute(struct owed_policy *p) {
         reason = "manual";
         goto done;
     }
+    if (owed_power_sleeping(app->power)) {
+        pause = true;
+        reason = "sleep";
+        goto done;
+    }
     if (app->always_animate) {
         reason = "always-animate";
         goto done;

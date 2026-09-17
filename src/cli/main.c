@@ -9,6 +9,7 @@
 #include <unistd.h>
 
 #include "common_ipc.h"
+#include "json.h"
 #include "xdg.h"
 
 static int daemon_call(const char *line, int print_reply) {
@@ -37,7 +38,7 @@ static int daemon_call(const char *line, int print_reply) {
             if (print_reply) {
                 printf("%s\n", reply);
             }
-            return strstr(reply, "\"error\"") ? 1 : 0;
+            return owe_json_ok(reply) ? 0 : 1;
         }
     }
     close(fd);
@@ -69,7 +70,7 @@ static int render_call(const char *line) {
         if (rc > 0 && owe_ipc_recv_line(fd, reply, sizeof(reply)) == 0) {
             close(fd);
             printf("%s\n", reply);
-            return strstr(reply, "\"error\"") ? 1 : 0;
+            return owe_json_ok(reply) ? 0 : 1;
         }
     }
     close(fd);
@@ -82,7 +83,7 @@ static void usage(const char *argv0) {
             "Usage: %s <command> [args]\n"
             "\n"
             "Background:\n"
-            "  set <path>              Set background through omarchy-theme-bg-set\n"
+            "  set <path>              Update the Omarchy background symlink\n"
             "  next                    Cycle to next theme background\n"
             "  current                 Show current background name\n"
             "  refresh                 Re-read the background symlink now\n"
@@ -167,7 +168,11 @@ int main(int argc, char **argv) {
             fprintf(stderr, "owe: file not found: %s\n", argv[2]);
             return 1;
         }
-        snprintf(line, sizeof(line), "{\"cmd\":\"set\",\"path\":\"%s\"}", abs);
+        char *quoted = owe_json_quote(abs);
+        if (!quoted) return 1;
+        int n = snprintf(line, sizeof(line), "{\"cmd\":\"set\",\"path\":%s}", quoted);
+        free(quoted);
+        if (n >= (int)sizeof(line)) return 1;
         return daemon_call(line, 1);
     }
     if (strcmp(cmd, "next") == 0) {
@@ -212,7 +217,8 @@ int main(int argc, char **argv) {
         for (i = 2; i < argc; i++) {
             off += snprintf(line + off, sizeof(line) - off, "%s%s", i > 2 ? " " : "", argv[i]);
             if (off >= sizeof(line) - 1) {
-                break;
+                fprintf(stderr, "owe: Request exceeds the IPC limit\n");
+                return 1;
             }
         }
         if (off == 0) {
@@ -228,7 +234,8 @@ int main(int argc, char **argv) {
         for (i = 2; i < argc; i++) {
             off += snprintf(line + off, sizeof(line) - off, "%s%s", i > 2 ? " " : "", argv[i]);
             if (off >= sizeof(line) - 1) {
-                break;
+                fprintf(stderr, "owe: Request exceeds the IPC limit\n");
+                return 1;
             }
         }
         if (off == 0) {

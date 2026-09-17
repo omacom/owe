@@ -20,9 +20,10 @@
 #include "owe_spawn.h"
 #include "supervisor.h"
 #include "watch.h"
+#include "json.h"
 #include "xdg.h"
 
-#define MAX_CLIENTS 16
+#define MAX_CLIENTS OWE_IPC_MAX_CLIENTS
 
 struct owed_client {
     int fd;
@@ -62,16 +63,20 @@ static void send_err(struct owed_client *c, const char *msg) {
 
 static void handle_status(struct owed_client *c) {
     owed_app_t *app = owed_app_get();
-    char line[24576];
-    snprintf(line, sizeof(line),
-             "{\"status\":\"ok\",\"source_path\":\"%s\",\"source_kind\":\"%s\","
-             "\"loaded_path\":\"%s\",\"loaded_kind\":\"%s\","
-             "\"job_running\":%s,\"failed_path\":\"%s\","
+    char *line = NULL;
+    char *source = owe_json_quote(app->source_path);
+    char *loaded = owe_json_quote(app->loaded_path);
+    char *failed = owe_json_quote(app->fail_path);
+    if (!source || !loaded || !failed) goto done;
+    if (asprintf(&line,
+             "{\"status\":\"ok\",\"source_path\":%s,\"source_kind\":\"%s\","
+             "\"loaded_path\":%s,\"loaded_kind\":\"%s\","
+             "\"job_running\":%s,\"failed_path\":%s,"
              "\"paused\":%s,\"reason\":\"%s\",\"always_animate\":%s,\"manual_pause\":%s,"
              "\"fullscreen\":%s,\"window_visible\":%s,\"monitors_off\":%s,\"monitor_count\":%d,"
              "\"on_battery\":%s,\"locked\":%s,\"render_alive\":%s}",
-             app->source_path, app->source_kind, app->loaded_path, app->loaded_kind,
-             app->job ? "true" : "false", app->fail_path,
+             source, app->source_kind, loaded, app->loaded_kind,
+             app->job ? "true" : "false", failed,
              app->policy && owed_policy_should_pause(app->policy) ? "true" : "false",
              app->policy ? owed_policy_reason(app->policy) : "",
              app->always_animate ? "true" : "false",
@@ -82,8 +87,13 @@ static void handle_status(struct owed_client *c) {
              app->hypr ? owed_hypr_monitor_count(app->hypr) : 0,
              app->power && owed_power_on_battery(app->power) ? "true" : "false",
              app->power && owed_power_locked(app->power) ? "true" : "false",
-             app->supervisor && owed_render_is_alive(app->supervisor) ? "true" : "false");
-    owe_ipc_send_line(c->fd, line);
+             app->supervisor && owed_render_is_alive(app->supervisor) ? "true" : "false") >= 0)
+        owe_ipc_send_line(c->fd, line);
+done:
+    free(line);
+    free(source);
+    free(loaded);
+    free(failed);
 }
 
 static void handle_config(struct owed_client *c) {
@@ -95,21 +105,20 @@ static void handle_config(struct owed_client *c) {
              "\"fade_ms\":%d,\"blocklist_count\":%d}",
              app->config.pause_fullscreen ? "true" : "false",
              app->config.pause_occupied_workspace ? "true" : "false",
-             app->config.battery_poster ? "true" : "false", app->config.gif_fps, app->config.gif_crf,
-             app->config.fade_ms, app->config.blocklist_count);
+             app->config.battery_poster ? "true" : "false", app->config.gif_fps,
+             app->config.gif_crf, app->config.fade_ms, app->config.blocklist_count);
     owe_ipc_send_line(c->fd, line);
 }
 
 static void handle_set(struct owed_client *c, yyjson_val *root) {
     yyjson_val *v = yyjson_obj_get(root, "path");
     const char *path = v && yyjson_is_str(v) ? yyjson_get_str(v) : "";
-    char *argv[] = { "omarchy-theme-bg-set", (char *)path, NULL };
-    if (!*path) {
-        send_err(c, "missing path");
+    if (!owe_json_path(v)) {
+        send_err(c, "Invalid path");
         return;
     }
-    if (owe_spawn("omarchy-theme-bg-set", argv, NULL) != 0) {
-        send_err(c, "omarchy-theme-bg-set failed");
+    if (owed_watch_set_current(path) != 0) {
+        send_err(c, "Cannot set background");
         return;
     }
     send_ok(c, NULL);
@@ -123,8 +132,9 @@ static void handle_command(struct owed_ipc *ipc, struct owed_client *c, const ch
     const char *cmd;
     (void)ipc;
     doc = yyjson_read(line, strlen(line), 0);
-    if (!doc) {
+    if (!doc || !yyjson_is_obj(yyjson_doc_get_root(doc))) {
         send_err(c, "bad json");
+        yyjson_doc_free(doc);
         return;
     }
     root = yyjson_doc_get_root(doc);
@@ -142,6 +152,7 @@ static void handle_command(struct owed_ipc *ipc, struct owed_client *c, const ch
         char resolved[4096];
         if (owed_watch_resolve_current(resolved, sizeof(resolved)) == 0) {
             app->source_path[0] = '\0';
+            app->loaded_path[0] = '\0';
             owed_app_on_background_changed(resolved);
             send_ok(c, NULL);
         } else {
@@ -166,7 +177,10 @@ static void handle_command(struct owed_ipc *ipc, struct owed_client *c, const ch
         }
     } else if (strcmp(cmd, "reload-config") == 0) {
         char path[4096];
-        if (owe_config_path(path, sizeof(path)) == 0 && owe_config_load(&app->config, path) == 0) {
+        owe_config_t next;
+        owe_config_defaults(&next);
+        if (owe_config_path(path, sizeof(path)) == 0 && owe_config_load(&next, path) == 0) {
+            app->config = next;
             owed_supervisor_fade(app->supervisor, app->config.fade_ms);
             owed_app_on_policy_changed();
             send_ok(c, NULL);
@@ -186,6 +200,8 @@ static void handle_command(struct owed_ipc *ipc, struct owed_client *c, const ch
             char resolved[4096];
             app->loaded_path[0] = '\0';
             app->loaded_kind[0] = '\0';
+            app->render_paused = -1;
+            owed_supervisor_fade(app->supervisor, app->config.fade_ms);
             if (owed_watch_resolve_current(resolved, sizeof(resolved)) == 0) {
                 app->source_path[0] = '\0';
                 owed_app_on_background_changed(resolved);
@@ -243,12 +259,20 @@ void owed_ipc_free(struct owed_ipc *ipc) {
         client_remove(ipc, i);
     }
     owe_ipc_server_free(ipc->srv);
-    unlink(ipc->path);
     free(ipc);
 }
 
 int owed_ipc_fd(struct owed_ipc *ipc) {
     return ipc ? owe_ipc_server_fd(ipc->srv) : -1;
+}
+
+int owed_ipc_pollfds(struct owed_ipc *ipc, struct pollfd *fds) {
+    int n = 0;
+    for (int i = 0; ipc && i < MAX_CLIENTS; i++) {
+        if (ipc->clients[i].fd >= 0)
+            fds[n++] = (struct pollfd){.fd = ipc->clients[i].fd, .events = POLLIN};
+    }
+    return n;
 }
 
 void owed_ipc_accept(struct owed_ipc *ipc) {
@@ -292,6 +316,10 @@ void owed_ipc_poll_clients(struct owed_ipc *ipc) {
             if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
                 continue;
             }
+            client_remove(ipc, i);
+            continue;
+        }
+        if (memchr(c->buf + c->len, '\0', (size_t)n)) {
             client_remove(ipc, i);
             continue;
         }

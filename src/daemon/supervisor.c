@@ -4,6 +4,8 @@
 #include <limits.h>
 #include <poll.h>
 #include <signal.h>
+#include <stdint.h>
+#include <time.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/wait.h>
@@ -11,6 +13,7 @@
 
 #include "common_ipc.h"
 #include "log.h"
+#include "json.h"
 #include "owe_spawn.h"
 #include "xdg.h"
 
@@ -18,7 +21,14 @@ struct owed_supervisor {
     pid_t child;
     char socket_path[4096];
     int restarts;
+    int64_t next_restart;
 };
+
+static int64_t monotonic_ms(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+}
 
 struct owed_supervisor *owed_supervisor_new(void) {
     struct owed_supervisor *s = calloc(1, sizeof(*s));
@@ -64,6 +74,11 @@ static int spawn_render(struct owed_supervisor *s) {
         slash = strrchr(dir, '/');
         if (slash) {
             *slash = '\0';
+            snprintf(cand, sizeof(cand), "%s/owe-render", dir);
+            if (access(cand, X_OK) == 0) {
+                char *sibling[] = {cand, NULL};
+                return owe_spawn(cand, sibling, &s->child);
+            }
             slash = strrchr(dir, '/');
             if (slash) {
                 *slash = '\0';
@@ -92,6 +107,8 @@ int owed_supervisor_ensure_running(struct owed_supervisor *s) {
         }
         s->child = 0;
     }
+    if (monotonic_ms() < s->next_restart) return -1;
+    s->next_restart = monotonic_ms() + 2000;
     if (spawn_render(s) != 0) {
         OWE_ERROR("failed to spawn owe-render");
         return -1;
@@ -99,6 +116,10 @@ int owed_supervisor_ensure_running(struct owed_supervisor *s) {
     s->restarts++;
     OWE_INFO("owe-render spawned pid=%d (restart #%d)", (int)s->child, s->restarts);
     while (waited < 5000) {
+        if (waitpid(s->child, NULL, WNOHANG) == s->child) {
+            s->child = 0;
+            return -1;
+        }
         if (render_socket_ready(s->socket_path)) {
             return 0;
         }
@@ -106,6 +127,7 @@ int owed_supervisor_ensure_running(struct owed_supervisor *s) {
         waited += 50;
     }
     OWE_ERROR("owe-render socket never appeared");
+    owed_supervisor_stop(s);
     return -1;
 }
 
@@ -124,15 +146,11 @@ void owed_supervisor_reap(struct owed_supervisor *s) {
     if (!s) {
         return;
     }
-    for (;;) {
-        w = waitpid(-1, &status, WNOHANG);
-        if (w <= 0) {
-            break;
-        }
-        if (s->child > 0 && w == s->child) {
-            OWE_WARN("owe-render pid=%d exited status=%d", (int)s->child, status);
-            s->child = 0;
-        }
+    if (s->child <= 0) return;
+    w = waitpid(s->child, &status, WNOHANG);
+    if (w == s->child || (w < 0 && errno == ECHILD)) {
+        OWE_WARN("owe-render pid=%d exited status=%d", (int)s->child, status);
+        s->child = 0;
     }
 }
 
@@ -190,13 +208,17 @@ int owed_supervisor_send(struct owed_supervisor *s, const char *line, char *repl
 }
 
 int owed_supervisor_load(struct owed_supervisor *s, const char *path, const char *kind) {
-    char line[8192];
+    char *line = NULL;
     char reply[8192];
-    snprintf(line, sizeof(line), "{\"cmd\":\"load\",\"path\":\"%s\",\"kind\":\"%s\"}", path, kind);
-    if (owed_supervisor_send(s, line, reply, sizeof(reply)) != 0) {
-        return -1;
-    }
-    if (!strstr(reply, "\"ok\"")) {
+    char *qp = owe_json_quote(path), *qk = owe_json_quote(kind);
+    int rc = -1;
+    if (qp && qk && asprintf(&line, "{\"cmd\":\"load\",\"path\":%s,\"kind\":%s}", qp, qk) >= 0)
+        rc = owed_supervisor_send(s, line, reply, sizeof(reply));
+    free(qp);
+    free(qk);
+    free(line);
+    if (rc != 0) return -1;
+    if (!owe_json_ok(reply)) {
         OWE_ERROR("renderer load rejected: %s", reply);
         return -1;
     }
@@ -229,5 +251,6 @@ int owed_render_is_alive(struct owed_supervisor *s) {
     if (!s || s->child <= 0) {
         return 0;
     }
-    return waitpid(s->child, NULL, WNOHANG) == 0;
+    owed_supervisor_reap(s);
+    return s->child > 0;
 }

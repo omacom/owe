@@ -2,6 +2,8 @@
 #include "strutil.h"
 
 #include <stdio.h>
+#include <errno.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -53,7 +55,19 @@ static void parse_blocklist(owe_config_t *cfg, char *v) {
     }
 }
 
+static bool parse_int(const char *value, int *out) {
+    char *end;
+    errno = 0;
+    long result = strtol(value, &end, 10);
+    if (errno || end == value || *end || result < INT_MIN || result > INT_MAX) return false;
+    *out = (int)result;
+    return true;
+}
+
 int owe_config_load(owe_config_t *cfg, const char *path) {
+    owe_config_t *destination = cfg;
+    owe_config_t parsed = *cfg;
+    cfg = &parsed;
     FILE *f;
     char line[512];
     char section[64] = "";
@@ -96,28 +110,28 @@ int owe_config_load(owe_config_t *cfg, const char *path) {
         strip_quotes(v);
         if (strcmp(section, "pause") == 0) {
             if (strcmp(k, "fullscreen") == 0) {
-                parse_bool(v, &cfg->pause_fullscreen);
+                if (!parse_bool(v, &cfg->pause_fullscreen)) goto invalid;
             } else if (strcmp(k, "occupied_workspace") == 0) {
-                parse_bool(v, &cfg->pause_occupied_workspace);
+                if (!parse_bool(v, &cfg->pause_occupied_workspace)) goto invalid;
             } else if (strcmp(k, "battery_poster") == 0) {
-                parse_bool(v, &cfg->battery_poster);
+                if (!parse_bool(v, &cfg->battery_poster)) goto invalid;
             } else if (strcmp(k, "blocklist") == 0) {
                 cfg->blocklist_count = 0;
                 parse_blocklist(cfg, v);
             }
         } else if (strcmp(section, "transcode") == 0) {
             if (strcmp(k, "gif_fps") == 0) {
-                cfg->gif_fps = atoi(v);
+                if (!parse_int(v, &cfg->gif_fps)) goto invalid;
             } else if (strcmp(k, "gif_crf") == 0) {
-                cfg->gif_crf = atoi(v);
+                if (!parse_int(v, &cfg->gif_crf)) goto invalid;
             } else if (strcmp(k, "max_width") == 0) {
-                cfg->transcode_max_width = atoi(v);
+                if (!parse_int(v, &cfg->transcode_max_width)) goto invalid;
             } else if (strcmp(k, "max_height") == 0) {
-                cfg->transcode_max_height = atoi(v);
+                if (!parse_int(v, &cfg->transcode_max_height)) goto invalid;
             }
         } else if (strcmp(section, "render") == 0) {
             if (strcmp(k, "fade_ms") == 0) {
-                cfg->fade_ms = atoi(v);
+                if (!parse_int(v, &cfg->fade_ms)) goto invalid;
             }
         }
     }
@@ -140,5 +154,13 @@ int owe_config_load(owe_config_t *cfg, const char *path) {
     if (cfg->fade_ms > 2000) {
         cfg->fade_ms = 2000;
     }
+    if (cfg->gif_crf < 0) cfg->gif_crf = 0;
+    if (cfg->gif_crf > 51) cfg->gif_crf = 51;
+    if (cfg->transcode_max_width > 16384) cfg->transcode_max_width = 16384;
+    if (cfg->transcode_max_height > 16384) cfg->transcode_max_height = 16384;
+    *destination = *cfg;
     return 0;
+invalid:
+    fclose(f);
+    return -1;
 }

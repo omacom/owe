@@ -12,6 +12,7 @@
 
 #include "egl.h"
 #include "render_ipc.h"
+#include "common_ipc.h"
 #include "mpv.h"
 #include "still.h"
 #include "wayland.h"
@@ -42,12 +43,24 @@ void owe_app_emit_error(const char *message) {
 }
 
 static void on_signal(int sig) {
+    int saved_errno = errno;
     (void)sig;
     if (g_app.running) {
         char c = 'q';
         ssize_t n = write(g_sigpipe[1], &c, 1);
         (void)n;
     }
+    errno = saved_errno;
+}
+
+static void cleanup(void) {
+    owe_render_ipc_free(g_app.ipc);
+    owe_still_free(g_app.still);
+    owe_mpv_free(g_app.mpv);
+    owe_wayland_destroy_outputs(g_app.wl);
+    owe_egl_free(g_app.egl);
+    g_app.egl = NULL;
+    owe_wayland_free(g_app.wl);
 }
 
 static void usage(const char *argv0) {
@@ -111,35 +124,31 @@ int main(int argc, char **argv) {
     g_app.mpv = owe_mpv_new(g_app.wl);
     if (!g_app.mpv) {
         OWE_ERROR("libmpv init failed");
-        owe_egl_free(g_app.egl);
-        owe_wayland_free(g_app.wl);
+        cleanup();
         return 1;
     }
     g_app.still = owe_still_new(g_app.wl, g_app.egl);
     if (!g_app.still) {
         OWE_ERROR("still init failed");
-        owe_mpv_free(g_app.mpv);
-        owe_egl_free(g_app.egl);
-        owe_wayland_free(g_app.wl);
+        cleanup();
         return 1;
     }
     g_app.ipc = owe_render_ipc_new(socket_path);
     if (!g_app.ipc) {
         OWE_ERROR("ipc init failed");
-        owe_still_free(g_app.still);
-        owe_mpv_free(g_app.mpv);
-        owe_egl_free(g_app.egl);
-        owe_wayland_free(g_app.wl);
+        cleanup();
         return 1;
     }
 
     OWE_INFO("ready, socket=%s", socket_path);
 
     while (g_app.running) {
+        if (owe_wayland_dispatch_pending(g_app.wl) < 0) break;
+        owe_wayland_render_pending(g_app.wl);
         int wlfd = owe_wayland_fd(g_app.wl);
         int ipcfd = owe_render_ipc_fd(g_app.ipc);
         int mpvfd = owe_mpv_fd(g_app.mpv);
-        struct pollfd pfds[4];
+        struct pollfd pfds[4 + OWE_IPC_MAX_CLIENTS];
         int n = 0;
         int rc;
         pfds[n].fd = g_sigpipe[0];
@@ -160,6 +169,7 @@ int main(int argc, char **argv) {
             pfds[n].events = POLLIN;
             n++;
         }
+        n += owe_render_ipc_pollfds(g_app.ipc, &pfds[n]);
         rc = poll(pfds, (nfds_t)n, 1000);
         if (rc < 0) {
             if (errno == EINTR) {
@@ -177,6 +187,7 @@ int main(int argc, char **argv) {
                 while (read(g_sigpipe[0], &c, 1) == 1) {
                 }
                 g_app.running = false;
+                break;
             } else if (pfds[i].fd == wlfd) {
                 if (owe_wayland_dispatch(g_app.wl) != 0) {
                     OWE_ERROR("wayland dispatch failed");
@@ -190,6 +201,7 @@ int main(int argc, char **argv) {
                 }
             }
         }
+        if (!g_app.running) break;
         owe_render_ipc_poll_clients(g_app.ipc);
         owe_wayland_render_pending(g_app.wl);
         if (mpvfd >= 0 && owe_mpv_process_updates(g_app.mpv)) {
@@ -199,11 +211,7 @@ int main(int argc, char **argv) {
     }
 
     OWE_INFO("shutdown");
-    owe_render_ipc_free(g_app.ipc);
-    owe_still_free(g_app.still);
-    owe_mpv_free(g_app.mpv);
-    owe_egl_free(g_app.egl);
-    owe_wayland_free(g_app.wl);
+    cleanup();
     close(g_sigpipe[0]);
     close(g_sigpipe[1]);
     return 0;

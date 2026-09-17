@@ -12,3 +12,4 @@ int owed_power_poll(struct owed_power *p);
 
 bool owed_power_on_battery(struct owed_power *p);
 bool owed_power_locked(struct owed_power *p);
+bool owed_power_sleeping(struct owed_power *p);

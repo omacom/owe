@@ -8,3 +8,4 @@ int owed_watch_fd(struct owed_watch *w);
 int owed_watch_poll(struct owed_watch *w);
 
 int owed_watch_resolve_current(char *buf, unsigned long len);
+int owed_watch_set_current(const char *path);

@@ -33,6 +33,7 @@ typedef struct owed_app {
     char fail_path[4096];
     int job_restarts;
     int render_paused; /* -1 unknown, 0 playing, 1 paused */
+    unsigned long source_generation;
 } owed_app_t;
 
 owed_app_t *owed_app_get(void);

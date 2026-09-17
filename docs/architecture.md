@@ -31,10 +31,9 @@ apply a cover crop in the fragment shader: the visible UV sub-rect is
 centered and scaled to fill the output without distortion.
 
 Stills decode once through `libavformat`, `libavcodec`, and `libswscale`.
-The decode target is capped to the largest output size, so a 100 MP photo
-never allocates a full-resolution RGBA buffer. The renderer uploads one
-texture, presents a short fade, then stops the frame loop. Sustained
-still cost is zero CPU.
+The RGBA output is capped to the largest output size.
+The decoder rejects images above 64 million pixels.
+The renderer uploads one texture, presents the fade, and stops frame requests after the fully opaque final frame.
 
 Pause sets `pause` to `yes`. Decode stops, update callbacks stop,
 and the last frame stays presented. No frame callbacks get requested
@@ -55,14 +54,17 @@ changes are caught even when Hyprland emits no event.
 
 It uses `sd-bus` for UPower `OnBattery`, logind lock, and
 `PrepareForSleep`. Poster extraction and GIF transcodes run on a worker
-thread and report back over a pipe, so the event loop stays responsive.
-The `GIF` cache key hashes the source path, size, mtime, fps, CRF, and
-size caps.
+thread and report completion through an eventfd.
+Cancellation terminates FFmpeg and joins the worker before it frees job memory.
+Only the worker reaps its FFmpeg child.
+Conversions use temporary files and publish complete results with an atomic rename.
+Cache keys include the source path, size, nanosecond timestamps, conversion version, and encoding settings.
 
 The daemon tracks what the renderer currently shows. A load is sent only
 when the target path or kind changes. Pause and resume are sent only on
 state transitions. The renderer child is reaped on `SIGCHLD` and
 restarted with the current media when it dies.
+Retry delays prevent a renderer failure from causing a rapid restart loop.
 
 ## IPC
 
@@ -76,3 +78,5 @@ goes to its own requester.
 `owe shutdown` stops the daemon. The daemon stops the renderer child,
 frees the bus, and unlinks its socket. The renderer unlinks its own
 socket on exit.
+The renderer releases media resources and output surfaces before it destroys the EGL context.
+It unbinds the context before destruction and closes the Wayland connection last.

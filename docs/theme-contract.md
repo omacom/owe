@@ -5,7 +5,7 @@ It adds no Omarchy-side hooks and edits no packaged file.
 
 ## Contracts used
 
-- Symlink: `~/.local/state/omarchy/current/background`. `owed` watches
+- Symlink: `~/.local/state/omarchy/current/background`. `owe set` updates this entry atomically after file validation. `owed` watches
   it with `inotify`. This single path covers `theme bg set`,
   `theme bg next`, `theme set`, headless mode, and skip-background mode.
 - Hook: `theme-set.d/10-owe-sync` installed through
@@ -24,16 +24,16 @@ It adds no Omarchy-side hooks and edits no packaged file.
 ## Shell handoff
 
 Only one background layer owner wins. The installer disables the shell
-renderer so `owe-render` owns the background layer alone. Uninstall
-restores `shell.json` from backup. The shell renderer takes over again
-on the next `theme bg set`.
+renderer so `owe-render` owns the background layer alone.
+Uninstall re-enables the background plugin in the current `shell.json`.
+It preserves shell settings added after installation.
 
 ## Transitions
 
 The shell reveal wipe goes away with the shell renderer. Still to still
-switch uses the renderer GPU fade. Each video switch cuts hard after
-first-frame confirm. Theme switch with video on one side already cuts
-instantly in the shell today, so a cut matches current behavior.
+switch uses the renderer GPU fade. Video changes use a hard cut.
+A renderer load reply acknowledges the request. It does not guarantee successful asynchronous video decode.
+`owe render-status` reports decode failures in its `error` field.
 
 ## Drift checks
 

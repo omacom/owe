@@ -17,6 +17,7 @@
 
 #include "hypr.h"
 #include "daemon_ipc.h"
+#include "common_ipc.h"
 #include "log.h"
 #include "policy.h"
 #include "power.h"
@@ -60,6 +61,7 @@ static int load_if_needed(const char *path, const char *kind) {
         OWE_ERROR("renderer load failed: %s", path);
         app->loaded_path[0] = '\0';
         app->loaded_kind[0] = '\0';
+        snprintf(app->fail_path, sizeof(app->fail_path), "%s", app->source_path);
         return -1;
     }
     snprintf(app->loaded_path, sizeof(app->loaded_path), "%s", path);
@@ -101,13 +103,18 @@ static void finish_media(const char *path, const char *kind, bool is_video) {
 void owed_app_apply_policy(void) {
     owed_app_t *app = &g_app;
     char cache[PATH_MAX];
+    char video[PATH_MAX];
 
     if (app->job) {
+        if (strcmp(app->loaded_kind, "video") == 0 && owed_policy_should_pause(app->policy))
+            apply_playback_state();
         return;
     }
     if (!*app->source_path) {
         return;
     }
+    if (strcmp(app->fail_path, app->source_path) == 0) return;
+    snprintf(video, sizeof(video), "%s", app->source_path);
 
     if (strcmp(app->source_kind, "gif") == 0) {
         if (owed_transcode_gif_path(app->source_path, app->config.gif_fps, app->config.gif_crf,
@@ -117,31 +124,28 @@ void owed_app_apply_policy(void) {
             return;
         }
         if (owed_transcode_file_ready(cache)) {
-            app->fail_path[0] = '\0';
-            finish_media(cache, "video", true);
-            return;
-        }
-        if (strcmp(app->fail_path, app->source_path) == 0) {
-            return;
-        }
-        app->job = owed_async_gif(app->source_path, app->config.gif_fps, app->config.gif_crf,
-                                  app->config.transcode_max_width,
-                                  app->config.transcode_max_height);
-        if (!app->job) {
-            OWE_ERROR("cannot start gif job: %s", app->source_path);
+            snprintf(video, sizeof(video), "%s", cache);
         } else {
-            OWE_INFO("gif transcode started for %s", app->source_path);
+            app->job = owed_async_gif(app->source_path, app->config.gif_fps, app->config.gif_crf,
+                                      app->config.transcode_max_width,
+                                      app->config.transcode_max_height);
+            if (!app->job) {
+                OWE_ERROR("cannot start gif job: %s", app->source_path);
+                snprintf(app->fail_path, sizeof(app->fail_path), "%s", app->source_path);
+            } else {
+                OWE_INFO("gif transcode started for %s", app->source_path);
+            }
+            return;
         }
-        return;
     }
 
-    if (strcmp(app->source_kind, "video") != 0) {
+    if (strcmp(app->source_kind, "video") != 0 && strcmp(app->source_kind, "gif") != 0) {
         finish_media(app->source_path, "still", false);
         return;
     }
 
     if (battery_poster_active()) {
-        if (owed_transcode_poster_path(app->source_path, cache, sizeof(cache)) != 0) {
+        if (owed_transcode_poster_path(video, cache, sizeof(cache)) != 0) {
             OWE_ERROR("cannot resolve poster path: %s", app->source_path);
             return;
         }
@@ -153,7 +157,8 @@ void owed_app_apply_policy(void) {
         if (strcmp(app->fail_path, app->source_path) == 0) {
             return;
         }
-        app->job = owed_async_poster(app->source_path);
+        if (strcmp(app->loaded_kind, "video") == 0) apply_playback_state();
+        app->job = owed_async_poster(video);
         if (!app->job) {
             OWE_ERROR("cannot start poster job: %s", app->source_path);
         } else {
@@ -163,7 +168,7 @@ void owed_app_apply_policy(void) {
     }
 
     app->fail_path[0] = '\0';
-    finish_media(app->source_path, "video", true);
+    finish_media(video, "video", true);
 }
 
 void owed_app_on_job_done(void) {
@@ -177,14 +182,10 @@ void owed_app_on_job_done(void) {
     snprintf(input, sizeof(input), "%s", owed_async_job_input(app->job));
     if (owed_async_job_finish(app->job, &result) != 0) {
         OWE_WARN("job for %s produced no result", input);
-        if (strcmp(app->source_path, input) == 0) {
-            snprintf(app->fail_path, sizeof(app->fail_path), "%s", input);
-        }
+        snprintf(app->fail_path, sizeof(app->fail_path), "%s", app->source_path);
     } else if (!result.ok) {
         OWE_ERROR("job failed for %s", input);
-        if (strcmp(app->source_path, input) == 0) {
-            snprintf(app->fail_path, sizeof(app->fail_path), "%s", input);
-        }
+        snprintf(app->fail_path, sizeof(app->fail_path), "%s", app->source_path);
     } else {
         OWE_INFO("job done for %s", input);
     }
@@ -197,6 +198,8 @@ void owed_app_on_renderer_restarted(void) {
     g_app.loaded_path[0] = '\0';
     g_app.loaded_kind[0] = '\0';
     g_app.render_paused = -1;
+    g_app.fail_path[0] = '\0';
+    owed_supervisor_fade(g_app.supervisor, g_app.config.fade_ms);
     owed_app_apply_policy();
 }
 
@@ -216,6 +219,11 @@ void owed_app_on_background_changed(const char *resolved_path) {
     if (strcmp(app->source_path, resolved_path) == 0) {
         return;
     }
+    if (app->job) {
+        owed_async_job_free(app->job);
+        app->job = NULL;
+    }
+    app->source_generation++;
     snprintf(app->source_path, sizeof(app->source_path), "%s", resolved_path);
     snprintf(app->source_kind, sizeof(app->source_kind), "%s", owe_kind_to_string(kind));
     app->fail_path[0] = '\0';
@@ -238,15 +246,19 @@ static void apply_manual_pause(void) {
 }
 
 static void on_signal(int sig) {
+    int saved_errno = errno;
     char c = (char)sig;
     ssize_t n = write(g_sigpipe[1], &c, 1);
     (void)n;
+    errno = saved_errno;
 }
 
 static void on_sigchld(int sig) {
+    int saved_errno = errno;
     char c = (char)sig;
     ssize_t n = write(g_sigchld[1], &c, 1);
     (void)n;
+    errno = saved_errno;
 }
 
 static bool blocklist_active(void) {
@@ -294,13 +306,13 @@ static bool blocklist_active(void) {
     return found;
 }
 
-static bool every_ms(int *last_ms, int interval_ms) {
+static bool every_ms(int64_t *last_ms, int interval_ms) {
     struct timespec now;
-    long now_ms;
+    int64_t now_ms;
     clock_gettime(CLOCK_MONOTONIC, &now);
     now_ms = now.tv_sec * 1000L + now.tv_nsec / 1000000L;
     if (*last_ms == 0 || now_ms - *last_ms >= interval_ms) {
-        *last_ms = (int)now_ms;
+        *last_ms = now_ms;
         return true;
     }
     return false;
@@ -322,7 +334,7 @@ int main(int argc, char **argv) {
     char runtime[PATH_MAX];
     bool verbose = false;
     bool blocklisted = false;
-    int tick_ms = 0;
+    int64_t tick_ms = 0;
     int i;
     char resolved[PATH_MAX];
 
@@ -373,6 +385,7 @@ int main(int argc, char **argv) {
 
     memset(&g_app, 0, sizeof(g_app));
     g_app.running = true;
+    g_app.render_paused = -1;
     owe_config_defaults(&g_app.config);
     if (owe_config_path(config_path, sizeof(config_path)) == 0) {
         if (owe_config_load(&g_app.config, config_path) == 0) {
@@ -412,10 +425,11 @@ int main(int argc, char **argv) {
     OWE_INFO("ready, socket=%s", socket_path);
 
     while (g_app.running) {
-        struct pollfd pfds[10];
+        struct pollfd pfds[10 + OWE_IPC_MAX_CLIENTS];
         int n = 0;
         int rc;
         int have_job = g_app.job != NULL;
+        unsigned long job_generation = g_app.source_generation;
 
         pfds[n].fd = g_sigpipe[0];
         pfds[n].events = POLLIN;
@@ -453,6 +467,7 @@ int main(int argc, char **argv) {
             pfds[n].events = POLLIN;
             n++;
         }
+        n += owed_ipc_pollfds(g_app.ipc, &pfds[n]);
 
         rc = poll(pfds, (nfds_t)n, have_job ? 200 : 1000);
         if (rc < 0) {
@@ -471,12 +486,13 @@ int main(int argc, char **argv) {
                 while (read(g_sigpipe[0], &c, 1) == 1) {
                 }
                 g_app.running = false;
+                break;
             } else if (pfds[i].fd == g_sigchld[0]) {
                 char c;
                 while (read(g_sigchld[0], &c, 1) == 1) {
                 }
                 owed_supervisor_reap(g_app.supervisor);
-                if (!owed_render_is_alive(g_app.supervisor)) {
+                if (g_app.running && !owed_render_is_alive(g_app.supervisor)) {
                     OWE_WARN("renderer died, restarting");
                     if (owed_supervisor_ensure_running(g_app.supervisor) == 0) {
                         owed_app_on_renderer_restarted();
@@ -493,11 +509,17 @@ int main(int argc, char **argv) {
                 owed_power_poll(g_app.power);
             } else if (pfds[i].fd == owed_ipc_fd(g_app.ipc)) {
                 owed_ipc_accept(g_app.ipc);
-            } else if (have_job && pfds[i].fd == owed_async_job_fd(g_app.job)) {
+            } else if (have_job && job_generation == g_app.source_generation &&
+                       pfds[i].fd == owed_async_job_fd(g_app.job)) {
                 owed_app_on_job_done();
             }
         }
+        if (!g_app.running) break;
         owed_ipc_poll_clients(g_app.ipc);
+        if (!g_app.running) break;
+        if (!owed_render_is_alive(g_app.supervisor) &&
+            owed_supervisor_ensure_running(g_app.supervisor) == 0)
+            owed_app_on_renderer_restarted();
         owed_app_apply_policy();
 
         if (every_ms(&tick_ms, 2000)) {

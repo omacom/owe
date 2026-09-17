@@ -10,7 +10,7 @@ daemon_sources = files(
 )
 
 owed = executable('owed',
-  daemon_sources + common_sources + yyjson_sources + [idle_notify_client_h, idle_notify_c],
+  daemon_sources + common_sources + yyjson_sources,
   include_directories : [common_inc, yyjson_inc],
   dependencies : [wayland_client, libsystemd_dep, threads_dep],
   install : true)

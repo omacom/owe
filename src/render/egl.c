@@ -196,18 +196,26 @@ void owe_egl_free(struct owe_egl *egl) {
     if (!egl) {
         return;
     }
+    owe_egl_make_current(egl);
     if (egl->blit.ready) {
         glDeleteBuffers(1, &egl->blit.vbo);
         glDeleteVertexArrays(1, &egl->blit.vao);
         glDeleteProgram(egl->blit.prog);
     }
+    /* EGL defers deletion while a context remains current on a thread. */
+    eglMakeCurrent(egl->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
     if (egl->context != EGL_NO_CONTEXT) {
         eglDestroyContext(egl->display, egl->context);
     }
     if (egl->display != EGL_NO_DISPLAY) {
         eglTerminate(egl->display);
     }
+    eglReleaseThread();
     free(egl);
+}
+
+int owe_egl_make_current(struct owe_egl *egl) {
+    return egl && eglMakeCurrent(egl->display, EGL_NO_SURFACE, EGL_NO_SURFACE, egl->context) ? 0 : -1;
 }
 
 void *owe_egl_display(struct owe_egl *egl) {
@@ -240,6 +248,7 @@ void owe_egl_destroy_output(struct owe_egl *egl, struct owe_output *out) {
         return;
     }
     if (out->egl_surface) {
+        owe_egl_make_current(egl);
         eglDestroySurface(egl->display, (EGLSurface)out->egl_surface);
         out->egl_surface = NULL;
     }
@@ -261,8 +270,10 @@ int owe_egl_prepare_output(struct owe_egl *egl, struct owe_output *out) {
     }
     w = out->width * (out->scale > 0 ? out->scale : 1);
     h = out->height * (out->scale > 0 ? out->scale : 1);
-    if (out->egl_window) {
+    if (out->egl_window && (out->egl_w != w || out->egl_h != h)) {
         wl_egl_window_resize((struct wl_egl_window *)out->egl_window, w, h, 0, 0);
+        out->egl_w = w;
+        out->egl_h = h;
     }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glViewport(0, 0, w, h);

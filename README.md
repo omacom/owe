@@ -28,7 +28,7 @@ owe always-animate on
 ## CLI reference
 
 ```bash
-owe set <path>            # Set background through omarchy-theme-bg-set
+owe set <path>            # Update the Omarchy background symlink
 owe next                  # Cycle to next theme background
 owe current               # Show current background name
 owe refresh               # Re-read the background symlink now
@@ -59,8 +59,7 @@ Commands:
   and kind, job and failure state, pause state, reason, Hyprland flags,
   battery, lock, and renderer liveness.
 - `{"cmd":"config"}` — effective config values.
-- `{"cmd":"set","path":"/abs/file"}` — set background through
-  `omarchy-theme-bg-set`.
+- `{"cmd":"set","path":"/abs/file"}` validates a local file and atomically updates the Omarchy background symlink.
 - `{"cmd":"refresh"}` — re-resolve the symlink and load now.
 - `{"cmd":"pause"}` — set manual pause.
 - `{"cmd":"resume"}` — clear manual pause.
@@ -79,7 +78,7 @@ Commands:
 - `{"cmd":"pause"}` — pause decode. The last frame stays presented.
 - `{"cmd":"resume"}` — resume decode.
 - `{"cmd":"stop"}` — unload all media.
-- `{"cmd":"status"}` — path, kind, pause, outputs, video and still flags.
+- `{"cmd":"status"}` reports the path, kind, pause state, outputs, `time_pos`, `hwdec`, and playback `error`.
 - `{"cmd":"fade","ms":250}` — set the still fade length.
 
 ## Examples
@@ -99,21 +98,24 @@ owe raw '{"cmd":"pause"}'
 ## Pause policy
 
 By default the wallpaper keeps moving. The engine pauses only for real
-interruptions: a fullscreen window, the lock screen, DPMS off, and sleep.
-Reasons in priority order:
+interruptions: a fullscreen window, the lock screen, monitor DPMS off,
+and sleep. Reasons in priority order:
 
-1. `always-animate` override forces play.
-2. `manual` pause from `owe pause`.
-3. `locked` from logind.
-4. `dpms-off` when all monitors turn off.
-5. `battery` shows a still poster while on battery. Off by default,
+1. `manual` pause from `owe pause`.
+2. `sleep` pauses playback before suspend.
+3. `always-animate` bypasses automatic pause rules.
+4. `locked` follows logind session state.
+5. `dpms-off` applies when every connected monitor reports a known off state.
+   Missing DRM data falls back to Hyprland state.
+6. `battery` shows a still poster while on battery. Off by default,
    enable with `battery_poster = true`.
-6. `blocklist` while a listed process runs. Off by default.
-7. `fullscreen` when any window turns fullscreen. On by default.
-8. `occupied` when any window shows. Off by default, enable with
+7. `blocklist` while a listed process runs. Off by default.
+8. `fullscreen` applies when fullscreen windows cover all active outputs. Hidden workspaces do not count.
+9. `occupied` applies when all active outputs have visible windows. Off by default, enable with
    `occupied_workspace = true` to save power on busy desktops.
 
-Idle pauses come from the `owe-idle` helper wired into `hypridle`.
+Idle pauses are optional. Wire the `owe-idle` helper into `hypridle`
+and it pauses through the manual pause path.
 
 To force motion regardless of policy, run `owe always-animate on`.
 
@@ -126,8 +128,8 @@ same cache.
 
 ## No audio
 
-The engine removes audio at every layer. `libmpv` runs with `audio=no`
-and `aid=no`. No audio client ever opens. Transcodes add `-an`.
+Playback disables audio with `audio=no` and `aid=no`.
+Generated media contains only video. Source files remain intact.
 
 ## Performance design
 
@@ -164,6 +166,17 @@ meson setup build
 ninja -C build
 meson test -C build
 ```
+
+The tests cover IPC framing, quoted paths, worker cancellation, atomic cache publication, display state, and actual GIF conversion.
+To run sanitizer checks, use a separate build directory:
+
+```bash
+meson setup build-sanitize -Db_sanitize=address,undefined -Db_lundef=false -Dwerror=true
+meson test -C build-sanitize --print-errorlogs
+```
+
+`test/owe-live-test` requires a running test daemon and a video wallpaper.
+To check live playback and IPC, run `build/test/owe-live-test`.
 
 Build deps: `meson`, `ninja`, `gcc`, `pkgconf`, `wayland`, `wayland-protocols`,
 `libepoxy`, `mpv`, `ffmpeg` libs, `systemd-libs`.

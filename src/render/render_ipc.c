@@ -12,6 +12,8 @@
 #include "yyjson.h"
 
 #include "common_ipc.h"
+#include "json.h"
+#include <sys/stat.h>
 #include "log.h"
 #include "mpv.h"
 #include "render.h"
@@ -20,7 +22,7 @@
 #include "wayland.h"
 #include "xdg.h"
 
-#define MAX_CLIENTS 16
+#define MAX_CLIENTS OWE_IPC_MAX_CLIENTS
 
 struct owe_client {
     int fd;
@@ -66,20 +68,28 @@ static void send_err(struct owe_client *c, const char *msg) {
 
 static void handle_status(struct owe_client *c) {
     owe_app_t *app = owe_app_get();
-    char line[8192];
+    char *line = NULL;
+    char *path = owe_json_quote(app ? app->current_path : "");
+    char *error = owe_json_quote(app ? owe_mpv_error(app->mpv) : "");
+    if (!path || !error) { free(path); free(error); return; }
     int mw = 0;
     int mh = 0;
     if (app && app->wl) {
         owe_wayland_outputs_max_size(app->wl, &mw, &mh);
     }
-    snprintf(line, sizeof(line),
-             "{\"status\":\"ok\",\"path\":\"%s\",\"kind\":\"%s\",\"paused\":%s,\"outputs\":%d,"
-             "\"max_width\":%d,\"max_height\":%d,\"has_video\":%s,\"has_still\":%s}",
-             app ? app->current_path : "", app ? app->current_kind : "",
+    if (asprintf(&line,
+             "{\"status\":\"ok\",\"path\":%s,\"kind\":\"%s\",\"paused\":%s,\"outputs\":%d,"
+             "\"max_width\":%d,\"max_height\":%d,\"has_video\":%s,\"has_still\":%s,\"time_pos\":%.3f,\"hwdec\":\"%s\",\"error\":%s}",
+             path, app ? app->current_kind : "",
              app && app->paused ? "true" : "false", app && app->wl ? owe_wayland_output_count(app->wl) : 0,
              mw, mh, app && app->mpv && owe_mpv_has_video(app->mpv) ? "true" : "false",
-             app && app->still && owe_still_has_image(app->still) ? "true" : "false");
-    client_send(c, line);
+             app && app->still && owe_still_has_image(app->still) ? "true" : "false",
+             app && app->mpv ? owe_mpv_time_pos(app->mpv) : -1.0,
+             owe_mpv_hwdec(app ? app->mpv : NULL), error) >= 0)
+        client_send(c, line);
+    free(line);
+    free(path);
+    free(error);
 }
 
 static void handle_load(struct owe_client *c, yyjson_val *root) {
@@ -96,16 +106,18 @@ static void handle_load(struct owe_client *c, yyjson_val *root) {
     vkind = yyjson_obj_get(root, "kind");
     path = vpath && yyjson_is_str(vpath) ? yyjson_get_str(vpath) : "";
     kind = vkind && yyjson_is_str(vkind) ? yyjson_get_str(vkind) : "";
-    if (!*path) {
-        send_err(c, "missing path");
+    struct stat st;
+    if (!owe_json_path(vpath) || path[0] != '/' || stat(path, &st) != 0 ||
+        !S_ISREG(st.st_mode) || access(path, R_OK) != 0) {
+        send_err(c, "Invalid local media path");
         return;
     }
     if (strcmp(kind, "video") == 0) {
-        owe_still_unload(app->still);
         if (owe_mpv_load(app->mpv, path) != 0) {
             send_err(c, "video load failed");
             return;
         }
+        owe_still_unload(app->still);
         owe_mpv_set_paused(app->mpv, app->paused);
         snprintf(app->current_path, sizeof(app->current_path), "%s", path);
         snprintf(app->current_kind, sizeof(app->current_kind), "video");
@@ -113,11 +125,11 @@ static void handle_load(struct owe_client *c, yyjson_val *root) {
         return;
     }
     if (strcmp(kind, "still") == 0) {
-        owe_mpv_stop(app->mpv);
         if (owe_still_load(app->still, path) != 0) {
             send_err(c, "still load failed");
             return;
         }
+        owe_mpv_stop(app->mpv);
         snprintf(app->current_path, sizeof(app->current_path), "%s", path);
         snprintf(app->current_kind, sizeof(app->current_kind), "still");
         send_ok(c, NULL);
@@ -134,8 +146,9 @@ static void handle_command(struct owe_render_ipc *ipc, struct owe_client *c, con
     const char *cmd;
     (void)ipc;
     doc = yyjson_read(line, strlen(line), 0);
-    if (!doc) {
+    if (!doc || !yyjson_is_obj(yyjson_doc_get_root(doc))) {
         send_err(c, "bad json");
+        yyjson_doc_free(doc);
         return;
     }
     root = yyjson_doc_get_root(doc);
@@ -171,8 +184,13 @@ static void handle_command(struct owe_render_ipc *ipc, struct owe_client *c, con
         handle_status(c);
     } else if (strcmp(cmd, "fade") == 0) {
         yyjson_val *vms = yyjson_obj_get(root, "ms");
-        if (app && vms && yyjson_is_num(vms)) {
+        if (app && vms && yyjson_is_int(vms) && yyjson_get_sint(vms) >= 0 &&
+            yyjson_get_sint(vms) <= 2000) {
             owe_still_set_fade_ms(app->still, (int)yyjson_get_num(vms));
+        } else {
+            send_err(c, "Fade must be an integer from 0 to 2000");
+            yyjson_doc_free(doc);
+            return;
         }
         send_ok(c, NULL);
     } else {
@@ -221,12 +239,20 @@ void owe_render_ipc_free(struct owe_render_ipc *ipc) {
         client_remove(ipc, i);
     }
     owe_ipc_server_free(ipc->srv);
-    unlink(ipc->path);
     free(ipc);
 }
 
 int owe_render_ipc_fd(struct owe_render_ipc *ipc) {
     return ipc ? owe_ipc_server_fd(ipc->srv) : -1;
+}
+
+int owe_render_ipc_pollfds(struct owe_render_ipc *ipc, struct pollfd *fds) {
+    int n = 0;
+    for (int i = 0; ipc && i < MAX_CLIENTS; i++) {
+        if (ipc->clients[i].fd >= 0)
+            fds[n++] = (struct pollfd){.fd = ipc->clients[i].fd, .events = POLLIN};
+    }
+    return n;
 }
 
 void owe_render_ipc_accept(struct owe_render_ipc *ipc) {
@@ -270,6 +296,10 @@ void owe_render_ipc_poll_clients(struct owe_render_ipc *ipc) {
             if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
                 continue;
             }
+            client_remove(ipc, i);
+            continue;
+        }
+        if (memchr(c->buf + c->len, '\0', (size_t)n)) {
             client_remove(ipc, i);
             continue;
         }

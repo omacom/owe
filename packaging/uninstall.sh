@@ -10,14 +10,9 @@ systemctl --user disable --now owed.service 2>/dev/null || true
 rm -f "${HOME}/.config/systemd/user/owed.service"
 systemctl --user daemon-reload
 
-echo "==> restore shell.json"
-latest="$(ls -t "${SHELL_JSON}".bak.owe.* 2>/dev/null | head -n 1 || true)"
-if [[ -n ${latest:-} ]]; then
-  cp "$latest" "$SHELL_JSON"
-  echo "    restored from $latest"
-else
-  python3 - "$SHELL_JSON" <<'EOF'
-import json, sys
+echo "==> enable the shell background plugin"
+python3 - "$SHELL_JSON" <<'EOF'
+import json, os, sys, tempfile
 path = sys.argv[1]
 try:
     with open(path) as f:
@@ -28,12 +23,13 @@ disabled = data.get("disabledPlugins", [])
 if "omarchy.background" in disabled:
     disabled.remove("omarchy.background")
     data["disabledPlugins"] = disabled
-    with open(path, "w") as f:
+    fd, temporary = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".owe-uninstall-")
+    with os.fdopen(fd, "w") as f:
         json.dump(data, f, indent=2)
         f.write("\n")
+    os.replace(temporary, path)
 print("    omarchy.background re-enabled")
 EOF
-fi
 omarchy restart shell 2>/dev/null || true
 
 echo "==> remove theme-set hook"

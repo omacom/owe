@@ -1,3 +1,4 @@
 build/
+build-*/
 bench/baseline/
 *.o

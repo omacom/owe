@@ -1,4 +1,5 @@
 #pragma once
+#include <poll.h>
 
 struct owed_ipc;
 
@@ -7,4 +8,5 @@ void owed_ipc_free(struct owed_ipc *ipc);
 int owed_ipc_fd(struct owed_ipc *ipc);
 void owed_ipc_accept(struct owed_ipc *ipc);
 void owed_ipc_poll_clients(struct owed_ipc *ipc);
+int owed_ipc_pollfds(struct owed_ipc *ipc, struct pollfd *fds);
 void owed_ipc_broadcast(struct owed_ipc *ipc, const char *line);

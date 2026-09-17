@@ -1,4 +1,5 @@
 #pragma once
+#include <poll.h>
 
 struct owe_render_ipc;
 
@@ -7,6 +8,7 @@ void owe_render_ipc_free(struct owe_render_ipc *ipc);
 int owe_render_ipc_fd(struct owe_render_ipc *ipc);
 void owe_render_ipc_accept(struct owe_render_ipc *ipc);
 void owe_render_ipc_poll_clients(struct owe_render_ipc *ipc);
+int owe_render_ipc_pollfds(struct owe_render_ipc *ipc, struct pollfd *fds);
 
 void owe_render_ipc_emit_first_frame(struct owe_render_ipc *ipc, const char *path);
 void owe_render_ipc_emit_error(struct owe_render_ipc *ipc, const char *message);

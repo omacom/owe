@@ -8,6 +8,7 @@ struct owe_output;
 
 struct owe_egl *owe_egl_new(struct owe_wayland *wl);
 void owe_egl_free(struct owe_egl *egl);
+int owe_egl_make_current(struct owe_egl *egl);
 
 void *owe_egl_display(struct owe_egl *egl);
 void *owe_egl_context(struct owe_egl *egl);

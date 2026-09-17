@@ -29,7 +29,6 @@ wayland_scanner = find_program('wayland-scanner')
 wayland_protos = dependency('wayland-protocols', required : false)
 
 layer_shell_xml = files('protocols/wlr-layer-shell-unstable-v1.xml')
-idle_notify_xml = files('protocols/ext-idle-notify-v1.xml')
 xdg_shell_xml = files('protocols/xdg-shell.xml')
 
 xdg_shell_c = custom_target('xdg-shell-code',
@@ -47,16 +46,6 @@ layer_shell_c = custom_target('layer-shell-code',
   output : 'wlr-layer-shell-unstable-v1-protocol.c',
   command : [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'])
 
-idle_notify_client_h = custom_target('idle-notify-client-header',
-  input : idle_notify_xml,
-  output : 'ext-idle-notify-v1-client-protocol.h',
-  command : [wayland_scanner, 'client-header', '@INPUT@', '@OUTPUT@'])
-
-idle_notify_c = custom_target('idle-notify-code',
-  input : idle_notify_xml,
-  output : 'ext-idle-notify-v1-protocol.c',
-  command : [wayland_scanner, 'private-code', '@INPUT@', '@OUTPUT@'])
-
 yyjson_sources = files('third_party/yyjson/yyjson.c')
 yyjson_inc = include_directories('third_party/yyjson')
 
@@ -66,6 +55,8 @@ common_sources = files(
   'src/common/strutil.c',
   'src/common/config.c',
   'src/common/common_ipc.c',
+  'src/common/json.c',
+  'src/common/display_state.c',
   'src/common/owe_spawn.c',
 )
 

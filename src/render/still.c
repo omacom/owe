@@ -91,6 +91,8 @@ static int decode_first_frame(const char *path, int max_w, int max_h, uint8_t **
     if (avcodec_parameters_to_context(dec, fmt->streams[video_stream]->codecpar) < 0) {
         goto done;
     }
+    dec->max_pixels = 64 * 1024 * 1024;
+    dec->thread_count = 2;
     if (avcodec_open2(dec, codec, NULL) < 0) {
         goto done;
     }
@@ -114,7 +116,7 @@ static int decode_first_frame(const char *path, int max_w, int max_h, uint8_t **
             break;
         }
     }
-    if (!frame->width) {
+    if (frame->width <= 0 || frame->height <= 0) {
         goto done;
     }
     {
@@ -147,7 +149,6 @@ static int decode_first_frame(const char *path, int max_w, int max_h, uint8_t **
     }
     sws_scale(sws, (const uint8_t *const *)frame->data, frame->linesize, 0, frame->height,
               rgb->data, rgb->linesize);
-    (void)0;
     {
         int row_bytes = rgb->width * 4;
         uint8_t *buf = malloc((size_t)row_bytes * (size_t)rgb->height);
@@ -242,12 +243,7 @@ void owe_still_unload(struct owe_still *s) {
         return;
     }
     if (s->tex && s->egl) {
-        owe_output_t *outs = s->wl ? owe_wayland_outputs(s->wl) : NULL;
-        if (outs && outs->egl_surface) {
-            if (owe_egl_prepare_output(s->egl, outs) == 0) {
-                owe_egl_tex_free(s->egl, s->tex);
-            }
-        }
+        if (owe_egl_make_current(s->egl) == 0) owe_egl_tex_free(s->egl, s->tex);
     }
     s->tex = 0;
     s->path[0] = '\0';
@@ -273,7 +269,6 @@ void owe_still_render_output(struct owe_still *s, struct owe_output *out) {
         ms = elapsed_ms(&s->loaded_at, &now);
         if (ms < s->fade_ms) {
             alpha = (float)ms / (float)s->fade_ms;
-            owe_app_request_render();
         }
     }
     owe_egl_draw_texture(s->egl, out, s->tex, alpha, s->tex_w, s->tex_h);

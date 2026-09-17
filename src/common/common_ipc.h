@@ -2,9 +2,11 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <poll.h>
 
 #define OWE_IPC_MAX_LINE 65536
 #define OWE_IPC_VERSION 1
+#define OWE_IPC_MAX_CLIENTS 16
 
 int owe_ipc_listen(const char *path);
 int owe_ipc_connect(const char *path);

@@ -33,6 +33,11 @@ static long ms_since(const struct timespec *start) {
 
 int owe_spawn_capture(const char *file, char *const argv[], char *out, unsigned long out_len,
                       int timeout_ms) {
+    return owe_spawn_capture_cancel(file, argv, out, out_len, timeout_ms, NULL);
+}
+
+int owe_spawn_capture_cancel(const char *file, char *const argv[], char *out,
+                             unsigned long out_len, int timeout_ms, const atomic_bool *cancel) {
     int pipefd[2] = { -1, -1 };
     posix_spawn_file_actions_t fa;
     pid_t pid;
@@ -41,6 +46,7 @@ int owe_spawn_capture(const char *file, char *const argv[], char *out, unsigned 
     int rc;
     struct timespec start;
     int exited = 0;
+    bool eof = false;
 
     if (!out || out_len < 2) {
         return -1;
@@ -64,7 +70,7 @@ int owe_spawn_capture(const char *file, char *const argv[], char *out, unsigned 
     fcntl(pipefd[0], F_SETFL, O_NONBLOCK);
     clock_gettime(CLOCK_MONOTONIC, &start);
     while (!exited) {
-        struct pollfd pfd = { .fd = pipefd[0], .events = POLLIN };
+        struct pollfd pfd = { .fd = eof ? -1 : pipefd[0], .events = POLLIN };
         int pr = poll(&pfd, 1, 100);
         if (pr > 0 && (pfd.revents & (POLLIN | POLLHUP))) {
             char buf[4096];
@@ -79,18 +85,25 @@ int owe_spawn_capture(const char *file, char *const argv[], char *out, unsigned 
                     off += copy;
                 }
             }
+            if (n == 0) eof = true;
         }
-        if (waitpid(pid, &status, WNOHANG) == pid) {
+        pid_t w = waitpid(pid, &status, WNOHANG);
+        if (w == pid) {
             exited = 1;
             break;
         }
-        if (ms_since(&start) >= timeout_ms) {
+        if (w < 0 && errno != EINTR) {
+            close(pipefd[0]);
+            out[off] = '\0';
+            return -1;
+        }
+        if ((cancel && atomic_load(cancel)) || ms_since(&start) >= timeout_ms) {
             break;
         }
     }
     if (!exited) {
         kill(pid, SIGKILL);
-        waitpid(pid, &status, 0);
+        while (waitpid(pid, &status, 0) < 0 && errno == EINTR) {}
         close(pipefd[0]);
         out[off] = '\0';
         return -1;

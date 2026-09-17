@@ -17,6 +17,7 @@ need gcc
 need pkg-config
 need ffmpeg
 need socat
+need python3
 
 echo "==> build"
 meson setup --reconfigure "${ROOT}/build" "${ROOT}" >/dev/null 2>&1 || meson setup "${ROOT}/build" "${ROOT}"
@@ -24,9 +25,14 @@ ninja -C "${ROOT}/build"
 meson test -C "${ROOT}/build"
 
 echo "==> install binaries to ${PREFIX}/bin"
-install -Dm755 "${ROOT}/build/src/cli/owe" "${PREFIX}/bin/owe"
-install -Dm755 "${ROOT}/build/src/daemon/owed" "${PREFIX}/bin/owed"
-install -Dm755 "${ROOT}/build/src/render/owe-render" "${PREFIX}/bin/owe-render"
+install_binary() {
+  local source="$1" name="$2"
+  install -Dm755 "$source" "${PREFIX}/bin/${name}.new.$$"
+  mv -f "${PREFIX}/bin/${name}.new.$$" "${PREFIX}/bin/${name}"
+}
+install_binary "${ROOT}/build/src/cli/owe" owe
+install_binary "${ROOT}/build/src/daemon/owed" owed
+install_binary "${ROOT}/build/src/render/owe-render" owe-render
 install -Dm755 "${ROOT}/hooks/owe-idle" "${PREFIX}/bin/owe-idle"
 
 echo "==> install config"
