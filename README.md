@@ -4,6 +4,9 @@
 It joins the Omarchy theme switch through existing contracts only.
 It changes no packaged Omarchy file.
 
+> This project is experimental. **Use it at your own risk.**
+> See the [performance follow-up document](docs/performance-follow-up.md) for known issues and incomplete checks.
+
 ## Binaries
 
 - `owed` — policy daemon. It watches the background symlink, tracks Hyprland,
