@@ -1,5 +1,7 @@
 # Benchmarks
 
+For missing checks and follow-up work, see [Performance checks and follow-up work](performance-follow-up.md).
+
 ## Method
 
 Run `bench/bench.sh [outdir]`. It samples renderer CPU ticks from
