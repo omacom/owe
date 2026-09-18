@@ -21,6 +21,16 @@ It changes no packaged Omarchy file.
 - `owe` — CLI. It controls every daemon and renderer function.
 - `owe-idle` — hypridle helper. It pauses on idle and resumes on activity.
 
+## Install
+
+From the AUR:
+
+```bash
+omarchy pkg add owe
+```
+
+Or build from source, as below.
+
 ## Quick start
 
 Install the build and runtime packages on Omarchy first. Packages already

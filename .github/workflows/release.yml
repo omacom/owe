@@ -1,0 +1,132 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version to release, without the v prefix
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    steps:
+      - name: Install dependencies
+        run: |
+          pacman -Syu --noconfirm --needed base-devel meson ninja gcc pkgconf \
+            wayland wayland-protocols libglvnd libepoxy mpv ffmpeg \
+            systemd-libs socat python git
+      - uses: actions/checkout@v5
+      - name: Check the version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            version="${{ inputs.version }}"
+          else
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          project="$(sed -n "s/^  version : '\([^']*\)'.*/\1/p" meson.build)"
+          if [ "$version" != "$project" ]; then
+            echo "tag version $version does not match meson.build $project" >&2
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Build
+        run: |
+          meson setup build --buildtype=release
+          ninja -C build
+      - name: Test
+        run: meson test -C build --print-errorlogs
+      - name: Create the source archive
+        run: meson dist -C build --formats xztar
+      - name: Collect artifacts
+        run: |
+          mkdir -p dist
+          cp build/meson-dist/*.tar.xz dist/
+          sha256sum dist/*.tar.xz > dist/SHA256SUMS
+          echo "version=${{ steps.version.outputs.version }}" > dist/release.env
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          . dist/release.env
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="v$version"
+            target="--target ${{ github.sha }}"
+          else
+            tag="$GITHUB_REF_NAME"
+            target=""
+          fi
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/*.tar.xz dist/SHA256SUMS --clobber
+          else
+            gh release create "$tag" $target --title "$tag" --generate-notes \
+              dist/*.tar.xz dist/SHA256SUMS
+          fi
+
+  aur:
+    needs: [build, release]
+    runs-on: ubuntu-latest
+    container: archlinux:latest
+    env:
+      AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+    steps:
+      - name: Install dependencies
+        if: env.AUR_SSH_PRIVATE_KEY != ''
+        run: pacman -Syu --noconfirm --needed base-devel git openssh
+      - uses: actions/checkout@v5
+        if: env.AUR_SSH_PRIVATE_KEY != ''
+      - uses: actions/download-artifact@v4
+        if: env.AUR_SSH_PRIVATE_KEY != ''
+        with:
+          name: dist
+          path: dist
+      - name: Update the AUR package
+        if: env.AUR_SSH_PRIVATE_KEY != ''
+        run: |
+          set -e
+          . dist/release.env
+          tag_sha="$(curl -fsSL "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/archive/refs/tags/v$version.tar.gz" | sha256sum | cut -d' ' -f1)"
+          sed -i "s/^pkgver=.*/pkgver=$version/" packaging/PKGBUILD
+          sed -i "s/^pkgrel=.*/pkgrel=1/" packaging/PKGBUILD
+          sed -i "s/^sha256sums=.*/sha256sums=('$tag_sha')/" packaging/PKGBUILD
+          mkdir -p ~/.ssh
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+          ssh-keyscan -t ed25519 aur.archlinux.org >> ~/.ssh/known_hosts 2>/dev/null
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/aur -o IdentitiesOnly=yes"
+          rm -rf aur-owe
+          git clone ssh://aur@aur.archlinux.org/owe.git aur-owe
+          cp packaging/PKGBUILD aur-owe/PKGBUILD
+          cd aur-owe
+          makepkg --printsrcinfo > .SRCINFO
+          git add PKGBUILD .SRCINFO
+          if git diff --cached --quiet; then
+            echo "the AUR package is already current"
+            exit 0
+          fi
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -m "Update to $version"
+          git push
