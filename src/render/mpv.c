@@ -249,6 +249,15 @@ void owe_mpv_set_paused(struct owe_mpv *m, bool paused) {
     OWE_INFO("mpv %s", paused ? "paused" : "resumed");
 }
 
+void owe_mpv_set_muted(struct owe_mpv *m, bool muted) {
+    int v;
+    if (!m) {
+        return;
+    }
+    v = muted ? 1 : 0;
+    mpv_set_property(m->handle, "mute", MPV_FORMAT_FLAG, &v);
+}
+
 bool owe_mpv_has_video(struct owe_mpv *m) {
     return m && m->has_video;
 }
@@ -263,6 +272,30 @@ bool owe_mpv_ready(struct owe_mpv *m) {
 
 const char *owe_mpv_path(struct owe_mpv *m) {
     return m ? m->path : "";
+}
+
+int owe_mpv_video_size(struct owe_mpv *m, int *w, int *h) {
+    int64_t value = 0;
+    if (w) {
+        *w = 0;
+    }
+    if (h) {
+        *h = 0;
+    }
+    if (!m || !m->handle) {
+        return -1;
+    }
+    if (mpv_get_property(m->handle, "dwidth", MPV_FORMAT_INT64, &value) >= 0) {
+        if (w) {
+            *w = (int)value;
+        }
+    }
+    if (mpv_get_property(m->handle, "dheight", MPV_FORMAT_INT64, &value) >= 0) {
+        if (h) {
+            *h = (int)value;
+        }
+    }
+    return (w && h && *w > 0 && *h > 0) ? 0 : -1;
 }
 
 int owe_mpv_fd(struct owe_mpv *m) {
@@ -345,6 +378,42 @@ void owe_mpv_render_output(struct owe_mpv *m, struct owe_output *out) {
         return;
     }
     m->ready = true;
+}
+
+/* Render one frame into an offscreen framebuffer for the lock feed. The feed
+ * reads the pixels back with glReadPixels, so the rows are written top-down
+ * and the lock can upload them as a plain QImage. */
+int owe_mpv_render_fbo(struct owe_mpv *m, int fbo, int w, int h) {
+    owe_app_t *app;
+    mpv_opengl_fbo target;
+    mpv_render_param params[4];
+    int flip = 0;
+    int block = 0;
+    if (!m || !m->ctx || fbo <= 0 || w <= 0 || h <= 0) {
+        return -1;
+    }
+    app = owe_app_get();
+    if (!app || !app->egl) {
+        return -1;
+    }
+    owe_egl_make_current(app->egl);
+    target.fbo = fbo;
+    target.w = w;
+    target.h = h;
+    target.internal_format = 0;
+    params[0].type = MPV_RENDER_PARAM_OPENGL_FBO;
+    params[0].data = &target;
+    params[1].type = MPV_RENDER_PARAM_FLIP_Y;
+    params[1].data = &flip;
+    params[2].type = MPV_RENDER_PARAM_BLOCK_FOR_TARGET_TIME;
+    params[2].data = &block;
+    params[3].type = MPV_RENDER_PARAM_INVALID;
+    params[3].data = NULL;
+    if (mpv_render_context_render(m->ctx, params) < 0) {
+        return -1;
+    }
+    m->ready = true;
+    return 0;
 }
 
 void owe_mpv_report_swap(struct owe_mpv *m) {

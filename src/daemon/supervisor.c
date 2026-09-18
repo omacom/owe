@@ -226,6 +226,16 @@ int owed_supervisor_resume(struct owed_supervisor *s) {
     return owed_supervisor_send(s, "{\"cmd\":\"resume\"}", reply, sizeof(reply));
 }
 
+int owed_supervisor_feed_start(struct owed_supervisor *s) {
+    char reply[1024];
+    return owed_supervisor_send(s, "{\"cmd\":\"feed\"}", reply, sizeof(reply));
+}
+
+int owed_supervisor_feed_stop(struct owed_supervisor *s) {
+    char reply[1024];
+    return owed_supervisor_send(s, "{\"cmd\":\"feed-stop\"}", reply, sizeof(reply));
+}
+
 int owed_supervisor_stop_render(struct owed_supervisor *s) {
     char reply[1024];
     return owed_supervisor_send(s, "{\"cmd\":\"stop\"}", reply, sizeof(reply));

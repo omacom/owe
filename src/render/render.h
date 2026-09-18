@@ -7,6 +7,7 @@ struct owe_egl;
 struct owe_mpv;
 struct owe_still;
 struct owe_render_ipc;
+struct owe_feed;
 
 typedef struct owe_app {
     struct owe_wayland *wl;
@@ -14,8 +15,10 @@ typedef struct owe_app {
     struct owe_mpv *mpv;
     struct owe_still *still;
     struct owe_render_ipc *ipc;
+    struct owe_feed *feed;
     bool running;
     bool paused;
+    bool feeding;
     char current_path[4096];
     char current_kind[16];
 } owe_app_t;

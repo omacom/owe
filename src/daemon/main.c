@@ -116,10 +116,43 @@ static int load_if_needed(const char *path, const char *kind) {
     return 0;
 }
 
+/* A locked session keeps its video: the renderer draws the wallpaper into the
+ * lock feed instead of pausing, and the lock screen shows those frames. */
+static int apply_feed_state(void) {
+    owed_app_t *app = &g_app;
+    const char *reason = owed_policy_reason(app->policy);
+    bool want_feed;
+    if (!app->supervisor || app->engine != OWE_ENGINE_RENDERER) {
+        return 0;
+    }
+    want_feed = owed_policy_should_pause(app->policy) &&
+                strcmp(reason, "locked") == 0 && strcmp(app->loaded_kind, "video") == 0 &&
+                owed_render_is_alive(app->supervisor);
+    if (want_feed) {
+        if (!app->render_feeding) {
+            if (owed_supervisor_feed_start(app->supervisor) != 0) {
+                return 0;
+            }
+            app->render_feeding = 1;
+            app->render_paused = 0;
+        }
+        return 1;
+    }
+    if (app->render_feeding) {
+        owed_supervisor_feed_stop(app->supervisor);
+        app->render_feeding = 0;
+        app->render_paused = -1;
+    }
+    return 0;
+}
+
 static void apply_playback_state(void) {
     owed_app_t *app = &g_app;
     int want;
     if (!app->supervisor || app->engine != OWE_ENGINE_RENDERER) {
+        return;
+    }
+    if (apply_feed_state()) {
         return;
     }
     want = owed_policy_should_pause(app->policy) ? 1 : 0;
@@ -163,6 +196,7 @@ static int switch_to_shell(void) {
     app->engine = OWE_ENGINE_SHELL;
     app->media_pending = false;
     app->render_paused = -1;
+    app->render_feeding = 0;
     app->loaded_path[0] = '\0';
     app->loaded_kind[0] = '\0';
     app->restore_path[0] = '\0';
@@ -459,6 +493,7 @@ void owed_app_on_renderer_restarted(void) {
     g_app.loaded_path[0] = '\0';
     g_app.loaded_kind[0] = '\0';
     g_app.render_paused = -1;
+    g_app.render_feeding = 0;
     g_app.fail_path[0] = '\0';
     g_app.media_pending = false;
     g_last_skip[0] = '\0';

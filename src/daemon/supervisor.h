@@ -14,6 +14,8 @@ int owed_supervisor_send(struct owed_supervisor *s, const char *line, char *repl
 int owed_supervisor_load(struct owed_supervisor *s, const char *path, const char *kind);
 int owed_supervisor_pause(struct owed_supervisor *s);
 int owed_supervisor_resume(struct owed_supervisor *s);
+int owed_supervisor_feed_start(struct owed_supervisor *s);
+int owed_supervisor_feed_stop(struct owed_supervisor *s);
 int owed_supervisor_stop_render(struct owed_supervisor *s);
 int owed_supervisor_fade(struct owed_supervisor *s, int ms);
 int owed_render_is_alive(struct owed_supervisor *s);

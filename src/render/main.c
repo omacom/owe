@@ -15,6 +15,7 @@
 #endif
 
 #include "egl.h"
+#include "feed.h"
 #include "render_ipc.h"
 #include "common_ipc.h"
 #include "mpv.h"
@@ -69,12 +70,24 @@ static void on_signal(int sig) {
 
 static void cleanup(void) {
     owe_render_ipc_free(g_app.ipc);
+    owe_feed_free(g_app.feed);
     owe_still_free(g_app.still);
     owe_mpv_free(g_app.mpv);
     owe_wayland_destroy_outputs(g_app.wl);
     owe_egl_free(g_app.egl);
     g_app.egl = NULL;
     owe_wayland_free(g_app.wl);
+}
+
+/* The feed socket sits next to the render socket, so a test renderer with a
+ * private socket gets its own feed socket too. */
+static void feed_socket_path(const char *render_socket, char *buf, size_t len) {
+    char *slash;
+    snprintf(buf, len, "%s", render_socket);
+    slash = strrchr(buf, '/');
+    if (slash) {
+        snprintf(slash + 1, len - (size_t)(slash - buf + 1), "lock-feed.sock");
+    }
 }
 
 static void usage(const char *argv0) {
@@ -88,6 +101,7 @@ static void usage(const char *argv0) {
 
 int main(int argc, char **argv) {
     char socket_path[4096];
+    char feed_path[4096];
     bool verbose = false;
     int i;
 
@@ -154,6 +168,13 @@ int main(int argc, char **argv) {
         cleanup();
         return fail_init();
     }
+    feed_socket_path(socket_path, feed_path, sizeof(feed_path));
+    g_app.feed = owe_feed_new(feed_path, g_app.egl);
+    if (!g_app.feed) {
+        OWE_ERROR("feed init failed");
+        cleanup();
+        return fail_init();
+    }
 
     OWE_INFO("ready, socket=%s", socket_path);
 
@@ -161,7 +182,9 @@ int main(int argc, char **argv) {
         int max_w = 0;
         int max_h = 0;
         if (owe_wayland_dispatch_pending(g_app.wl) < 0) break;
-        owe_wayland_render_pending(g_app.wl);
+        if (!g_app.feeding) {
+            owe_wayland_render_pending(g_app.wl);
+        }
         owe_wayland_outputs_max_size(g_app.wl, &max_w, &max_h);
         if (max_w != g_last_max_w || max_h != g_last_max_h) {
             g_last_max_w = max_w;
@@ -172,9 +195,10 @@ int main(int argc, char **argv) {
         }
         int wlfd = owe_wayland_fd(g_app.wl);
         int ipcfd = owe_render_ipc_fd(g_app.ipc);
+        int feedfd = owe_feed_fd(g_app.feed);
         int mpvfd = owe_mpv_fd(g_app.mpv);
         int stillfd = owe_still_fd(g_app.still);
-        struct pollfd pfds[5 + OWE_IPC_MAX_CLIENTS];
+        struct pollfd pfds[7 + OWE_IPC_MAX_CLIENTS + OWE_FEED_MAX_CLIENTS];
         int n = 0;
         int rc;
         bool mpv_ready = false;
@@ -191,6 +215,11 @@ int main(int argc, char **argv) {
             pfds[n].events = POLLIN;
             n++;
         }
+        if (feedfd >= 0) {
+            pfds[n].fd = feedfd;
+            pfds[n].events = POLLIN;
+            n++;
+        }
         if (mpvfd >= 0) {
             pfds[n].fd = mpvfd;
             pfds[n].events = POLLIN;
@@ -202,6 +231,7 @@ int main(int argc, char **argv) {
             n++;
         }
         n += owe_render_ipc_pollfds(g_app.ipc, &pfds[n]);
+        n += owe_feed_pollfds(g_app.feed, &pfds[n]);
         rc = poll(pfds, (nfds_t)n, owe_still_busy(g_app.still) ? 200 : 1000);
         if (rc < 0) {
             if (errno == EINTR) {
@@ -227,6 +257,8 @@ int main(int argc, char **argv) {
                 }
             } else if (pfds[i].fd == ipcfd) {
                 owe_render_ipc_accept(g_app.ipc);
+            } else if (pfds[i].fd == feedfd) {
+                owe_feed_accept(g_app.feed);
             } else if (pfds[i].fd == mpvfd) {
                 mpv_ready = true;
             }
@@ -234,10 +266,19 @@ int main(int argc, char **argv) {
         if (!g_app.running) break;
         owe_render_ipc_poll_clients(g_app.ipc);
         owe_render_ipc_poll_still(g_app.ipc);
-        owe_wayland_render_pending(g_app.wl);
-        if (mpvfd >= 0 && mpv_ready && owe_mpv_process_updates(g_app.mpv)) {
-            owe_app_request_render();
+        owe_feed_poll_clients(g_app.feed, g_app.mpv);
+        if (!g_app.feeding) {
             owe_wayland_render_pending(g_app.wl);
+        }
+        if (mpvfd >= 0 && mpv_ready && owe_mpv_process_updates(g_app.mpv)) {
+            if (g_app.feeding) {
+                if (owe_feed_publish(g_app.feed, g_app.mpv) == 0) {
+                    owe_mpv_report_swap(g_app.mpv);
+                }
+            } else {
+                owe_app_request_render();
+                owe_wayland_render_pending(g_app.wl);
+            }
         }
     }
 

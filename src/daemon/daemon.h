@@ -53,6 +53,7 @@ typedef struct owed_app {
     owed_async_job_t *job;
     char fail_path[4096];
     int render_paused; /* -1 unknown, 0 playing, 1 paused */
+    int render_feeding; /* 1 while the lock feed owns the renderer */
     unsigned long source_generation;
 } owed_app_t;
 

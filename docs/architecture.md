@@ -54,6 +54,19 @@ Pause sets `pause` to `yes`. Decode stops, update callbacks stop,
 and the last frame stays presented. No frame callbacks get requested
 while paused, so the main loop sleeps in `poll`.
 
+## Lock feed
+
+A locked session keeps its video. The daemon sends `feed` to the renderer
+instead of `pause` when logind reports the session locked and the loaded
+media is a video. The renderer resumes playback muted and writes frames
+into a three slot shared memory ring, one memfd per slot. `lock-feed.sock`
+sits next to `render.sock` and carries a fixed size binary protocol. A
+client gets one `HELLO` with the slot descriptors and their fds over
+`SCM_RIGHTS`, then one `FRAME` per presented frame and one `ACK` per
+consumed frame. Buffers return to the ring when every client acknowledges
+them. `owe pause` and `feed-stop` both end the feed. Each output of the
+lock screen owns a client, so all outputs show the same decode.
+
 ## Daemon
 
 `owed` watches `~/.local/state/omarchy/current/` with `inotify` and

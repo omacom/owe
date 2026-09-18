@@ -138,6 +138,17 @@ int owe_socket_path_daemon(char *buf, size_t len) {
     return 0;
 }
 
+int owe_socket_path_feed(char *buf, size_t len) {
+    char rt[PATH_MAX];
+    if (owe_xdg_runtime_dir(rt, sizeof(rt)) != 0) {
+        return -1;
+    }
+    if (snprintf(buf, len, "%s/owe/lock-feed.sock", rt) >= (int)len) {
+        return -1;
+    }
+    return 0;
+}
+
 int owe_config_path(char *buf, size_t len) {
     char cfg[PATH_MAX];
     if (owe_xdg_config_home(cfg, sizeof(cfg)) != 0) {

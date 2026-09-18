@@ -14,6 +14,7 @@
 #include "yyjson.h"
 
 #include "common_ipc.h"
+#include "feed.h"
 #include "json.h"
 #include <sys/stat.h>
 #include "log.h"
@@ -214,8 +215,29 @@ static void handle_command(struct owe_render_ipc *ipc, struct owe_client *c, con
             owe_app_request_render();
         }
         send_ok(c, NULL);
+    } else if (strcmp(cmd, "feed") == 0) {
+        if (app && app->feed) {
+            owe_feed_start(app->feed);
+            app->feeding = true;
+            app->paused = false;
+            owe_mpv_set_muted(app->mpv, true);
+            owe_mpv_set_paused(app->mpv, false);
+        }
+        send_ok(c, NULL);
+    } else if (strcmp(cmd, "feed-stop") == 0) {
+        if (app && app->feed) {
+            owe_feed_stop(app->feed);
+            app->feeding = false;
+            owe_mpv_set_muted(app->mpv, false);
+        }
+        send_ok(c, NULL);
     } else if (strcmp(cmd, "stop") == 0) {
         if (app) {
+            if (app->feeding) {
+                owe_feed_stop(app->feed);
+                app->feeding = false;
+                owe_mpv_set_muted(app->mpv, false);
+            }
             owe_mpv_stop(app->mpv);
             owe_still_unload(app->still);
             app->current_path[0] = '\0';

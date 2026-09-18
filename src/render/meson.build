@@ -5,6 +5,7 @@ render_sources = files(
   'mpv.c',
   'still.c',
   'render_ipc.c',
+  'feed.c',
 )
 
 owe_render = executable('owe-render',
