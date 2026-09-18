@@ -25,7 +25,11 @@ bool owe_has_suffix_ci(const char *path, const char *suffix) {
 }
 
 owe_media_kind_t owe_kind_from_path(const char *path) {
-    static const char *video[] = { ".mp4", ".m4v", ".mov", ".webm", ".mkv", ".avi", NULL };
+    static const char *video[] = {
+        ".mp4",  ".m4v", ".mov", ".webm", ".mkv", ".avi", ".mpeg", ".mpg", ".ts",
+        ".m2ts", ".mts", ".wmv", ".asf",  ".flv", ".f4v", ".ogv",  ".3gp", ".3g2",
+        ".apng", NULL,
+    };
     static const char *still[] = { ".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif",
                                    ".tiff", ".avif", ".jxl", ".heic", ".heif", NULL };
     size_t i;

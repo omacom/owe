@@ -1,6 +1,7 @@
 # owe — high-performance wallpaper engine for Omarchy
 
-`owe` plays `mp4`, `GIF`, and still images as the Hyprland background.
+`owe` plays video files, `GIF`, and still images as the Hyprland background.
+Video containers include `mp4`, `mkv`, `webm`, `mov`, `avi`, `mpeg`, `ts`, `wmv`, `flv`, `ogv`, and `3gp`.
 It joins the Omarchy theme switch through existing contracts only.
 It changes no packaged Omarchy file.
 
