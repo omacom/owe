@@ -24,6 +24,8 @@ jobs:
             wayland wayland-protocols libglvnd libepoxy mpv ffmpeg \
             systemd-libs socat python git
       - uses: actions/checkout@v5
+      - name: Trust the checkout
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Check the version
         id: version
         run: |
