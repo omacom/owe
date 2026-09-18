@@ -176,8 +176,7 @@ static void media_failed(void) {
 
 /* A video load reply only means the renderer accepted the request. Poll until
  * the first frame presents, or recover when decode fails or stalls. */
-static void check_media_ready(void) {
-    owed_app_t *app = &g_app;
+static void check_media_ready(void) {    owed_app_t *app = &g_app;
     char reply[OWE_IPC_MAX_LINE];
     bool ready = false;
     bool error = false;
@@ -204,6 +203,52 @@ static void check_media_ready(void) {
         copy_path(app->last_good_kind, sizeof(app->last_good_kind), app->loaded_kind);
         OWE_INFO("media ready: %s", app->loaded_path);
     }
+}
+
+static char g_last_skip[1024];
+
+/* Publish the monitors covered by a fullscreen window. The renderer stops
+ * swapping buffers for those outputs, which avoids holding compositor
+ * buffers the compositor is not consuming. */
+static void sync_output_skips(void) {
+    const char *covered;
+    const char *cursor;
+    char array[2048];
+    char *line = NULL;
+    size_t used = 0;
+    if (!g_app.hypr || !g_app.supervisor) {
+        return;
+    }
+    covered = owed_hypr_covered_names(g_app.hypr);
+    if (strcmp(covered, g_last_skip) == 0) {
+        return;
+    }
+    used += (size_t)snprintf(array + used, sizeof(array) - used, "[");
+    cursor = covered;
+    while (*cursor && used < sizeof(array) - 3) {
+        const char *end = strchr(cursor, ',');
+        size_t len = end ? (size_t)(end - cursor) : strlen(cursor);
+        char name[256];
+        char *quoted;
+        if (len >= sizeof(name)) {
+            break;
+        }
+        memcpy(name, cursor, len);
+        name[len] = '\0';
+        quoted = owe_json_quote(name);
+        if (quoted) {
+            used += (size_t)snprintf(array + used, sizeof(array) - used, "%s%s",
+                                     used > 1 ? "," : "", quoted);
+            free(quoted);
+        }
+        cursor = end ? end + 1 : cursor + len;
+    }
+    snprintf(array + used, sizeof(array) - used, "]");
+    if (asprintf(&line, "{\"cmd\":\"skip\",\"outputs\":%s}", array) >= 0 &&
+        owed_supervisor_send(g_app.supervisor, line, NULL, 0) == 0) {
+        copy_path(g_last_skip, sizeof(g_last_skip), covered);
+    }
+    free(line);
 }
 
 static void finish_media(const char *path, const char *kind, bool is_video) {
@@ -321,6 +366,7 @@ void owed_app_on_renderer_restarted(void) {
     g_app.render_paused = -1;
     g_app.fail_path[0] = '\0';
     g_app.media_pending = false;
+    g_last_skip[0] = '\0';
     owed_supervisor_fade(g_app.supervisor, g_app.config.fade_ms);
     owed_app_apply_policy();
 }
@@ -635,6 +681,7 @@ int main(int argc, char **argv) {
         owed_ipc_poll_clients(g_app.ipc);
         if (!g_app.running) break;
         check_media_ready();
+        sync_output_skips();
         if (!owed_render_is_alive(g_app.supervisor) &&
             owed_supervisor_ensure_running(g_app.supervisor) == 0)
             owed_app_on_renderer_restarted();

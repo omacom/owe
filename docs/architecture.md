@@ -28,7 +28,13 @@ video to cover the output at its native aspect ratio.
 Video rendering is paced by `mpv_render_context_update` frame flags
 delivered over a self-pipe. The renderer draws only when the decoder
 produces a frame, so a 30 fps video costs 30 renders per second on any
-display. `mpv_render_context_render` writes directly into the window
+display. Rendering is also paced on `wl_surface.frame` callbacks. The
+renderer swaps only after the compositor signals readiness, so a blanked
+or stalled output stops the draw loop instead of blocking inside the
+graphics driver. An output whose DRM connector reports DPMS off is
+skipped. The daemon also publishes the monitors covered by a fullscreen
+window, and the renderer stops swapping buffers for those outputs.
+`mpv_render_context_render` writes directly into the window
 framebuffer. No intermediate framebuffer or blit exists.
 
 The blit shader owns one VAO, one VBO, and one program. Still images

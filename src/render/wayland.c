@@ -2,9 +2,11 @@
 
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <wayland-client.h>
 #include <wayland-egl.h>
 
+#include "display_state.h"
 #include "egl.h"
 #include "log.h"
 #include "mpv.h"
@@ -51,15 +53,18 @@ static void output_update_size(owe_output_t *out) {
 static void output_geometry(void *data, struct wl_output *wl_output, int32_t x, int32_t y,
                             int32_t physical_width, int32_t physical_height, int32_t subpixel,
                             const char *make, const char *model, int32_t transform) {
-    owe_output_t *out = data;
+    (void)data;
     (void)wl_output;
     (void)x;
     (void)y;
     (void)physical_width;
     (void)physical_height;
     (void)subpixel;
+    (void)make;
+    (void)model;
     (void)transform;
-    snprintf(out->name, sizeof(out->name), "%s %s", make ? make : "", model ? model : "");
+    /* wl_output.name carries the compositor connector name, which the
+     * daemon uses to match Hyprland monitors. Keep it. */
 }
 
 static void output_mode(void *data, struct wl_output *wl_output, uint32_t flags, int32_t width,
@@ -147,6 +152,7 @@ static void layer_configure(void *data, struct zwlr_layer_surface_v1 *surface, u
     if (height > 0) {
         out->height = (int32_t)height;
     }
+    out->frame_ready = 1;
     output_update_size(out);
     OWE_DEBUG("layer configure %s %dx%d buffer %dx%d", out->name, out->width, out->height,
               out->buffer_w, out->buffer_h);
@@ -180,11 +186,16 @@ static const struct wl_callback_listener frame_listener = {
 
 static void frame_done(void *data, struct wl_callback *cb, uint32_t time) {
     owe_output_t *out = data;
+    owe_app_t *app = owe_app_get();
     (void)time;
     wl_callback_destroy(cb);
     out->frame_callback = NULL;
-    /* Present the fully opaque final frame even when the fade timer has expired. */
-    out->frame_pending = 1;
+    /* The compositor is ready for another frame. Present the final still
+     * frame after the fade, but never force a duplicate video frame. */
+    out->frame_ready = 1;
+    if (app && app->still && owe_still_has_image(app->still)) {
+        out->frame_pending = 1;
+    }
 }
 
 static owe_output_t *output_new(struct owe_wayland *wl, struct wl_output *wl_output, uint32_t name) {
@@ -200,6 +211,7 @@ static owe_output_t *output_new(struct owe_wayland *wl, struct wl_output *wl_out
     out->width = 0;
     out->height = 0;
     out->scale = 1;
+    out->frame_ready = 1;
     snprintf(out->name, sizeof(out->name), "output-%p", (void *)wl_output);
     wl_output_add_listener(wl_output, &output_listener, out);
 
@@ -477,10 +489,86 @@ void owe_wayland_request_render(void *opaque) {
     }
 }
 
+static int64_t now_ms(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+}
+
+/* Skip a compositor output whose connector reports DPMS off. Mesa's swap
+ * blocks in poll while nothing consumes buffers, which stalls the whole
+ * event loop until the screen returns. The state is re-read once per frame
+ * interval so the first frame after a blank is not swapped. */
+static bool output_drm_off(owe_output_t *out) {
+    int64_t now = now_ms();
+    if (now - out->drm_checked_ms > 20) {
+        bool off = owe_drm_connector_state("/sys/class/drm", out->name) == 1;
+        if (off != (out->drm_off != 0)) {
+            OWE_INFO("output %s dpms %s", out->name, off ? "off" : "on");
+        }
+        out->drm_off = off;
+        out->drm_checked_ms = now;
+    }
+    return out->drm_off != 0;
+}
+
+void owe_wayland_set_skipped(struct owe_wayland *wl, const char *names) {
+    owe_output_t *out;
+    bool changed = false;
+    if (!wl) {
+        return;
+    }
+    for (out = wl->outputs; out; out = out->next) {
+        bool skip = false;
+        const char *cursor = names ? names : "";
+        while (*cursor) {
+            const char *end = strchr(cursor, ',');
+            size_t len = end ? (size_t)(end - cursor) : strlen(cursor);
+            if (len == strlen(out->name) && strncmp(cursor, out->name, len) == 0) {
+                skip = true;
+                break;
+            }
+            cursor = end ? end + 1 : cursor + len;
+        }
+        if (skip && !out->skip_render) {
+            out->skip_render = 1;
+            out->frame_pending = 0;
+            changed = true;
+        } else if (!skip && out->skip_render) {
+            out->skip_render = 0;
+            out->frame_pending = 1;
+            changed = true;
+        }
+    }
+    if (changed) {
+        owe_app_request_render();
+    }
+}
+
+void owe_wayland_skipped_list(struct owe_wayland *wl, char *out, size_t out_len) {
+    owe_output_t *item;
+    size_t used = 0;
+    if (!out || out_len < 2) {
+        return;
+    }
+    out[0] = '\0';
+    for (item = wl ? wl->outputs : NULL; item; item = item->next) {
+        if (!item->skip_render && !item->drm_off) {
+            continue;
+        }
+        used += (size_t)snprintf(out + used, out_len - used, "%s%s", used ? "," : "", item->name);
+        if (used >= out_len) {
+            out[out_len - 1] = '\0';
+            return;
+        }
+    }
+}
+
 void owe_wayland_render_pending(struct owe_wayland *wl) {
     owe_app_t *app;
     owe_output_t *out;
     int want_video = 0;
+    int rendered_video = 0;
     if (!wl) {
         return;
     }
@@ -494,8 +582,10 @@ void owe_wayland_render_pending(struct owe_wayland *wl) {
                             owe_still_needs_frames(app->still);
         for (out = wl->outputs; out; out = out->next) {
             struct wl_callback *cb;
-            int rendered_video = 0;
             if (!out->configured || !out->frame_pending || !out->egl_surface) {
+                continue;
+            }
+            if (out->skip_render || !out->frame_ready || output_drm_off(out)) {
                 continue;
             }
             out->frame_pending = 0;
@@ -510,17 +600,30 @@ void owe_wayland_render_pending(struct owe_wayland *wl) {
             } else {
                 owe_egl_clear_output(app->egl, out, 0.0f, 0.0f, 0.0f, 1.0f);
             }
-            if (need_frame_cb && !out->frame_callback) {
-                cb = wl_surface_frame(out->surface);
-                if (cb) {
-                    out->frame_callback = cb;
-                    wl_callback_add_listener(cb, &frame_listener, out);
+            /* Re-read the connector state without the cache. A blank between
+             * the check above and this swap would block inside Mesa until the
+             * screen returns. */
+            out->drm_checked_ms = 0;
+            if (output_drm_off(out)) {
+                out->frame_pending = 1;
+                continue;
+            }
+            /* Request the callback before the commit that triggers it, then
+             * pace on the compositor. While it stops presenting frames, no
+             * callback arrives and no swap can block in Mesa. */
+            if (need_frame_cb || want_video) {
+                if (!out->frame_callback) {
+                    cb = wl_surface_frame(out->surface);
+                    if (cb) {
+                        out->frame_callback = cb;
+                        wl_callback_add_listener(cb, &frame_listener, out);
+                    }
                 }
+                out->frame_ready = 0;
             }
             owe_egl_swap_output(app->egl, out);
-            (void)rendered_video;
         }
-        if (want_video) owe_mpv_report_swap(app->mpv);
+        if (want_video && rendered_video) owe_mpv_report_swap(app->mpv);
     }
     wl_display_flush(wl->display);
 }

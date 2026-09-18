@@ -26,6 +26,7 @@ struct owed_hypr {
     bool any_window_visible;
     bool all_monitors_off;
     int monitor_count;
+    char covered[1024];
 };
 
 /* The session environment keeps the Hyprland signature from login. A
@@ -148,6 +149,7 @@ static void recompute(struct owed_hypr *h) {
     yyjson_doc *monitors = h->monitors ? yyjson_read(h->monitors, strlen(h->monitors), 0) : NULL;
     h->any_fullscreen = owe_outputs_covered_docs(clients, monitors, true);
     h->any_window_visible = owe_outputs_covered_docs(clients, monitors, false);
+    owe_outputs_covered_list(clients, monitors, true, h->covered, sizeof(h->covered));
     if (monitors) {
         yyjson_val *root = yyjson_doc_get_root(monitors), *m;
         size_t i, n;
@@ -245,3 +247,4 @@ bool owed_hypr_any_fullscreen(struct owed_hypr *h) { return h && h->any_fullscre
 bool owed_hypr_any_window_visible(struct owed_hypr *h) { return h && h->any_window_visible; }
 bool owed_hypr_all_monitors_off(struct owed_hypr *h) { return h && h->all_monitors_off; }
 int owed_hypr_monitor_count(struct owed_hypr *h) { return h ? h->monitor_count : 0; }
+const char *owed_hypr_covered_names(struct owed_hypr *h) { return h ? h->covered : ""; }

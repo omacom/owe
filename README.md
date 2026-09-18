@@ -160,6 +160,9 @@ Generated media contains only video. Source files remain intact.
   tracks the media frame rate, not the display refresh rate.
 - Video draws straight into the window framebuffer. No intermediate
   copy per frame per output.
+- Video redraws wait for the compositor's frame callback. A blanked
+  output stops the draw loop instead of stalling the event loop, and an
+  output covered by a fullscreen window stops swapping buffers.
 - Hardware decode is on by default (`hwdec=auto-safe`). Override with
   the `OWE_HWDEC` environment variable.
 - `libmpv` runs without its lua scripts. The ytdl hook, stats overlay,

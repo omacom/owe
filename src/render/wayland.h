@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 struct owe_wayland;
@@ -21,6 +22,10 @@ typedef struct owe_output {
     int32_t buffer_h;
     int configured;
     int frame_pending;
+    int frame_ready;
+    int skip_render;
+    int drm_off;
+    int64_t drm_checked_ms;
     struct wl_surface *surface;
     struct zwlr_layer_surface_v1 *layer;
     struct wl_egl_window *egl_window;
@@ -46,6 +51,8 @@ void owe_wayland_flush(struct owe_wayland *wl);
 
 void owe_wayland_request_render(void *opaque);
 void owe_wayland_render_pending(struct owe_wayland *wl);
+void owe_wayland_set_skipped(struct owe_wayland *wl, const char *names);
+void owe_wayland_skipped_list(struct owe_wayland *wl, char *out, size_t out_len);
 
 owe_output_t *owe_wayland_outputs(struct owe_wayland *wl);
 int owe_wayland_output_count(struct owe_wayland *wl);

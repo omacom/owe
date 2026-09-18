@@ -137,6 +137,32 @@ static void test_display_state(void) {
     monitors = "[{\"activeWorkspace\":{\"id\":1}},{\"activeWorkspace\":{\"id\":2}}]";
     CHECK(!owe_outputs_covered("[{\"workspace\":{\"id\":1},\"fullscreen\":2}]", monitors, true));
     CHECK(!owe_outputs_covered("[]", "[]", false));
+    {
+        const char *named =
+            "[{\"name\":\"eDP-1\",\"activeWorkspace\":{\"id\":1}},"
+            "{\"name\":\"DP-1\",\"activeWorkspace\":{\"id\":2}}]";
+        const char *both =
+            "[{\"workspace\":{\"id\":1},\"fullscreen\":2},"
+            "{\"workspace\":{\"id\":2},\"fullscreen\":2}]";
+        const char *one_json = "[{\"workspace\":{\"id\":1},\"fullscreen\":2}]";
+        const char *none_json = "[{\"workspace\":{\"id\":9},\"fullscreen\":2}]";
+        yyjson_doc *m = yyjson_read(named, strlen(named), 0);
+        yyjson_doc *one = yyjson_read(one_json, strlen(one_json), 0);
+        char list[128];
+        CHECK(m && one);
+        CHECK(owe_outputs_covered_list(one, m, true, list, sizeof(list)));
+        CHECK(strcmp(list, "eDP-1") == 0);
+        yyjson_doc_free(one);
+        one = yyjson_read(both, strlen(both), 0);
+        CHECK(one && owe_outputs_covered_list(one, m, true, list, sizeof(list)));
+        CHECK(strcmp(list, "eDP-1,DP-1") == 0);
+        yyjson_doc_free(one);
+        one = yyjson_read(none_json, strlen(none_json), 0);
+        CHECK(one && !owe_outputs_covered_list(one, m, true, list, sizeof(list)));
+        CHECK(list[0] == '\0');
+        yyjson_doc_free(one);
+        yyjson_doc_free(m);
+    }
     groups++;
 }
 

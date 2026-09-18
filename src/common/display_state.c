@@ -45,42 +45,121 @@ done:
     return result;
 }
 
+/* 1 when the named connector is off, 0 when it is on, -1 when unknown. */
+int owe_drm_connector_state(const char *root, const char *name) {
+    DIR *dir;
+    struct dirent *entry;
+    char suffix[300];
+    int result = -1;
+    if (!root || !name || !*name) return -1;
+    snprintf(suffix, sizeof(suffix), "-%s", name);
+    dir = opendir(root);
+    if (!dir) return -1;
+    while ((entry = readdir(dir))) {
+        char status[64] = "";
+        char dpms[64] = "";
+        size_t len = strlen(entry->d_name);
+        size_t slen = strlen(suffix);
+        if (len < slen || strcmp(entry->d_name + len - slen, suffix) != 0) continue;
+        if (attribute(root, entry->d_name, "status", status, sizeof(status)) < 0) continue;
+        if (strcmp(status, "connected") != 0) continue;
+        if (attribute(root, entry->d_name, "dpms", dpms, sizeof(dpms)) < 0) {
+            result = -1;
+            break;
+        }
+        if (strcmp(dpms, "On") == 0) {
+            result = 0;
+        } else if (strcmp(dpms, "Off") == 0 || strcmp(dpms, "Standby") == 0 ||
+                   strcmp(dpms, "Suspend") == 0) {
+            result = 1;
+        } else {
+            result = -1;
+        }
+        break;
+    }
+    closedir(dir);
+    return result;
+}
+
 static bool flag(yyjson_val *value) {
     return yyjson_is_bool(value) ? yyjson_get_bool(value) : yyjson_get_int(value) != 0;
+}
+
+static bool monitor_covered(yyjson_val *monitor, yyjson_val *clients, bool fullscreen_only) {
+    size_t j, jmax;
+    yyjson_val *client;
+    yyjson_val *dpms;
+    yyjson_val *active;
+    yyjson_val *special;
+    if (!yyjson_is_obj(monitor)) return false;
+    if (flag(yyjson_obj_get(monitor, "disabled"))) return false;
+    dpms = yyjson_obj_get(monitor, "dpmsStatus");
+    if (dpms && !flag(dpms)) return false;
+    active = yyjson_obj_get(yyjson_obj_get(monitor, "activeWorkspace"), "id");
+    special = yyjson_obj_get(yyjson_obj_get(monitor, "specialWorkspace"), "id");
+    if (!yyjson_is_int(active)) return false;
+    yyjson_arr_foreach(clients, j, jmax, client) {
+        yyjson_val *mapped;
+        yyjson_val *workspace;
+        int id;
+        if (flag(yyjson_obj_get(client, "hidden"))) continue;
+        mapped = yyjson_obj_get(client, "mapped");
+        if (mapped && !flag(mapped)) continue;
+        workspace = yyjson_obj_get(yyjson_obj_get(client, "workspace"), "id");
+        if (!yyjson_is_int(workspace)) continue;
+        id = yyjson_get_int(workspace);
+        if (id != yyjson_get_int(active) &&
+            (!special || !yyjson_get_int(special) || id != yyjson_get_int(special))) continue;
+        if (fullscreen_only && yyjson_get_int(yyjson_obj_get(client, "fullscreen")) != 2) continue;
+        return true;
+    }
+    return false;
 }
 
 bool owe_outputs_covered_docs(yyjson_doc *c, yyjson_doc *m, bool fullscreen_only) {
     yyjson_val *cr = c ? yyjson_doc_get_root(c) : NULL;
     yyjson_val *mr = m ? yyjson_doc_get_root(m) : NULL;
     bool covered = false;
+    size_t i, imax;
+    yyjson_val *monitor;
     if (!yyjson_is_arr(cr) || !yyjson_is_arr(mr)) return false;
-    size_t i, imax, j, jmax;
-    yyjson_val *monitor, *client;
     yyjson_arr_foreach(mr, i, imax, monitor) {
         if (flag(yyjson_obj_get(monitor, "disabled"))) continue;
         yyjson_val *dpms = yyjson_obj_get(monitor, "dpmsStatus");
         if (dpms && !flag(dpms)) continue;
-        yyjson_val *active = yyjson_obj_get(yyjson_obj_get(monitor, "activeWorkspace"), "id");
-        yyjson_val *special = yyjson_obj_get(yyjson_obj_get(monitor, "specialWorkspace"), "id");
-        if (!yyjson_is_int(active)) { covered = false; return false; }
-        bool here = false;
-        yyjson_arr_foreach(cr, j, jmax, client) {
-            if (flag(yyjson_obj_get(client, "hidden"))) continue;
-            yyjson_val *mapped = yyjson_obj_get(client, "mapped");
-            if (mapped && !flag(mapped)) continue;
-            yyjson_val *workspace = yyjson_obj_get(yyjson_obj_get(client, "workspace"), "id");
-            if (!yyjson_is_int(workspace)) continue;
-            int id = yyjson_get_int(workspace);
-            if (id != yyjson_get_int(active) &&
-                (!special || !yyjson_get_int(special) || id != yyjson_get_int(special))) continue;
-            if (fullscreen_only && yyjson_get_int(yyjson_obj_get(client, "fullscreen")) != 2) continue;
-            here = true;
-            break;
-        }
-        if (!here) { covered = false; return false; }
+        if (!monitor_covered(monitor, cr, fullscreen_only)) return false;
         covered = true;
     }
     return covered;
+}
+
+/* Comma separated names of monitors where a window covers the output. */
+bool owe_outputs_covered_list(yyjson_doc *c, yyjson_doc *m, bool fullscreen_only, char *out,
+                              size_t out_len) {
+    yyjson_val *cr = c ? yyjson_doc_get_root(c) : NULL;
+    yyjson_val *mr = m ? yyjson_doc_get_root(m) : NULL;
+    size_t i, imax;
+    yyjson_val *monitor;
+    size_t used = 0;
+    if (!out || out_len < 2) return false;
+    out[0] = '\0';
+    if (!yyjson_is_arr(cr) || !yyjson_is_arr(mr)) return false;
+    yyjson_arr_foreach(mr, i, imax, monitor) {
+        yyjson_val *name;
+        if (flag(yyjson_obj_get(monitor, "disabled"))) continue;
+        yyjson_val *dpms = yyjson_obj_get(monitor, "dpmsStatus");
+        if (dpms && !flag(dpms)) continue;
+        if (!monitor_covered(monitor, cr, fullscreen_only)) continue;
+        name = yyjson_obj_get(monitor, "name");
+        if (!yyjson_is_str(name)) continue;
+        used += (size_t)snprintf(out + used, out_len - used, "%s%s",
+                                 used ? "," : "", yyjson_get_str(name));
+        if (used >= out_len) {
+            out[out_len - 1] = '\0';
+            return true;
+        }
+    }
+    return out[0] != '\0';
 }
 
 bool owe_outputs_covered(const char *clients, const char *monitors, bool fullscreen_only) {

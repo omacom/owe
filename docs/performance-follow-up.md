@@ -111,6 +111,33 @@ output at runtime returned the same values, so hotplug and removal work.
 current frame, or `poster` to extract a still. `battery_poster = true`
 remains an alias for poster mode. `owe config` reports the mode.
 
+### DPMS stall and per-output skip, 2026-09-17
+
+A DPMS blank used to stall the renderer inside Mesa's buffer swap for the
+whole blank. The renderer did not answer IPC until the screen returned,
+and the delay to pause playback depended on the pending swap.
+
+The DRM connector state lags the compositor by about 800 ms, and Mesa's
+swap waits in `poll` for a buffer that a blanked compositor never
+releases. The renderer now paces swaps on `wl_surface.frame` callbacks.
+When the compositor stops presenting, no callback arrives, so no swap
+starts. It also re-reads the DRM connector state without a cache
+immediately before each swap.
+
+Live checks on eDP-1 with a 4K24 video:
+
+| Check | Result |
+| --- | --- |
+| `owe render-status` during a blank | Replies, `paused=true` |
+| Playback position while paused | Frozen at 3.542 s |
+| Resume on DPMS on | Advances from 6.708 s to 7.708 s |
+| Renderer during a blank | No stall, no blocked swap |
+
+A fullscreen window now stops swapping only on the covered output. With a
+headless second output, a fullscreen window on eDP-1 gave `skipped=eDP-1`
+in `owe render-status` while the policy stayed `visible` and the headless
+output kept its frames. Removing the window cleared the skip.
+
 ### Completed checks
 
 - All six registered test suites pass.

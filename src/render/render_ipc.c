@@ -84,15 +84,24 @@ static void handle_status(struct owe_client *c) {
     char *line = NULL;
     char *path = owe_json_quote(app ? app->current_path : "");
     char *error = owe_json_quote(app ? owe_mpv_error(app->mpv) : "");
+    char skipped[1024] = "";
+    char *skipped_json = NULL;
     if (!path || !error) { free(path); free(error); return; }
     int mw = 0;
     int mh = 0;
     if (app && app->wl) {
         owe_wayland_outputs_max_size(app->wl, &mw, &mh);
+        owe_wayland_skipped_list(app->wl, skipped, sizeof(skipped));
+    }
+    skipped_json = owe_json_quote(skipped);
+    if (!skipped_json) {
+        free(path);
+        free(error);
+        return;
     }
     if (asprintf(&line,
              "{\"status\":\"ok\",\"path\":%s,\"kind\":\"%s\",\"paused\":%s,\"ready\":%s,\"outputs\":%d,"
-             "\"max_width\":%d,\"max_height\":%d,\"has_video\":%s,\"has_still\":%s,\"time_pos\":%.3f,\"hwdec\":\"%s\",\"error\":%s}",
+             "\"max_width\":%d,\"max_height\":%d,\"has_video\":%s,\"has_still\":%s,\"time_pos\":%.3f,\"hwdec\":\"%s\",\"error\":%s,\"skipped\":%s}",
              path, app ? app->current_kind : "",
              app && app->paused ? "true" : "false",
              app && app->mpv && owe_mpv_ready(app->mpv) ? "true" : "false",
@@ -100,11 +109,12 @@ static void handle_status(struct owe_client *c) {
              mw, mh, app && app->mpv && owe_mpv_has_video(app->mpv) ? "true" : "false",
              app && app->still && owe_still_has_image(app->still) ? "true" : "false",
              app && app->mpv ? owe_mpv_time_pos(app->mpv) : -1.0,
-             owe_mpv_hwdec(app ? app->mpv : NULL), error) >= 0)
+             owe_mpv_hwdec(app ? app->mpv : NULL), error, skipped_json) >= 0)
         client_send(c, line);
     free(line);
     free(path);
     free(error);
+    free(skipped_json);
 }
 
 static void pending_reply(struct owe_render_ipc *ipc, int ok, const char *message) {
@@ -216,6 +226,27 @@ static void handle_command(struct owe_render_ipc *ipc, struct owe_client *c, con
         send_ok(c, NULL);
     } else if (strcmp(cmd, "status") == 0) {
         handle_status(c);
+    } else if (strcmp(cmd, "skip") == 0) {
+        yyjson_val *outputs = yyjson_obj_get(root, "outputs");
+        char names[1024] = "";
+        if (yyjson_is_arr(outputs)) {
+            size_t idx, imax;
+            yyjson_val *item;
+            size_t used = 0;
+            yyjson_arr_foreach(outputs, idx, imax, item) {
+                if (!yyjson_is_str(item)) continue;
+                used += (size_t)snprintf(names + used, sizeof(names) - used, "%s%s",
+                                         used ? "," : "", yyjson_get_str(item));
+                if (used >= sizeof(names)) {
+                    names[sizeof(names) - 1] = '\0';
+                    break;
+                }
+            }
+        }
+        if (app && app->wl) {
+            owe_wayland_set_skipped(app->wl, names);
+        }
+        send_ok(c, NULL);
     } else if (strcmp(cmd, "fade") == 0) {
         yyjson_val *vms = yyjson_obj_get(root, "ms");
         if (app && vms && yyjson_is_int(vms) && yyjson_get_sint(vms) >= 0 &&
