@@ -99,6 +99,18 @@ The renderer now sets both thresholds at startup. Decode options did not change 
 The remaining anonymous memory is live media and Mesa buffers.
 The file backed memory is the Mesa driver, LLVM, and the iHD driver, shared with other processes.
 
+### Multi-output and battery, 2026-09-17
+
+A headless output joined the session as a second 3840x2160-capable output.
+The renderer saw both outputs and one decode served them. The second 1080p
+output added 0.2 percentage points of one core, from 2.6 to 2.8 percent,
+and 3 MiB of resident memory. Thread count stayed at 14. Removing the
+output at runtime returned the same values, so hotplug and removal work.
+
+`battery_mode` now selects playback on battery: `play`, `pause` to hold the
+current frame, or `poster` to extract a still. `battery_poster = true`
+remains an alias for poster mode. `owe config` reports the mode.
+
 ### Completed checks
 
 - All six registered test suites pass.

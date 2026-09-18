@@ -59,7 +59,9 @@ void owed_app_emit_event(const char *name, const char *detail) {
 
 static bool battery_poster_active(void) {
     owed_app_t *app = &g_app;
-    return app->config.battery_poster && app->power && owed_power_on_battery(app->power) &&
+    return (app->config.battery_poster ||
+            strcmp(app->config.battery_mode, "poster") == 0) &&
+           app->power && owed_power_on_battery(app->power) &&
            !app->always_animate;
 }
 

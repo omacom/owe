@@ -139,12 +139,13 @@ static void handle_config(struct owed_client *c) {
     }
     if (asprintf(&line,
                  "{\"status\":\"ok\",\"pause_fullscreen\":%s,\"pause_occupied_workspace\":%s,"
-                 "\"battery_poster\":%s,\"gif_fps\":%d,\"gif_crf\":%d,"
+                 "\"battery_poster\":%s,\"battery_mode\":\"%s\",\"gif_fps\":%d,\"gif_crf\":%d,"
                  "\"max_width\":%d,\"max_height\":%d,\"cache_max_mb\":%d,"
                  "\"fade_ms\":%d,\"blocklist_count\":%d,\"blocklist\":%s}",
                  app->config.pause_fullscreen ? "true" : "false",
                  app->config.pause_occupied_workspace ? "true" : "false",
-                 app->config.battery_poster ? "true" : "false", app->config.gif_fps,
+                 app->config.battery_poster ? "true" : "false", app->config.battery_mode,
+                 app->config.gif_fps,
                  app->config.gif_crf, app->config.transcode_max_width,
                  app->config.transcode_max_height, app->config.cache_max_mb,
                  app->config.fade_ms, app->config.blocklist_count, blocklist) >= 0) {

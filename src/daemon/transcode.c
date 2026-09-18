@@ -192,6 +192,7 @@ static int run_gif(const owed_async_job_t *job, char *out, unsigned long out_len
     char vf[256];
     char fps_s[16];
     char crf_s[16];
+    char threads_s[16];
     char *argv[32];
     int ai = 0;
     if (gif_cache_path(job->input, job->fps, job->crf, job->max_w, job->max_h, cached,
@@ -204,6 +205,11 @@ static int run_gif(const owed_async_job_t *job, char *out, unsigned long out_len
     }
     snprintf(fps_s, sizeof(fps_s), "%d", job->fps);
     snprintf(crf_s, sizeof(crf_s), "%d", job->crf);
+    {
+        long cores = sysconf(_SC_NPROCESSORS_ONLN);
+        int threads = cores > 4 ? 4 : (int)(cores > 1 ? cores : 1);
+        snprintf(threads_s, sizeof(threads_s), "%d", threads);
+    }
     snprintf(vf, sizeof(vf),
              "fps=%d,scale='min(iw,%d)':'min(ih,%d)':force_original_aspect_ratio=decrease:flags=lanczos,"
              "scale='max(2,trunc(iw/2)*2)':'max(2,trunc(ih/2)*2)',format=yuv420p",
@@ -223,7 +229,7 @@ static int run_gif(const owed_async_job_t *job, char *out, unsigned long out_len
     argv[ai++] = "-c:v";
     argv[ai++] = "libx264";
     argv[ai++] = "-threads";
-    argv[ai++] = "2";
+    argv[ai++] = threads_s;
     argv[ai++] = "-preset";
     argv[ai++] = "veryfast";
     argv[ai++] = "-crf";

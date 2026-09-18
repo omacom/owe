@@ -13,6 +13,7 @@ void owe_config_defaults(owe_config_t *cfg) {
     cfg->pause_fullscreen = true;
     cfg->pause_occupied_workspace = false;
     cfg->battery_poster = false;
+    snprintf(cfg->battery_mode, sizeof(cfg->battery_mode), "play");
     cfg->gif_fps = 20;
     cfg->gif_crf = 20;
     cfg->transcode_max_width = 2560;
@@ -76,6 +77,14 @@ static bool apply_value(owe_config_t *cfg, const char *section, const char *key,
         }
         if (strcmp(key, "battery_poster") == 0) {
             return parse_bool(value, &cfg->battery_poster);
+        }
+        if (strcmp(key, "battery_mode") == 0) {
+            if (strcmp(value, "play") != 0 && strcmp(value, "pause") != 0 &&
+                strcmp(value, "poster") != 0) {
+                return false;
+            }
+            snprintf(cfg->battery_mode, sizeof(cfg->battery_mode), "%s", value);
+            return true;
         }
         if (strcmp(key, "blocklist") == 0) {
             cfg->blocklist_count = 0;

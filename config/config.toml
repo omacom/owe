@@ -8,6 +8,9 @@ occupied_workspace = false
 # Show a still poster instead of video while on battery. Off by default so
 # the wallpaper keeps moving on battery. Turn on for longer battery life.
 battery_poster = false
+# On battery: "play" keeps playback, "pause" holds the current frame, and
+# "poster" extracts a poster still. "poster" matches battery_poster = true.
+battery_mode = "play"
 # Process names that force pause while running. Example: ["obs", "steam"].
 blocklist = []
 

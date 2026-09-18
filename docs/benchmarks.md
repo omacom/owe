@@ -52,6 +52,11 @@ The daemon itself costs about 4 MB and near zero CPU.
 The video renders at its own frame rate. The display runs at 120 Hz,
 and the renderer does not follow the display.
 
+A second output shares the one decode. On the development machine a
+second 1080p output added about 0.2 percentage points of one core, from
+2.6 to 2.8 percent, and 3 MiB of resident memory. Thread count did not
+change. Removing the output at runtime recovered the same values.
+
 ## GPU notes
 
 This machine uses Intel Panther Lake Arc iGPU on the Xe driver.

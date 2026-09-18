@@ -6,6 +6,7 @@ typedef struct owe_config {
     bool pause_fullscreen;
     bool pause_occupied_workspace;
     bool battery_poster;
+    char battery_mode[16];
     int gif_fps;
     int gif_crf;
     int transcode_max_width;

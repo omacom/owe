@@ -123,8 +123,10 @@ and sleep. Reasons in priority order:
 5. `locked` follows logind session state.
 6. `dpms-off` applies when every connected monitor reports a known off state.
    Missing DRM data falls back to Hyprland state.
-7. `battery` shows a still poster while on battery. Off by default,
-   enable with `battery_poster = true`.
+7. `battery` holds or replaces playback while on battery. Off by default.
+   Set `battery_mode = "pause"` to hold the current frame, or
+   `battery_mode = "poster"` to show a still poster. `battery_poster = true`
+   is the same as poster mode.
 8. `blocklist` while a listed process runs. Off by default.
 9. `fullscreen` applies when fullscreen windows cover all active outputs. Hidden workspaces do not count.
 10. `occupied` applies when all active outputs have visible windows. Off by default, enable with

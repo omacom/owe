@@ -70,11 +70,20 @@ void owed_policy_recompute(struct owed_policy *p) {
         reason = "dpms-off";
         goto done;
     }
-    if (app->power && owed_power_on_battery(app->power) && app->config.battery_poster) {
-        pause = true;
-        poster = true;
-        reason = "battery";
-        goto done;
+    if (app->power && owed_power_on_battery(app->power)) {
+        bool poster = app->config.battery_poster ||
+                      strcmp(app->config.battery_mode, "poster") == 0;
+        if (poster) {
+            pause = true;
+            poster = true;
+            reason = "battery";
+            goto done;
+        }
+        if (strcmp(app->config.battery_mode, "pause") == 0) {
+            pause = true;
+            reason = "battery";
+            goto done;
+        }
     }
     if (p->blocklisted) {
         pause = true;
