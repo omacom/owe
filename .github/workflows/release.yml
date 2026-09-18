@@ -123,8 +123,14 @@ jobs:
           rm -rf aur-owe
           git clone ssh://aur@aur.archlinux.org/owe.git aur-owe
           cp packaging/PKGBUILD aur-owe/PKGBUILD
+          useradd -m builder 2>/dev/null || true
+          chown -R builder:builder aur-owe
+          (
+            cd aur-owe
+            su builder -c "HOME=/home/builder makepkg --printsrcinfo" > .SRCINFO
+            chown -R root:root .
+          )
           cd aur-owe
-          makepkg --printsrcinfo > .SRCINFO
           git add PKGBUILD .SRCINFO
           if git diff --cached --quiet; then
             echo "the AUR package is already current"
