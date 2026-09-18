@@ -22,7 +22,7 @@ sized `width*scale` by `height*scale` and the surface carries
 
 `libmpv` options are forced in code. User `mpv.conf` never loads.
 `hwdec` defaults to `auto-safe` and `OWE_HWDEC` overrides it.
-Audio stays off with `audio=no` and `aid=no`. `panscan=1.0` crops
+Audio plays through the default audio output. `panscan=1.0` crops
 video to cover the output at its native aspect ratio.
 
 Video rendering is paced by `mpv_render_context_update` frame flags

@@ -119,8 +119,11 @@ struct owe_mpv *owe_mpv_new(struct owe_wayland *wl) {
         const char *hwdec = getenv("OWE_HWDEC");
         set_opt(m->handle, "hwdec", hwdec && *hwdec ? hwdec : "auto-safe");
     }
-    set_opt(m->handle, "audio", "no");
-    set_opt(m->handle, "aid", "no");
+    /* A video wallpaper plays its audio track through the default output.
+     * Cover art stays off, and a session with no audio server keeps a null
+     * output instead of failing the track. */
+    set_opt(m->handle, "audio-display", "no");
+    set_opt(m->handle, "audio-fallback-to-null", "yes");
     set_opt(m->handle, "sub", "no");
     set_opt(m->handle, "sid", "no");
     set_opt(m->handle, "loop-file", "inf");
@@ -151,8 +154,8 @@ struct owe_mpv *owe_mpv_new(struct owe_wayland *wl) {
     set_opt(m->handle, "demuxer-max-back-bytes", "0");
     set_opt(m->handle, "demuxer-readahead-secs", "1");
     set_opt(m->handle, "hwdec-extra-frames", "3");
-    /* There is no audio track and no A/V sync target. Drop the sync engine. */
-    set_opt(m->handle, "video-sync", "desync");
+    /* Audio and video stay in step. A silent file uses the default clock. */
+    set_opt(m->handle, "video-sync", "audio");
     set_extra_options(m->handle);
     if (mpv_initialize(m->handle) < 0) {
         OWE_ERROR("mpv_initialize failed");

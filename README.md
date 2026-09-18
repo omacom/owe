@@ -163,10 +163,11 @@ The GIF and poster cache keeps the newest 512 MiB by default. Set
 `cache_max_mb` in `[transcode]` to change the budget. `0` disables
 eviction.
 
-## No audio
+## Audio
 
-Playback disables audio with `audio=no` and `aid=no`.
-Generated media contains only video. Source files remain intact.
+A video wallpaper plays its audio track through the default audio output.
+One renderer serves every monitor, so the track plays once. Generated GIF
+media is silent. Source files remain intact.
 
 ## Performance design
 
