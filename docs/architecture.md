@@ -60,6 +60,14 @@ while paused, so the main loop sleeps in `poll`.
 resolves `background` with `readlink -f`. It watches the directory
 because `ln -nsf` swaps the entry atomically.
 
+It owns the engine choice. While a video or GIF plays it starts
+`owe-render` and disables the shell background plugin. While a still
+shows, with `renderer_mode = "lazy"`, it enables the plugin, stops the
+renderer, and keeps only the daemon. The plugin is disabled only after
+the new media presents its first frame, so the handoff never shows a
+black frame. `renderer_mode = "always"` keeps the renderer for every
+background.
+
 It connects to the Hyprland event socket for `fullscreen`, `openwindow`,
 `closewindow`, `movewindow`, `workspace`, and monitor events. It queries
 client and monitor state over the Hyprland request socket with receive

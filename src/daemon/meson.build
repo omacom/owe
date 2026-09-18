@@ -7,6 +7,7 @@ daemon_sources = files(
   'policy.c',
   'daemon_ipc.c',
   'supervisor.c',
+  'shell.c',
 )
 
 owed = executable('owed',

@@ -14,6 +14,7 @@ void owe_config_defaults(owe_config_t *cfg) {
     cfg->pause_occupied_workspace = false;
     cfg->battery_poster = false;
     snprintf(cfg->battery_mode, sizeof(cfg->battery_mode), "play");
+    snprintf(cfg->renderer_mode, sizeof(cfg->renderer_mode), "lazy");
     cfg->gif_fps = 20;
     cfg->gif_crf = 20;
     cfg->transcode_max_width = 2560;
@@ -110,6 +111,13 @@ static bool apply_value(owe_config_t *cfg, const char *section, const char *key,
     } else if (strcmp(section, "render") == 0) {
         if (strcmp(key, "fade_ms") == 0) {
             return parse_int(value, &cfg->fade_ms);
+        }
+        if (strcmp(key, "renderer_mode") == 0) {
+            if (strcmp(value, "lazy") != 0 && strcmp(value, "always") != 0) {
+                return false;
+            }
+            snprintf(cfg->renderer_mode, sizeof(cfg->renderer_mode), "%s", value);
+            return true;
         }
     }
     OWE_WARN("unknown config key %s.%s", section[0] ? section : "(top)", key);

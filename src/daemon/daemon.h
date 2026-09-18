@@ -13,6 +13,12 @@ struct owed_policy;
 struct owed_ipc;
 struct owed_supervisor;
 
+enum owed_engine {
+    OWE_ENGINE_NONE = 0,
+    OWE_ENGINE_SHELL = 1,
+    OWE_ENGINE_RENDERER = 2,
+};
+
 typedef struct owed_app {
     owe_config_t config;
     struct owed_watch *watch;
@@ -23,6 +29,11 @@ typedef struct owed_app {
     struct owed_supervisor *supervisor;
     bool running;
     bool always_animate;
+
+    int engine;
+    int shell_enabled; /* -1 unknown, 0 disabled, 1 enabled */
+    int64_t shell_stop_at_ms;
+    int64_t renderer_retry_at_ms;
 
     char source_path[4096];
     char source_kind[16];
@@ -53,3 +64,5 @@ void owed_app_on_job_done(void);
 void owed_app_on_renderer_restarted(void);
 void owed_app_apply_policy(void);
 void owed_app_emit_event(const char *name, const char *detail);
+const char *owed_app_engine(void);
+bool owed_app_renderer_expected(void);

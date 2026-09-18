@@ -80,7 +80,7 @@ def find_pids():
 
 owed, renderer = find_pids()
 if renderer is None:
-    print(f"{name}: no renderer")
+    print(f"{name}: no owe renderer; the shell draws this state")
     sys.exit(0)
 results = []
 for _ in range(runs):

@@ -29,28 +29,35 @@ else
   bad "owed socket exists"
 fi
 
-if [[ -S "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/owe/render.sock" ]]; then
-  ok "render socket exists"
-else
-  bad "render socket exists"
-fi
-
-if owe status 2>/dev/null | grep -q '"status":"ok"'; then
+STATUS=$(owe status 2>/dev/null || true)
+if printf '%s' "$STATUS" | grep -q '"status":"ok"'; then
   ok "owe status replies ok"
 else
   bad "owe status replies ok"
 fi
 
-if owe render-status 2>/dev/null | grep -q '"status":"ok"'; then
-  ok "owe render-status replies ok"
+if printf '%s' "$STATUS" | grep -q '"engine":"shell"'; then
+  if hyprctl layers 2>/dev/null | grep -q "omarchy-background"; then
+    ok "shell background layer present (still)"
+  else
+    bad "shell background layer present (still)"
+  fi
 else
-  bad "owe render-status replies ok"
-fi
-
-if hyprctl layers 2>/dev/null | grep -q "owe-background"; then
-  ok "owe-background layer present"
-else
-  bad "owe-background layer present"
+  if [[ -S "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/owe/render.sock" ]]; then
+    ok "render socket exists"
+  else
+    bad "render socket exists"
+  fi
+  if owe render-status 2>/dev/null | grep -q '"status":"ok"'; then
+    ok "owe render-status replies ok"
+  else
+    bad "owe render-status replies ok"
+  fi
+  if hyprctl layers 2>/dev/null | grep -q "owe-background"; then
+    ok "owe-background layer present"
+  else
+    bad "owe-background layer present"
+  fi
 fi
 
 echo "pass=$PASS fail=$FAIL"

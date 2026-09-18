@@ -11,11 +11,10 @@ It adds no Omarchy-side hooks and edits no packaged file.
 - Hook: `theme-set.d/10-owe-sync` installed through
   `omarchy hook install theme-set`. It receives the theme slug in `$1`
   and sends `{"cmd":"refresh"}` to the daemon. It does no heavy work.
-- Shell config: the installer adds `omarchy.background` to
-  `disabledPlugins[]` in `~/.config/omarchy/shell.json` with a
-  timestamped backup. `background set` and `background themeTransition`
-  then fail quietly. `omarchy-theme-set` falls back to
-  `shell applyTheme` in each branch, so theme colors still apply live.
+- Shell config: `owed` controls `omarchy.background` in `shell.json` at
+  runtime through `omarchy-shell shell setPluginEnabled`. It disables the
+  plugin while a video or GIF plays, and enables it while a still shows.
+  With `renderer_mode = "always"` the plugin stays disabled.
 - Lock screen: `LockView` renders its own `BackgroundMedia` from the
   symlink. It needs no background plugin.
 - Bar sampler, `bg-switcher`, and `bg-cache`: they read files and the

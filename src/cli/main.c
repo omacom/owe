@@ -156,7 +156,7 @@ int main(int argc, char **argv) {
         return daemon_call("{\"cmd\":\"config\"}", 1);
     }
     if (strcmp(cmd, "render-status") == 0) {
-        return render_call("{\"cmd\":\"status\"}");
+        return daemon_call("{\"cmd\":\"render-status\"}", 1);
     }
     if (strcmp(cmd, "set") == 0) {
         char abs[PATH_MAX];

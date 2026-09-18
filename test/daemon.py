@@ -98,11 +98,21 @@ def main():
         current = root / "omarchy/current"
         current.mkdir(parents=True)
         (root / "good.mp4").write_bytes(b"test")
-        (root / "reject.png").write_bytes(b"not an image")
+        (root / "reject.mp4").write_bytes(b"not a video")
+        (root / "bad.mp4").write_bytes(b"test")
+        (root / "still.png").write_bytes(b"test")
         (current / "background").symlink_to(root / "good.mp4")
+        bin_dir = root / "bin"
+        bin_dir.mkdir()
+        shell_stub = bin_dir / "omarchy-shell"
+        shell_stub.write_text("#!/bin/sh\nprintf '%s\\n' \"$*\" >>\"$OWE_TEST_SHELL_LOG\"\nexit 0\n")
+        shell_stub.chmod(0o755)
+        shell_log = root / "shell.log"
         env = os.environ.copy()
         env.update(XDG_RUNTIME_DIR=str(root), XDG_CONFIG_HOME=str(root),
                    XDG_STATE_HOME=str(root), XDG_CACHE_HOME=str(root))
+        env["OWE_TEST_SHELL_LOG"] = str(shell_log)
+        env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
         env.pop("HYPRLAND_INSTANCE_SIGNATURE", None)
         daemon_socket = root / "owe/owed.sock"
         render_socket = root / "owe/render.sock"
@@ -125,9 +135,18 @@ def main():
                         break
                     time.sleep(0.05)
                 check(loaded, "daemon loaded the initial video")
+                disable = False
+                deadline = time.monotonic() + 8
+                while time.monotonic() < deadline:
+                    text = shell_log.read_text() if shell_log.exists() else ""
+                    if "setPluginEnabled omarchy.background false" in text:
+                        disable = True
+                        break
+                    time.sleep(0.1)
+                check(disable, "daemon disabled the shell background for the video")
 
-                check(call(daemon_socket, "set", path=str(root / "reject.png"))["status"] == "ok",
-                      "daemon accepts a file the renderer rejects")
+                check(call(daemon_socket, "set", path=str(root / "reject.mp4"))["status"] == "ok",
+                      "daemon accepts a video the renderer rejects")
                 time.sleep(0.3)
                 check(call(daemon_socket, "pause")["status"] == "ok", "pause command accepted")
                 time.sleep(0.3)
@@ -149,7 +168,6 @@ def main():
                 renderer = call(render_socket, "status")
                 check(renderer["paused"] is True, "renderer stays paused after idle resume")
 
-                (root / "bad.mp4").write_bytes(b"test")
                 check(call(daemon_socket, "set", path=str(root / "bad.mp4"))["status"] == "ok",
                       "daemon accepts a video that fails to decode")
                 recovered = False
@@ -174,6 +192,37 @@ def main():
                       json.dumps(status))
                 check(status["media_ready"] is True and status["loaded_path"].endswith("good.mp4"),
                       "last good media is loaded and ready", json.dumps(status))
+
+                check(call(daemon_socket, "set", path=str(root / "still.png"))["status"] == "ok",
+                      "daemon accepts a still")
+                enabled = False
+                deadline = time.monotonic() + 8
+                while time.monotonic() < deadline:
+                    text = shell_log.read_text() if shell_log.exists() else ""
+                    if "setPluginEnabled omarchy.background true" in text:
+                        enabled = True
+                        break
+                    time.sleep(0.1)
+                check(enabled, "daemon handed a still back to the shell")
+                status = {}
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    status = call(daemon_socket, "status")
+                    if status["engine"] == "shell":
+                        break
+                    time.sleep(0.1)
+                check(status["engine"] == "shell", "daemon reports the shell engine",
+                      json.dumps(status))
+                renderer_gone = False
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    try:
+                        call(render_socket, "status")
+                    except (ConnectionRefusedError, FileNotFoundError, OSError):
+                        renderer_gone = True
+                        break
+                    time.sleep(0.1)
+                check(renderer_gone, "renderer stopped while the shell draws the still")
             finally:
                 daemon.send_signal(signal.SIGTERM)
                 try:

@@ -138,6 +138,31 @@ headless second output, a fullscreen window on eDP-1 gave `skipped=eDP-1`
 in `owe render-status` while the policy stayed `visible` and the headless
 output kept its frames. Removing the window cleared the skip.
 
+### Lazy loading, 2026-09-18
+
+`renderer_mode = "lazy"` is the default. While a still background shows,
+owed enables the shell background plugin, stops the renderer, and keeps
+only the daemon. A video or GIF starts the renderer again.
+`renderer_mode = "always"` keeps the renderer loaded for every background.
+
+Measured on eDP-1 with a still background:
+
+| Measure | Lazy | Always |
+| --- | --- | --- |
+| Renderer process | stopped | running |
+| Renderer RSS | 0 | about 121 MiB |
+| Daemon RSS | 3.8 MiB | 3.8 MiB |
+| Shell background plugin | enabled | disabled |
+| CPU | 0 | 0 |
+
+The handoff disables the shell plugin before the renderer starts. An
+occluded renderer receives no frame callbacks, so waiting for readiness
+first would deadlock.
+
+The renderer stops its swap loop while the compositor presents nothing,
+which handles a blanked screen. The daemon pauses playback when Hyprland
+reports the monitors off.
+
 ### Completed checks
 
 - All six registered test suites pass.

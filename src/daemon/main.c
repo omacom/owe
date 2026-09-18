@@ -25,6 +25,7 @@
 #include "log.h"
 #include "policy.h"
 #include "power.h"
+#include "shell.h"
 #include "strutil.h"
 #include "supervisor.h"
 #include "transcode.h"
@@ -118,7 +119,7 @@ static int load_if_needed(const char *path, const char *kind) {
 static void apply_playback_state(void) {
     owed_app_t *app = &g_app;
     int want;
-    if (!app->supervisor) {
+    if (!app->supervisor || app->engine != OWE_ENGINE_RENDERER) {
         return;
     }
     want = owed_policy_should_pause(app->policy) ? 1 : 0;
@@ -132,6 +133,75 @@ static void apply_playback_state(void) {
     } else {
         if (owed_supervisor_resume(app->supervisor) == 0) {
             app->render_paused = 0;
+        }
+    }
+}
+
+const char *owed_app_engine(void) {
+    switch (g_app.engine) {
+    case OWE_ENGINE_SHELL:
+        return "shell";
+    case OWE_ENGINE_RENDERER:
+        return "renderer";
+    default:
+        return "none";
+    }
+}
+
+bool owed_app_renderer_expected(void) {
+    return g_app.engine == OWE_ENGINE_RENDERER;
+}
+
+/* Let the shell draw the background and release the renderer, so a still
+ * costs only the daemon. */
+static int switch_to_shell(void) {
+    owed_app_t *app = &g_app;
+    if (app->shell_enabled != 1 && owed_shell_plugin_set(true) != 0) {
+        return -1;
+    }
+    app->shell_enabled = 1;
+    app->engine = OWE_ENGINE_SHELL;
+    app->media_pending = false;
+    app->render_paused = -1;
+    app->loaded_path[0] = '\0';
+    app->loaded_kind[0] = '\0';
+    app->restore_path[0] = '\0';
+    app->shell_stop_at_ms = monotonic_ms() + 400;
+    return 0;
+}
+
+/* Start the renderer. The shell plugin is disabled once the new media is
+ * ready, so the handoff never shows a black frame. */
+static int switch_to_renderer(void) {
+    owed_app_t *app = &g_app;
+    int64_t now = monotonic_ms();
+    if (app->renderer_retry_at_ms && now < app->renderer_retry_at_ms) {
+        return -1;
+    }
+    if (owed_supervisor_ensure_running(app->supervisor) != 0) {
+        app->renderer_retry_at_ms = now + 30000;
+        return -1;
+    }
+    app->renderer_retry_at_ms = 0;
+    app->engine = OWE_ENGINE_RENDERER;
+    app->shell_stop_at_ms = 0;
+    /* Release the layer now. An occluded renderer gets no frame callbacks,
+     * so waiting for readiness before the handoff would deadlock. */
+    if (app->shell_enabled != 0) {
+        owed_shell_plugin_set(false);
+    }
+    app->shell_enabled = 0;
+    owed_supervisor_fade(app->supervisor, app->config.fade_ms);
+    return 0;
+}
+
+static void process_shell_handoff(void) {
+    owed_app_t *app = &g_app;
+    if (app->shell_stop_at_ms && monotonic_ms() >= app->shell_stop_at_ms) {
+        app->shell_stop_at_ms = 0;
+        if (app->engine == OWE_ENGINE_SHELL && owed_render_is_alive(app->supervisor)) {
+            OWE_INFO("renderer stopped, the shell draws the still");
+            owed_supervisor_stop(app->supervisor);
         }
     }
 }
@@ -176,11 +246,12 @@ static void media_failed(void) {
 
 /* A video load reply only means the renderer accepted the request. Poll until
  * the first frame presents, or recover when decode fails or stalls. */
-static void check_media_ready(void) {    owed_app_t *app = &g_app;
+static void check_media_ready(void) {
+    owed_app_t *app = &g_app;
     char reply[OWE_IPC_MAX_LINE];
     bool ready = false;
     bool error = false;
-    if (!app->media_pending) {
+    if (app->engine != OWE_ENGINE_RENDERER || !app->media_pending) {
         return;
     }
     if (monotonic_ms() >= app->media_deadline_ms) {
@@ -216,7 +287,7 @@ static void sync_output_skips(void) {
     char array[2048];
     char *line = NULL;
     size_t used = 0;
-    if (!g_app.hypr || !g_app.supervisor) {
+    if (!g_app.hypr || !g_app.supervisor || g_app.engine != OWE_ENGINE_RENDERER) {
         return;
     }
     covered = owed_hypr_covered_names(g_app.hypr);
@@ -265,13 +336,37 @@ void owed_app_apply_policy(void) {
     owed_app_t *app = &g_app;
     char cache[PATH_MAX];
     char video[PATH_MAX];
+    bool shell_engine;
 
+    if (!*app->source_path) {
+        return;
+    }
+    /* A still background does not need a renderer. The shell draws it while
+     * the renderer stays stopped, unless renderer_mode is "always". */
+    shell_engine = strcmp(app->config.renderer_mode, "always") != 0 &&
+                   strcmp(app->source_kind, "still") == 0;
+    if (shell_engine) {
+        if (app->engine != OWE_ENGINE_SHELL) {
+            if (switch_to_shell() == 0) {
+                OWE_INFO("engine: shell");
+                return;
+            }
+            OWE_WARN("shell handoff failed, keeping the renderer for the still");
+        } else {
+            return;
+        }
+    }
+    if (app->engine != OWE_ENGINE_RENDERER) {
+        if (switch_to_renderer() != 0) {
+            OWE_ERROR("renderer start failed");
+            copy_path(app->fail_path, sizeof(app->fail_path), app->source_path);
+            return;
+        }
+        OWE_INFO("engine: renderer");
+    }
     if (app->job) {
         if (strcmp(app->loaded_kind, "video") == 0 && owed_policy_should_pause(app->policy))
             apply_playback_state();
-        return;
-    }
-    if (!*app->source_path) {
         return;
     }
     if (strcmp(app->fail_path, app->source_path) == 0) {
@@ -578,11 +673,8 @@ int main(int argc, char **argv) {
         OWE_ERROR("ipc init failed");
         return 1;
     }
-    if (owed_supervisor_ensure_running(g_app.supervisor) != 0) {
-        OWE_ERROR("renderer start failed");
-        return 1;
-    }
-    owed_supervisor_fade(g_app.supervisor, g_app.config.fade_ms);
+    g_app.engine = OWE_ENGINE_NONE;
+    g_app.shell_enabled = -1;
     owed_policy_recompute(g_app.policy);
 
     if (owed_watch_resolve_current(resolved, sizeof(resolved)) == 0) {
@@ -656,7 +748,8 @@ int main(int argc, char **argv) {
                 while (read(g_sigchld[0], &c, 1) == 1) {
                 }
                 owed_supervisor_reap(g_app.supervisor);
-                if (g_app.running && !owed_render_is_alive(g_app.supervisor)) {
+                if (g_app.running && g_app.engine == OWE_ENGINE_RENDERER &&
+                    !owed_render_is_alive(g_app.supervisor)) {
                     OWE_WARN("renderer died, restarting");
                     if (owed_supervisor_ensure_running(g_app.supervisor) == 0) {
                         owed_app_on_renderer_restarted();
@@ -682,7 +775,9 @@ int main(int argc, char **argv) {
         if (!g_app.running) break;
         check_media_ready();
         sync_output_skips();
-        if (!owed_render_is_alive(g_app.supervisor) &&
+        process_shell_handoff();
+        if (g_app.engine == OWE_ENGINE_RENDERER &&
+            !owed_render_is_alive(g_app.supervisor) &&
             owed_supervisor_ensure_running(g_app.supervisor) == 0)
             owed_app_on_renderer_restarted();
         owed_app_apply_policy();
@@ -698,6 +793,9 @@ int main(int argc, char **argv) {
     }
 
     OWE_INFO("shutdown");
+    if (g_app.shell_enabled == 0) {
+        owed_shell_plugin_set(true);
+    }
     if (g_app.job) {
         owed_async_job_free(g_app.job);
         g_app.job = NULL;

@@ -29,3 +29,7 @@ cache_max_mb = 512
 [render]
 # Still to still fade in milliseconds. 0 disables the fade.
 fade_ms = 250
+# "lazy" stops the renderer while a still background shows and lets the
+# shell draw it, so only the small daemon stays resident. "always" keeps
+# the renderer loaded for every background.
+renderer_mode = "lazy"

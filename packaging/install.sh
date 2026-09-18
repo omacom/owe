@@ -5,7 +5,6 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PREFIX="${HOME}/.local"
 SHELL_JSON="${HOME}/.config/omarchy/shell.json"
-BACKUP="${SHELL_JSON}.bak.owe.$(date +%s)"
 
 missing=()
 for command in meson ninja gcc pkg-config ffmpeg socat python3; do
@@ -54,26 +53,7 @@ else
   echo "    omarchy CLI not found, skip hook install"
 fi
 
-echo "==> disable shell background plugin in ${SHELL_JSON}"
-if [[ -f $SHELL_JSON ]]; then
-  cp "$SHELL_JSON" "$BACKUP"
-  echo "    backup at $BACKUP"
-  python3 - "$SHELL_JSON" <<'EOF'
-import json, sys
-path = sys.argv[1]
-with open(path) as f:
-    data = json.load(f)
-disabled = data.setdefault("disabledPlugins", [])
-if "omarchy.background" not in disabled:
-    disabled.append("omarchy.background")
-with open(path, "w") as f:
-    json.dump(data, f, indent=2)
-    f.write("\n")
-print("    omarchy.background disabled")
-EOF
-else
-  echo "    no shell.json, skip"
-fi
+echo "==> shell background plugin is managed by owed at runtime"
 
 echo "==> enable and (re)start owed.service"
 systemctl --user enable owed.service

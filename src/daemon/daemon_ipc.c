@@ -83,12 +83,13 @@ static void handle_status(struct owed_client *c) {
     if (asprintf(&line,
              "{\"status\":\"ok\",\"source_path\":%s,\"source_kind\":\"%s\","
              "\"loaded_path\":%s,\"loaded_kind\":\"%s\","
-             "\"job_running\":%s,\"failed_path\":%s,\"media_ready\":%s,"
+             "\"job_running\":%s,\"failed_path\":%s,\"media_ready\":%s,\"engine\":\"%s\","
              "\"paused\":%s,\"reason\":\"%s\",\"always_animate\":%s,\"manual_pause\":%s,\"idle_pause\":%s,"
              "\"fullscreen\":%s,\"window_visible\":%s,\"monitors_off\":%s,\"monitor_count\":%d,"
              "\"on_battery\":%s,\"locked\":%s,\"render_alive\":%s}",
              source, app->source_kind, loaded, app->loaded_kind,
              app->job ? "true" : "false", failed, app->media_pending ? "false" : "true",
+             owed_app_engine(),
              app->policy && owed_policy_should_pause(app->policy) ? "true" : "false",
              app->policy ? owed_policy_reason(app->policy) : "",
              app->always_animate ? "true" : "false",
@@ -139,12 +140,14 @@ static void handle_config(struct owed_client *c) {
     }
     if (asprintf(&line,
                  "{\"status\":\"ok\",\"pause_fullscreen\":%s,\"pause_occupied_workspace\":%s,"
-                 "\"battery_poster\":%s,\"battery_mode\":\"%s\",\"gif_fps\":%d,\"gif_crf\":%d,"
+                 "\"battery_poster\":%s,\"battery_mode\":\"%s\",\"renderer_mode\":\"%s\","
+                 "\"gif_fps\":%d,\"gif_crf\":%d,"
                  "\"max_width\":%d,\"max_height\":%d,\"cache_max_mb\":%d,"
                  "\"fade_ms\":%d,\"blocklist_count\":%d,\"blocklist\":%s}",
                  app->config.pause_fullscreen ? "true" : "false",
                  app->config.pause_occupied_workspace ? "true" : "false",
                  app->config.battery_poster ? "true" : "false", app->config.battery_mode,
+                 app->config.renderer_mode,
                  app->config.gif_fps,
                  app->config.gif_crf, app->config.transcode_max_width,
                  app->config.transcode_max_height, app->config.cache_max_mb,
@@ -242,13 +245,41 @@ static void handle_command(struct owed_ipc *ipc, struct owed_client *c, const ch
             send_err(c, "config load failed");
         }
     } else if (strcmp(cmd, "render-status") == 0) {
-        char reply[8192];
-        if (owed_supervisor_send(app->supervisor, "{\"cmd\":\"status\"}", reply, sizeof(reply)) == 0) {
-            owe_ipc_send_line(c->fd, reply);
+        if (!owed_app_renderer_expected()) {
+            char *line = NULL;
+            char *path = owe_json_quote(app->source_path);
+            char *kind = owe_json_quote(app->source_kind);
+            bool video = strcmp(app->source_kind, "video") == 0 ||
+                         strcmp(app->source_kind, "gif") == 0;
+            if (path && kind &&
+                asprintf(&line,
+                         "{\"status\":\"ok\",\"engine\":\"shell\",\"path\":%s,\"kind\":%s,"
+                         "\"paused\":false,\"ready\":true,\"outputs\":0,"
+                         "\"has_video\":%s,\"has_still\":%s,\"time_pos\":-1.000,"
+                         "\"hwdec\":\"no\",\"error\":\"\",\"skipped\":\"\"}",
+                         path, kind, video ? "true" : "false", video ? "false" : "true") >= 0) {
+                owe_ipc_send_line(c->fd, line);
+            } else {
+                send_err(c, "render unavailable");
+            }
+            free(line);
+            free(path);
+            free(kind);
         } else {
-            send_err(c, "render unreachable");
+            char reply[8192];
+            if (owed_supervisor_send(app->supervisor, "{\"cmd\":\"status\"}", reply, sizeof(reply)) == 0) {
+                owe_ipc_send_line(c->fd, reply);
+            } else {
+                send_err(c, "render unreachable");
+            }
         }
     } else if (strcmp(cmd, "render-restart") == 0) {
+        if (!owed_app_renderer_expected()) {
+            OWE_INFO("render-restart ignored while the shell draws the background");
+            send_ok(c, "\"engine\":\"shell\"");
+            yyjson_doc_free(doc);
+            return;
+        }
         owed_supervisor_stop(app->supervisor);
         if (owed_supervisor_ensure_running(app->supervisor) == 0) {
             char resolved[4096];
