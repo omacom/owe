@@ -84,8 +84,9 @@ jobs:
           fi
           if gh release view "$tag" >/dev/null 2>&1; then
             gh release upload "$tag" dist/*.tar.xz dist/SHA256SUMS --clobber
+            gh release edit "$tag" --draft=false
           else
-            gh release create "$tag" $target --title "$tag" --generate-notes \
+            gh release create "$tag" $target --title "$tag" --generate-notes --draft=false \
               dist/*.tar.xz dist/SHA256SUMS
           fi
 
