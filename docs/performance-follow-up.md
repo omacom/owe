@@ -80,6 +80,25 @@ The primary GPU allocation is 81 MiB.
 The renderer holds 14 threads.
 Resident memory grows during the first minute as decoder buffers fill, then settles.
 
+### Memory deep dive, 2026-09-17
+
+A five minute soak held the renderer at about 210 MiB after the first minute, with 137 MiB anonymous and 74 MiB file backed.
+The top anonymous mappings were three glibc arenas of 20 to 27 MiB each.
+Reducing the arena count made RSS worse, from 184 MiB to 196 MiB.
+Forcing allocations above 128 KiB through mmap and returning freed top chunks to the OS dropped RSS to 175 to 184 MiB.
+
+| Setting | RSS at 90 seconds |
+| --- | --- |
+| Defaults | 211 MiB |
+| `M_TRIM_THRESHOLD=0` | 183 MiB |
+| `M_MMAP_THRESHOLD=128KiB` | 183 MiB |
+| Both, arena count 1 | 196 MiB |
+| `hwdec=vaapi-copy` | 271 MiB |
+
+The renderer now sets both thresholds at startup. Decode options did not change RSS, and the GPU context holds 220 MiB of device memory either way.
+The remaining anonymous memory is live media and Mesa buffers.
+The file backed memory is the Mesa driver, LLVM, and the iHD driver, shared with other processes.
+
 ### Completed checks
 
 - All six registered test suites pass.

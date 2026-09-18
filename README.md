@@ -172,6 +172,9 @@ Generated media contains only video. Source files remain intact.
   renderer falls back to the integer `wl_output.scale`.
 - Stills and video cover the output. Aspect ratio is preserved with a
   center crop, like `PreserveAspectCrop` in the Omarchy shell.
+- The renderer returns freed large allocations to the OS. glibc keeps
+  them resident by default, which inflates RSS by about 30 MiB with
+  media buffers.
 - Poster extraction and GIF transcode run in a worker thread. The
   daemon event loop never blocks on `ffmpeg`.
 - The daemon sends pause and resume only when playback state changes.
