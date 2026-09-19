@@ -224,6 +224,18 @@ meson test -C build
 ```
 
 The tests cover IPC framing, quoted paths, worker cancellation, atomic cache publication, display state, actual GIF conversion, still decode for PNG, JPEG, and AVIF, and pause policy after a rejected load.
+The lock feed tests cover feed restarts, client pause state, frame ownership, DPMS, and transitions to still images.
+
+To build and test the QML lock feed plugin, use CMake with Qt 6 Quick and Qt 6 Test:
+
+```bash
+cmake -S qml-plugin -B build-qml -DBUILD_TESTING=ON
+cmake --build build-qml
+ctest --test-dir build-qml --output-on-failure
+```
+
+The plugin tests use an offscreen Qt platform and local sockets. They cover reconnects, fragmented messages, and descriptor ownership.
+
 To run sanitizer checks, use a separate build directory:
 
 ```bash

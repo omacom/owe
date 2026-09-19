@@ -54,14 +54,12 @@ struct feed_slot {
     int h;
     int stride;
     uint64_t seq;
-    int pending;
-    bool busy;
+    uint32_t pending; /* One bit per client that must acknowledge this frame. */
 };
 
 struct feed_client {
     int fd;
     bool mapped;
-    uint64_t ack_seq;
     struct feed_msg msg;
     size_t len;
 };
@@ -76,6 +74,8 @@ struct owe_feed {
     uint64_t seq;
     bool active;
 };
+
+_Static_assert(OWE_FEED_MAX_CLIENTS <= 32, "feed client mask size");
 
 static void slot_reset(struct feed_slot *s) {
     if (s->tex) {
@@ -97,7 +97,6 @@ static void slot_reset(struct feed_slot *s) {
     s->size = 0;
     s->seq = 0;
     s->pending = 0;
-    s->busy = false;
 }
 
 static int slot_alloc(struct feed_slot *s, int w, int h) {
@@ -194,18 +193,11 @@ static void client_remove(struct owe_feed *f, int idx) {
         return;
     }
     for (i = 0; i < OWE_FEED_SLOTS; i++) {
-        struct feed_slot *s = &f->slots[i];
-        if (s->busy && s->seq > c->ack_seq && s->pending > 0) {
-            s->pending--;
-            if (s->pending == 0) {
-                s->busy = false;
-            }
-        }
+        f->slots[i].pending &= ~(UINT32_C(1) << idx);
     }
     close(c->fd);
     c->fd = -1;
     c->mapped = false;
-    c->ack_seq = 0;
     c->len = 0;
 }
 
@@ -242,7 +234,7 @@ static int ensure_slots(struct owe_feed *f, int w, int h) {
     }
     f->width = w;
     f->height = h;
-    f->seq = 0;
+    /* Keep frame sequences unique across buffer changes. Old ACKs can arrive later. */
     for (i = 0; i < OWE_FEED_SLOTS; i++) {
         if (slot_alloc(&f->slots[i], w, h) != 0) {
             int j;
@@ -258,7 +250,6 @@ static int ensure_slots(struct owe_feed *f, int w, int h) {
         struct feed_client *c = &f->clients[i];
         if (c->fd >= 0) {
             c->mapped = false;
-            c->len = 0;
             send_hello(f, c);
         }
     }
@@ -334,7 +325,6 @@ void owe_feed_accept(struct owe_feed *f) {
             if (f->clients[i].fd < 0) {
                 f->clients[i].fd = fd;
                 f->clients[i].mapped = false;
-                f->clients[i].ack_seq = 0;
                 f->clients[i].len = 0;
                 break;
             }
@@ -362,22 +352,9 @@ int owe_feed_pollfds(struct owe_feed *f, struct pollfd *fds) {
     return n;
 }
 
-static void handle_ack(struct owe_feed *f, struct feed_client *c, uint64_t seq) {
-    int i;
-    if (seq > c->ack_seq) {
-        c->ack_seq = seq;
-    }
-    for (i = 0; i < OWE_FEED_SLOTS; i++) {
-        struct feed_slot *s = &f->slots[i];
-        if (s->busy && s->seq == seq) {
-            if (s->pending > 0) {
-                s->pending--;
-            }
-            if (s->pending == 0) {
-                s->busy = false;
-            }
-            return;
-        }
+static void handle_ack(struct owe_feed *f, int client, uint32_t slot, uint64_t seq) {
+    if (slot < OWE_FEED_SLOTS && f->slots[slot].seq == seq) {
+        f->slots[slot].pending &= ~(UINT32_C(1) << client);
     }
 }
 
@@ -402,7 +379,7 @@ static void poll_client(struct owe_feed *f, int idx) {
         }
         if (c->msg.magic == FEED_MAGIC && c->msg.version == FEED_VERSION &&
             c->msg.type == FEED_MSG_ACK) {
-            handle_ack(f, c, c->msg.seq);
+            handle_ack(f, idx, c->msg.slot, c->msg.seq);
         }
         c->len = 0;
     }
@@ -410,32 +387,33 @@ static void poll_client(struct owe_feed *f, int idx) {
 
 void owe_feed_poll_clients(struct owe_feed *f, struct owe_mpv *m) {
     int i;
-    int before;
-    int after;
     if (!f) {
         return;
     }
-    before = mapped_count(f);
     for (i = 0; i < OWE_FEED_MAX_CLIENTS; i++) {
         if (f->clients[i].fd >= 0) {
             poll_client(f, i);
         }
     }
     if (f->active && m) {
-        after = mapped_count(f);
-        if (after == 0 && before > 0) {
-            owe_mpv_set_paused(m, true);
-        } else if (after > 0 && before == 0) {
-            owe_mpv_set_paused(m, false);
-        }
+        /* A new client needs decode to start before the first buffers exist. */
+        owe_mpv_set_paused(m, client_count(f) == 0);
     }
 }
 
 void owe_feed_start(struct owe_feed *f) {
+    int i;
     if (!f) {
         return;
     }
     f->active = true;
+    if (f->width > 0 && f->height > 0 && f->slots[0].fd >= 0) {
+        for (i = 0; i < OWE_FEED_MAX_CLIENTS; i++) {
+            if (f->clients[i].fd >= 0 && !f->clients[i].mapped) {
+                send_hello(f, &f->clients[i]);
+            }
+        }
+    }
     OWE_INFO("feed started");
 }
 
@@ -461,7 +439,6 @@ int owe_feed_publish(struct owe_feed *f, struct owe_mpv *m) {
     int w = 0;
     int h = 0;
     int slot = -1;
-    int sent = 0;
     int i;
     if (!f || !f->active || !m || client_count(f) == 0) {
         return -1;
@@ -489,7 +466,7 @@ int owe_feed_publish(struct owe_feed *f, struct owe_mpv *m) {
         return -1;
     }
     for (i = 0; i < OWE_FEED_SLOTS; i++) {
-        if (!f->slots[i].busy) {
+        if (!f->slots[i].pending) {
             slot = i;
             break;
         }
@@ -506,7 +483,6 @@ int owe_feed_publish(struct owe_feed *f, struct owe_mpv *m) {
     glReadPixels(0, 0, s->w, s->h, GL_RGBA, GL_UNSIGNED_BYTE, s->map);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     s->seq = ++f->seq;
-    s->busy = true;
     s->pending = 0;
     memset(&frame, 0, sizeof(frame));
     frame.magic = FEED_MAGIC;
@@ -524,15 +500,10 @@ int owe_feed_publish(struct owe_feed *f, struct owe_mpv *m) {
             continue;
         }
         if (send_msg(c->fd, &frame, NULL, 0) == 0) {
-            s->pending++;
-            sent++;
+            s->pending |= UINT32_C(1) << i;
         } else {
             client_remove(f, i);
         }
     }
-    if (sent == 0) {
-        s->busy = false;
-        return -1;
-    }
-    return 0;
+    return s->pending ? 0 : -1;
 }

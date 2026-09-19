@@ -67,6 +67,17 @@ consumed frame. Buffers return to the ring when every client acknowledges
 them. `owe pause` and `feed-stop` both end the feed. Each output of the
 lock screen owns a client, so all outputs show the same decode.
 
+The feed sends buffer descriptors to clients that connect before it starts.
+It pauses decode when no clients remain and resumes decode when a client connects.
+Each buffer tracks the clients that must acknowledge its frame.
+Duplicate acknowledgements and client disconnects cannot release another client's buffer.
+Frame sequence numbers remain unique across buffer size changes.
+
+The QML client reads one protocol message at a time, so descriptors stay with their `HELLO` message.
+It retries the connection after a disconnect while `active` remains true.
+The daemon ends the feed before sleep, when all monitors turn off, or after a still replaces the video.
+The renderer also ends the feed after a successful still decode and requests a desktop redraw.
+
 ## Daemon
 
 `owed` watches `~/.local/state/omarchy/current/` with `inotify` and

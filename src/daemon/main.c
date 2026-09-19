@@ -129,6 +129,7 @@ static int apply_feed_state(void) {
              (app->hypr && owed_hypr_locked(app->hypr));
     want_feed = locked && !owed_policy_manual_pause(app->policy) &&
                 !(app->power && owed_power_sleeping(app->power)) &&
+                !(app->hypr && owed_hypr_all_monitors_off(app->hypr)) &&
                 strcmp(app->loaded_kind, "video") == 0 &&
                 owed_render_is_alive(app->supervisor);
     if (want_feed) {
@@ -359,11 +360,8 @@ static void sync_output_skips(void) {
     free(line);
 }
 
-static void finish_media(const char *path, const char *kind, bool is_video) {
+static void finish_media(const char *path, const char *kind) {
     if (load_if_needed(path, kind) != 0) {
-        return;
-    }
-    if (!is_video) {
         return;
     }
     apply_playback_state();
@@ -438,7 +436,7 @@ void owed_app_apply_policy(void) {
     }
 
     if (strcmp(app->source_kind, "video") != 0 && strcmp(app->source_kind, "gif") != 0) {
-        finish_media(app->source_path, "still", false);
+        finish_media(app->source_path, "still");
         return;
     }
 
@@ -449,7 +447,7 @@ void owed_app_apply_policy(void) {
         }
         if (owed_transcode_file_ready(cache)) {
             app->fail_path[0] = '\0';
-            finish_media(cache, "still", false);
+            finish_media(cache, "still");
             return;
         }
         if (strcmp(app->fail_path, app->source_path) == 0) {
@@ -466,7 +464,7 @@ void owed_app_apply_policy(void) {
     }
 
     app->fail_path[0] = '\0';
-    finish_media(video, "video", true);
+    finish_media(video, "video");
 }
 
 void owed_app_on_job_done(void) {

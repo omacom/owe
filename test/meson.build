@@ -30,6 +30,26 @@ test('uninstall', find_program('bash'),
 test('daemon', find_program('python3'),
   args : [files('daemon.py'), owed.full_path()], timeout : 30)
 
+feed_test = executable('owe-feed-test',
+  files('feed.c', '../src/common/common_ipc.c', '../src/common/xdg.c', '../src/common/log.c'),
+  include_directories : [common_inc, include_directories('../src/render')],
+  dependencies : epoxy_dep)
+test('feed', feed_test)
+
+lock_policy_test = executable('owe-lock-policy-test',
+  files('lock_policy.c', '../src/daemon/policy.c') + common_sources + yyjson_sources,
+  include_directories : [common_inc, yyjson_inc, include_directories('../src/daemon')],
+  c_args : ['-ffunction-sections', '-fdata-sections'],
+  link_args : ['-Wl,--gc-sections'])
+test('lock-policy', lock_policy_test)
+
+render_feed_test = executable('owe-render-feed-test',
+  files('render_feed.c', '../src/common/common_ipc.c'),
+  include_directories : [common_inc, yyjson_inc, include_directories('../src/render')],
+  c_args : ['-ffunction-sections', '-fdata-sections'],
+  link_args : ['-Wl,--gc-sections'])
+test('render-feed', render_feed_test)
+
 # This test needs an explicitly started daemon and a video wallpaper.
 executable('owe-live-test', files('live.c') + common_sources + yyjson_sources,
   include_directories : [common_inc, yyjson_inc])

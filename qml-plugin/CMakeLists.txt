@@ -15,6 +15,19 @@ add_library(owe_lockfeed MODULE
 
 target_link_libraries(owe_lockfeed PRIVATE Qt6::Core Qt6::Gui Qt6::Qml Qt6::Quick)
 
+include(CTest)
+if(BUILD_TESTING)
+  find_package(Qt6 REQUIRED COMPONENTS Test)
+  add_executable(owe_lockfeed_test test/lockfeed.cpp src/lockfeed.cpp src/lockfeed.h)
+  target_include_directories(owe_lockfeed_test PRIVATE src)
+  target_link_libraries(owe_lockfeed_test PRIVATE Qt6::Quick Qt6::Test)
+  add_test(NAME lockfeed COMMAND owe_lockfeed_test)
+  set_tests_properties(lockfeed PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QPA_PLATFORMTHEME=;QT_STYLE_OVERRIDE="
+    TIMEOUT 30
+  )
+endif()
+
 install(TARGETS owe_lockfeed
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}/qt6/qml/Owe/LockFeed
 )

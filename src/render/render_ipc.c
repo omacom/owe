@@ -133,6 +133,15 @@ static void pending_reply(struct owe_render_ipc *ipc, int ok, const char *messag
     ipc->pending_path[0] = '\0';
 }
 
+static void stop_feed(owe_app_t *app) {
+    if (app && app->feeding) {
+        owe_feed_stop(app->feed);
+        app->feeding = false;
+        owe_mpv_set_muted(app->mpv, false);
+        owe_app_request_render();
+    }
+}
+
 static void handle_load(struct owe_render_ipc *ipc, struct owe_client *c, yyjson_val *root) {
     owe_app_t *app = owe_app_get();
     yyjson_val *vpath;
@@ -204,6 +213,7 @@ static void handle_command(struct owe_render_ipc *ipc, struct owe_client *c, con
         handle_load(ipc, c, root);
     } else if (strcmp(cmd, "pause") == 0) {
         if (app) {
+            stop_feed(app);
             app->paused = true;
             owe_mpv_set_paused(app->mpv, true);
         }
@@ -225,19 +235,11 @@ static void handle_command(struct owe_render_ipc *ipc, struct owe_client *c, con
         }
         send_ok(c, NULL);
     } else if (strcmp(cmd, "feed-stop") == 0) {
-        if (app && app->feed) {
-            owe_feed_stop(app->feed);
-            app->feeding = false;
-            owe_mpv_set_muted(app->mpv, false);
-        }
+        stop_feed(app);
         send_ok(c, NULL);
     } else if (strcmp(cmd, "stop") == 0) {
         if (app) {
-            if (app->feeding) {
-                owe_feed_stop(app->feed);
-                app->feeding = false;
-                owe_mpv_set_muted(app->mpv, false);
-            }
+            stop_feed(app);
             owe_mpv_stop(app->mpv);
             owe_still_unload(app->still);
             app->current_path[0] = '\0';
@@ -435,6 +437,7 @@ void owe_render_ipc_poll_still(struct owe_render_ipc *ipc) {
         return;
     }
     if (rc > 0) {
+        stop_feed(app);
         owe_mpv_stop(app->mpv);
         snprintf(app->current_path, sizeof(app->current_path), "%s", ipc->pending_path);
         snprintf(app->current_kind, sizeof(app->current_kind), "still");

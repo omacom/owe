@@ -15,7 +15,7 @@ jobs:
         run: |
           pacman -Syu --noconfirm --needed base-devel meson ninja gcc pkgconf \
             wayland wayland-protocols libglvnd libepoxy mpv ffmpeg \
-            systemd-libs socat python git
+            systemd-libs socat python git cmake qt6-declarative
       - uses: actions/checkout@v5
       - name: Build
         run: |
@@ -23,3 +23,8 @@ jobs:
           ninja -C build
       - name: Test
         run: meson test -C build --print-errorlogs
+      - name: Build and test the lock feed plugin
+        run: |
+          cmake -S qml-plugin -B build-qml -DBUILD_TESTING=ON
+          cmake --build build-qml
+          ctest --test-dir build-qml --output-on-failure

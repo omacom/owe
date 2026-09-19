@@ -48,8 +48,9 @@ signals:
 private:
     void connectSocket();
     void disconnectSocket();
+    void retrySocket();
     void readSocket();
-    void handleMessage(const QByteArray &message, const QVector<int> &fds);
+    bool handleMessage(const QByteArray &message, const QVector<int> &fds);
     void resetMaps();
 
     QString m_socketPath;
