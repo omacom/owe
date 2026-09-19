@@ -13,6 +13,7 @@ void owed_hypr_tick(struct owed_hypr *h);
 bool owed_hypr_any_fullscreen(struct owed_hypr *h);
 bool owed_hypr_any_window_visible(struct owed_hypr *h);
 bool owed_hypr_all_monitors_off(struct owed_hypr *h);
+bool owed_hypr_locked(struct owed_hypr *h);
 int owed_hypr_monitor_count(struct owed_hypr *h);
 const char *owed_hypr_covered_names(struct owed_hypr *h);
 void owed_hypr_refresh(struct owed_hypr *h);

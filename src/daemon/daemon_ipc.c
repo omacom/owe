@@ -100,7 +100,10 @@ static void handle_status(struct owed_client *c) {
              app->hypr && owed_hypr_all_monitors_off(app->hypr) ? "true" : "false",
              app->hypr ? owed_hypr_monitor_count(app->hypr) : 0,
              app->power && owed_power_on_battery(app->power) ? "true" : "false",
-             app->power && owed_power_locked(app->power) ? "true" : "false",
+             (app->power && owed_power_locked(app->power)) ||
+                     (app->hypr && owed_hypr_locked(app->hypr))
+                 ? "true"
+                 : "false",
              app->supervisor && owed_render_is_alive(app->supervisor) ? "true" : "false") >= 0)
         owe_ipc_send_line(c->fd, line);
 done:

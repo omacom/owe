@@ -25,6 +25,7 @@ struct owed_hypr {
     bool any_fullscreen;
     bool any_window_visible;
     bool all_monitors_off;
+    bool locked;
     int monitor_count;
     char covered[1024];
 };
@@ -145,11 +146,13 @@ done:
 
 static void recompute(struct owed_hypr *h) {
     bool fs = h->any_fullscreen, vis = h->any_window_visible, off = h->all_monitors_off;
+    bool locked = h->locked;
     yyjson_doc *clients = h->clients ? yyjson_read(h->clients, strlen(h->clients), 0) : NULL;
     yyjson_doc *monitors = h->monitors ? yyjson_read(h->monitors, strlen(h->monitors), 0) : NULL;
     h->any_fullscreen = owe_outputs_covered_docs(clients, monitors, true);
     h->any_window_visible = owe_outputs_covered_docs(clients, monitors, false);
     owe_outputs_covered_list(clients, monitors, true, h->covered, sizeof(h->covered));
+    h->locked = false;
     if (monitors) {
         yyjson_val *root = yyjson_doc_get_root(monitors), *m;
         size_t i, n;
@@ -157,8 +160,21 @@ static void recompute(struct owed_hypr *h) {
         h->monitor_count = (int)yyjson_arr_size(root);
         yyjson_arr_foreach(root, i, n, m) {
             yyjson_val *dpms = yyjson_obj_get(m, "dpmsStatus");
+            yyjson_val *blockers = yyjson_obj_get(m, "solitaryBlockedBy");
             bool powered = !dpms || (yyjson_is_bool(dpms) ? yyjson_get_bool(dpms) : yyjson_get_int(dpms) != 0);
             if (!yyjson_get_bool(yyjson_obj_get(m, "disabled")) && powered) lit++;
+            /* A held ext-session-lock is one reason a monitor cannot go
+             * solitary. Omarchy's lock never tells logind, so this is the
+             * lock state OWE can see. */
+            if (yyjson_is_arr(blockers)) {
+                size_t bi, bn;
+                yyjson_val *b;
+                yyjson_arr_foreach(blockers, bi, bn, b) {
+                    if (yyjson_is_str(b) && strcmp(yyjson_get_str(b), "LOCK") == 0) {
+                        h->locked = true;
+                    }
+                }
+            }
         }
         h->all_monitors_off = h->monitor_count > 0 && lit == 0;
     }
@@ -166,7 +182,8 @@ static void recompute(struct owed_hypr *h) {
     yyjson_doc_free(monitors);
     int drm = owe_drm_all_off("/sys/class/drm");
     if (drm >= 0) h->all_monitors_off = drm != 0;
-    if (fs != h->any_fullscreen || vis != h->any_window_visible || off != h->all_monitors_off)
+    if (fs != h->any_fullscreen || vis != h->any_window_visible || off != h->all_monitors_off ||
+        locked != h->locked)
         owed_app_on_policy_changed();
 }
 
@@ -246,5 +263,6 @@ int owed_hypr_poll(struct owed_hypr *h) {
 bool owed_hypr_any_fullscreen(struct owed_hypr *h) { return h && h->any_fullscreen; }
 bool owed_hypr_any_window_visible(struct owed_hypr *h) { return h && h->any_window_visible; }
 bool owed_hypr_all_monitors_off(struct owed_hypr *h) { return h && h->all_monitors_off; }
+bool owed_hypr_locked(struct owed_hypr *h) { return h && h->locked; }
 int owed_hypr_monitor_count(struct owed_hypr *h) { return h ? h->monitor_count : 0; }
 const char *owed_hypr_covered_names(struct owed_hypr *h) { return h ? h->covered : ""; }

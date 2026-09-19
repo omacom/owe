@@ -120,13 +120,16 @@ static int load_if_needed(const char *path, const char *kind) {
  * lock feed instead of pausing, and the lock screen shows those frames. */
 static int apply_feed_state(void) {
     owed_app_t *app = &g_app;
-    const char *reason = owed_policy_reason(app->policy);
+    bool locked;
     bool want_feed;
     if (!app->supervisor || app->engine != OWE_ENGINE_RENDERER) {
         return 0;
     }
-    want_feed = owed_policy_should_pause(app->policy) &&
-                strcmp(reason, "locked") == 0 && strcmp(app->loaded_kind, "video") == 0 &&
+    locked = (app->power && owed_power_locked(app->power)) ||
+             (app->hypr && owed_hypr_locked(app->hypr));
+    want_feed = locked && !owed_policy_manual_pause(app->policy) &&
+                !(app->power && owed_power_sleeping(app->power)) &&
+                strcmp(app->loaded_kind, "video") == 0 &&
                 owed_render_is_alive(app->supervisor);
     if (want_feed) {
         if (!app->render_feeding) {

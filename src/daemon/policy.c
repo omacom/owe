@@ -60,7 +60,8 @@ void owed_policy_recompute(struct owed_policy *p) {
         reason = "idle";
         goto done;
     }
-    if (app->power && owed_power_locked(app->power)) {
+    if ((app->power && owed_power_locked(app->power)) ||
+        (app->hypr && owed_hypr_locked(app->hypr))) {
         pause = true;
         reason = "locked";
         goto done;
