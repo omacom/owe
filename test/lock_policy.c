@@ -34,6 +34,33 @@ int owed_supervisor_load(struct owed_supervisor *s, const char *path, const char
     (void)s; (void)path; (void)kind;
     return 0;
 }
+int owed_supervisor_ensure_running(struct owed_supervisor *s) { s->starts++; return 0; }
+int owed_supervisor_fade(struct owed_supervisor *s, int ms) { (void)s; (void)ms; return 0; }
+
+static int shell_plugin_calls;
+static bool shell_plugin_enabled;
+
+int owed_shell_plugin_set(bool enabled) {
+    shell_plugin_calls++;
+    shell_plugin_enabled = enabled;
+    return 0;
+}
+
+int owed_transcode_gif_path(const char *gif_path, int fps, int crf, int max_w, int max_h,
+                            char *out_mp4, unsigned long out_len) {
+    (void)gif_path; (void)fps; (void)crf; (void)max_w; (void)max_h; (void)out_mp4; (void)out_len;
+    return -1;
+}
+int owed_transcode_poster_path(const char *video_path, char *out_png, unsigned long out_len) {
+    (void)video_path; (void)out_png; (void)out_len;
+    return -1;
+}
+bool owed_transcode_file_ready(const char *path) { (void)path; return false; }
+owed_async_job_t *owed_async_gif(const char *gif_path, int fps, int crf, int max_w, int max_h) {
+    (void)gif_path; (void)fps; (void)crf; (void)max_w; (void)max_h;
+    return NULL;
+}
+owed_async_job_t *owed_async_poster(const char *video_path) { (void)video_path; return NULL; }
 
 static void apply(void) {
     owed_policy_recompute(g_app.policy);
@@ -50,7 +77,6 @@ int main(void) {
     g_app.supervisor = &renderer;
     g_app.policy = owed_policy_new();
     CHECK(g_app.policy);
-    strcpy(g_app.config.renderer_mode, "always");
     strcpy(g_app.loaded_path, "/video.mp4");
     strcpy(g_app.loaded_kind, "video");
     apply();
@@ -98,6 +124,24 @@ int main(void) {
     owed_policy_recompute(g_app.policy);
     finish_media("/poster.png", "still");
     CHECK(!renderer.feeding && !g_app.render_feeding);
+
+    /* A still background belongs to the shell and never starts the renderer. */
+    renderer.starts = 0;
+    renderer.stops = 0;
+    renderer.feeding = false;
+    renderer.paused = false;
+    g_app.engine = OWE_ENGINE_NONE;
+    g_app.shell_enabled = 0;
+    g_app.render_feeding = 0;
+    strcpy(g_app.source_path, "/still.png");
+    strcpy(g_app.source_kind, "still");
+    g_app.loaded_path[0] = '\0';
+    g_app.loaded_kind[0] = '\0';
+    shell_plugin_calls = 0;
+    owed_app_apply_policy();
+    CHECK(g_app.engine == OWE_ENGINE_SHELL);
+    CHECK(renderer.starts == 0 && !renderer.feeding);
+    CHECK(shell_plugin_calls == 1 && shell_plugin_enabled);
     owed_policy_free(g_app.policy);
     puts("lock policy and still transition checks passed");
     return 0;

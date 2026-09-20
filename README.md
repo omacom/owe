@@ -14,10 +14,9 @@ It changes no packaged Omarchy file.
   lock, idle, DPMS, and battery state, and commands the renderer.
 - `owe-render` — C renderer. It owns all layer-shell surfaces while a
   moving background plays. It decodes video once through `libmpv` with
-  hardware decode and draws N outputs. It draws stills as static GL
-  textures with no frame loop. With `renderer_mode = "lazy"`, the daemon
-  stops it while a still background shows and gives the layer back to the
-  shell.
+  hardware decode and draws N outputs. It draws a poster still as a
+  static GL texture only in battery poster mode. The daemon stops it
+  while a still background shows and gives the layer back to the shell.
 - `owe` — CLI. It controls every daemon and renderer function.
 - `owe-idle` — hypridle helper. It pauses on idle and resumes on activity.
 
@@ -171,10 +170,9 @@ media is silent. Source files remain intact.
 
 ## Performance design
 
-- Lazy loading is on by default. While a still background shows, `owed`
+- Stills never start the renderer. While a still background shows, `owed`
   enables the shell background plugin, stops `owe-render`, and keeps only
-  the 4 MiB daemon. A video or GIF starts the renderer again. Set
-  `renderer_mode = "always"` to keep the renderer loaded.
+  the 4 MiB daemon. A video or GIF starts the renderer again.
 - Video renders only when `libmpv` signals a new frame. The render rate
   tracks the media frame rate, not the display refresh rate.
 - Video draws straight into the window framebuffer. No intermediate

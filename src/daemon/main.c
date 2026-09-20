@@ -376,10 +376,9 @@ void owed_app_apply_policy(void) {
     if (!*app->source_path) {
         return;
     }
-    /* A still background does not need a renderer. The shell draws it while
-     * the renderer stays stopped, unless renderer_mode is "always". */
-    shell_engine = strcmp(app->config.renderer_mode, "always") != 0 &&
-                   strcmp(app->source_kind, "still") == 0;
+    /* OWE owns video and GIF backgrounds only. A still background belongs to
+     * Omarchy's shell, so the renderer never starts for one. */
+    shell_engine = strcmp(app->source_kind, "still") == 0;
     if (shell_engine) {
         if (app->engine != OWE_ENGINE_SHELL) {
             if (switch_to_shell() == 0) {

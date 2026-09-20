@@ -71,7 +71,6 @@ static void test_config_defaults(void) {
     CHECK(!cfg.pause_occupied_workspace, "default do not pause occupied");
     CHECK(!cfg.battery_poster, "default no battery poster");
     CHECK(strcmp(cfg.battery_mode, "play") == 0, "default battery mode");
-    CHECK(strcmp(cfg.renderer_mode, "lazy") == 0, "default renderer mode");
     CHECK(cfg.gif_fps == 20, "default gif fps");
     CHECK(cfg.gif_crf == 20, "default gif crf");
     CHECK(cfg.cache_max_mb == 512, "default cache budget");
@@ -108,7 +107,7 @@ static void test_config_load(void) {
     fprintf(f, "# comment\n[pause]\nfullscreen = false\noccupied_workspace = no\n"
                "battery_poster = false\nbattery_mode = \"pause\"\n"
                "blocklist = [obs, steam]\n[transcode]\ngif_fps = 15\ngif_crf = 23\n"
-               "[render]\nfade_ms = 100\nrenderer_mode = \"always\"\n");
+               "[render]\nfade_ms = 100\n");
     fclose(f);
     owe_config_defaults(&cfg);
     CHECK(owe_config_load(&cfg, path) == 0, "config load");
@@ -116,7 +115,6 @@ static void test_config_load(void) {
     CHECK(!cfg.pause_occupied_workspace, "parse occupied false");
     CHECK(!cfg.battery_poster, "parse battery poster false");
     CHECK(strcmp(cfg.battery_mode, "pause") == 0, "parse battery mode");
-    CHECK(strcmp(cfg.renderer_mode, "always") == 0, "parse renderer mode");
     CHECK(cfg.gif_fps == 15, "parse gif fps");
     CHECK(cfg.gif_crf == 23, "parse gif crf");
     CHECK(cfg.fade_ms == 100, "parse fade");

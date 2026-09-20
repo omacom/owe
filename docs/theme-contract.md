@@ -14,7 +14,7 @@ It adds no Omarchy-side hooks and edits no packaged file.
 - Shell config: `owed` controls `omarchy.background` in `shell.json` at
   runtime through `omarchy-shell shell setPluginEnabled`. It disables the
   plugin while a video or GIF plays, and enables it while a still shows.
-  With `renderer_mode = "always"` the plugin stays disabled.
+  OWE never draws stills.
 - Lock screen: `LockView` renders its own `BackgroundMedia` from the
   symlink. It needs no background plugin.
 - Bar sampler, `bg-switcher`, and `bg-cache`: they read files and the
@@ -29,8 +29,9 @@ It preserves shell settings added after installation.
 
 ## Transitions
 
-The shell reveal wipe goes away with the shell renderer. Still to still
-switch uses the renderer GPU fade. Video changes use a hard cut.
+Stills belong to the shell, so a still to still switch uses the shell
+reveal wipe. Video and GIF changes use a hard cut. A battery poster fades
+in through the renderer GPU fade.
 A renderer load reply acknowledges the request. It does not guarantee successful asynchronous video decode.
 `owe render-status` reports decode failures in its `error` field.
 
