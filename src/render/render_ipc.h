@@ -1,5 +1,6 @@
 #pragma once
 #include <poll.h>
+#include <stdbool.h>
 
 struct owe_render_ipc;
 
@@ -10,4 +11,5 @@ void owe_render_ipc_accept(struct owe_render_ipc *ipc);
 void owe_render_ipc_poll_clients(struct owe_render_ipc *ipc);
 int owe_render_ipc_pollfds(struct owe_render_ipc *ipc, struct pollfd *fds);
 void owe_render_ipc_poll_still(struct owe_render_ipc *ipc);
-void owe_render_ipc_reload_still(struct owe_render_ipc *ipc);
+/* False when an in-flight decode or resource failure requires a later retry. */
+bool owe_render_ipc_reload_still(struct owe_render_ipc *ipc);

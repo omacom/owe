@@ -72,9 +72,9 @@ void owed_policy_recompute(struct owed_policy *p) {
         goto done;
     }
     if (app->power && owed_power_on_battery(app->power)) {
-        bool poster = app->config.battery_poster ||
-                      strcmp(app->config.battery_mode, "poster") == 0;
-        if (poster) {
+        bool want_poster = app->config.battery_poster ||
+                           strcmp(app->config.battery_mode, "poster") == 0;
+        if (want_poster) {
             pause = true;
             poster = true;
             reason = "battery";
@@ -118,6 +118,20 @@ bool owed_policy_should_pause(struct owed_policy *p) {
 
 bool owed_policy_should_poster(struct owed_policy *p) {
     return p && p->poster;
+}
+
+/* A lock feed bypasses desktop visibility, but preserves explicit pauses and
+ * power-saving rules even when "locked" is the highest-priority reason. */
+bool owed_policy_allows_feed(struct owed_policy *p) {
+    owed_app_t *app = owed_app_get();
+    if (!p || !app || p->manual_pause || owed_power_sleeping(app->power) ||
+        (app->hypr && owed_hypr_all_monitors_off(app->hypr))) return false;
+    if (app->always_animate) return true;
+    bool battery_pause = owed_power_on_battery(app->power) &&
+                         (app->config.battery_poster ||
+                          strcmp(app->config.battery_mode, "poster") == 0 ||
+                          strcmp(app->config.battery_mode, "pause") == 0);
+    return !p->idle_pause && !p->blocklisted && !battery_pause;
 }
 
 const char *owed_policy_reason(struct owed_policy *p) {

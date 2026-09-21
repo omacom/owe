@@ -220,6 +220,7 @@ int owe_egl_make_current(struct owe_egl *egl) {
     if (!egl) {
         return -1;
     }
+    if (eglGetCurrentContext() == egl->context) return 0;
     if (eglMakeCurrent(egl->display, EGL_NO_SURFACE, EGL_NO_SURFACE, egl->context)) {
         egl->current = EGL_NO_SURFACE;
         return 0;
@@ -257,7 +258,12 @@ void owe_egl_destroy_output(struct owe_egl *egl, struct owe_output *out) {
         return;
     }
     if (out->egl_surface) {
-        owe_egl_make_current(egl);
+        if (eglGetCurrentSurface(EGL_DRAW) == (EGLSurface)out->egl_surface) {
+            if (!eglMakeCurrent(egl->display, EGL_NO_SURFACE, EGL_NO_SURFACE, egl->context)) {
+                OWE_ERROR("cannot release output surface: 0x%x", eglGetError());
+            }
+            egl->current = EGL_NO_SURFACE;
+        }
         eglDestroySurface(egl->display, (EGLSurface)out->egl_surface);
         out->egl_surface = NULL;
     }

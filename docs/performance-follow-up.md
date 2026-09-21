@@ -11,6 +11,23 @@ Related documents:
 - [Renderer and daemon architecture](architecture.md)
 - [Omarchy integration contracts](theme-contract.md)
 
+## Subsequent correctness and performance fixes
+
+The later project review adds coverage for oversized conversion results,
+partial IPC requests, slow readers, asynchronous reply ownership, still decode
+replacement and cancellation, stalled feed clients, and benchmark restoration.
+Both JSON servers now share bounded connection handling. QML deletes its old
+scene-graph node when a feed clears and shares copied frames between outputs.
+Lock frames are read back at the required cover resolution, without upscaling.
+
+`bench/bench.sh` now verifies actual playback throughout each sample, rejects
+process restarts and media changes, explicitly creates an idle policy pause,
+and measures the daemon when a still stops the renderer. It restores manual
+pause, idle pause, animation override and any changed selection on exit.
+Historical descriptions below refer to the review state when written; use
+[the current benchmark method](benchmarks.md) for new measurements. These
+regression fixes do not complete the outstanding live GPU and power matrix.
+
 ## Measured baseline
 
 The live sample uses a 3840×2160 H.264 video at 24 FPS with one 2880×1800 output.
@@ -157,7 +174,7 @@ Measured on eDP-1 with a still background:
 An always-on renderer for stills measured about 121 MiB RSS and is no
 longer supported.
 
-The handoff disables the shell plugin before the renderer starts. An
+The handoff disables the shell plugin after the renderer starts. An
 occluded renderer receives no frame callbacks, so waiting for readiness
 first would deadlock.
 
@@ -165,7 +182,7 @@ The renderer stops its swap loop while the compositor presents nothing,
 which handles a blanked screen. The daemon pauses playback when Hyprland
 reports the monitors off.
 
-### Completed checks
+### Historical checks at the initial checkpoint
 
 - All six registered test suites pass.
 - All six suites pass under AddressSanitizer and UndefinedBehaviorSanitizer.
@@ -227,7 +244,7 @@ References: `src/render/render_ipc.c:115–124`, `src/render/mpv.c:241–246`, `
 
 ## Priority 2: Repair the benchmark method
 
-The current script labels states without verifying them.
+The original script labeled states without verifying them.
 With the default configuration, visible ordinary windows do not cause the `policy-paused` state.
 An existing manual pause can also invalidate the `video-playing` state.
 
@@ -236,7 +253,7 @@ An existing manual pause can also invalidate the `video-playing` state.
 - [x] Verify daemon policy and renderer state before each sample.
 - [x] Create an explicit policy condition for the policy-pause sample.
 - [x] Add an actual still-image sample.
-- [ ] Reject samples when media fails, the renderer exits, or the renderer PID changes.
+- [x] Reject samples when media fails, the renderer exits, or the renderer PID changes.
 - [x] Select the renderer from the tested daemon's child process.
 - [x] Read `SC_CLK_TCK` instead of assuming 100 ticks per second.
 - [x] Record elapsed monotonic time instead of assuming the requested sleep duration.
@@ -247,10 +264,10 @@ An existing manual pause can also invalidate the `video-playing` state.
 - [x] Repeat each settled-state sample to expose run-to-run variation.
 - [ ] Summarize latency distributions and memory peaks, not only averages.
 
-Until the script restores playback state, run it only in a dedicated test session.
-Treat existing benchmark state labels as unverified unless the recorded status confirms them.
+The current script restores playback state on normal exit and interruption.
+Treat historical benchmark state labels as unverified unless their recorded status confirms them.
 
-Reference: `bench/bench.sh:12–57`.
+Reference: `bench/bench.py`.
 
 ## Priority 3: Complete the missing performance matrix
 

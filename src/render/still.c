@@ -4,6 +4,7 @@
 #include <fcntl.h>
 #include <pthread.h>
 #include <stdint.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -30,6 +31,7 @@ struct still_job {
     int h;
     int rc;
     int ready;
+    atomic_bool cancelled;
 };
 
 struct owe_still {
@@ -44,6 +46,7 @@ struct owe_still {
     int fade_ms;
     struct timespec loaded_at;
     struct still_job *job;
+    struct still_job *queued;
 };
 
 static long elapsed_ms(const struct timespec *a, const struct timespec *b) {
@@ -61,16 +64,24 @@ struct owe_still *owe_still_new(struct owe_wayland *wl, struct owe_egl *egl) {
     return s;
 }
 
+static void still_job_join(struct owe_still *s);
+
 void owe_still_free(struct owe_still *s) {
     if (!s) {
         return;
     }
     owe_still_unload(s);
+    still_job_join(s);
     free(s);
 }
 
+static int decode_cancelled(void *opaque) {
+    const atomic_bool *cancelled = opaque;
+    return cancelled && atomic_load(cancelled);
+}
+
 static int decode_first_frame(const char *path, int max_w, int max_h, uint8_t **rgba_out,
-                              int *w_out, int *h_out) {
+                              int *w_out, int *h_out, atomic_bool *cancelled) {
     AVFormatContext *fmt = NULL;
     AVCodecContext *dec = NULL;
     const AVCodec *codec = NULL;
@@ -81,6 +92,9 @@ static int decode_first_frame(const char *path, int max_w, int max_h, uint8_t **
     int video_stream = -1;
     int rc = -1;
     unsigned int i;
+    fmt = avformat_alloc_context();
+    if (!fmt) return -1;
+    fmt->interrupt_callback = (AVIOInterruptCB){decode_cancelled, cancelled};
     if (avformat_open_input(&fmt, path, NULL, NULL) < 0) {
         OWE_ERROR("avformat_open_input failed: %s", path);
         return -1;
@@ -124,6 +138,7 @@ static int decode_first_frame(const char *path, int max_w, int max_h, uint8_t **
         goto done;
     }
     for (;;) {
+        if (decode_cancelled(cancelled)) goto done;
         int read_rc = av_read_frame(fmt, pkt);
         int send_rc;
         if (read_rc < 0) {
@@ -152,7 +167,7 @@ static int decode_first_frame(const char *path, int max_w, int max_h, uint8_t **
             avcodec_receive_frame(dec, frame);
         }
     }
-    if (frame->width <= 0 || frame->height <= 0) {
+    if (decode_cancelled(cancelled) || frame->width <= 0 || frame->height <= 0) {
         goto done;
     }
     {
@@ -190,6 +205,7 @@ static int decode_first_frame(const char *path, int max_w, int max_h, uint8_t **
     if (av_frame_get_buffer(rgb, 0) < 0) {
         goto done;
     }
+    if (decode_cancelled(cancelled)) goto done;
     sws_scale(sws, (const uint8_t *const *)frame->data, frame->linesize, 0, frame->height,
               rgb->data, rgb->linesize);
     {
@@ -234,49 +250,40 @@ done:
 
 static void *still_job_main(void *arg) {
     struct still_job *job = arg;
-    job->rc = decode_first_frame(job->path, job->max_w, job->max_h, &job->rgba, &job->w, &job->h);
+    job->rc = decode_first_frame(job->path, job->max_w, job->max_h, &job->rgba, &job->w, &job->h, &job->cancelled);
     {
         char c = 'x';
-        ssize_t n = write(job->done_fd[1], &c, 1);
-        (void)n;
+        while (write(job->done_fd[1], &c, 1) < 0 && errno == EINTR) {}
     }
     return NULL;
 }
 
+static void job_free(struct still_job *job) {
+    if (!job) return;
+    close(job->done_fd[0]);
+    close(job->done_fd[1]);
+    free(job->rgba);
+    free(job);
+}
+
 static void still_job_release(struct owe_still *s) {
-    if (!s->job) {
-        return;
-    }
-    close(s->job->done_fd[0]);
-    close(s->job->done_fd[1]);
-    free(s->job->rgba);
-    free(s->job);
+    job_free(s->job);
     s->job = NULL;
 }
 
+/* Only shutdown waits for a decoder. Replacements queue the newest request,
+ * cancel the old one and reap it from its completion pipe on the event loop. */
 static void still_job_join(struct owe_still *s) {
-    if (!s->job) {
-        return;
-    }
-    pthread_join(s->job->thread, NULL);
+    if (!s->job) return;
+    if (!s->job->ready) pthread_join(s->job->thread, NULL);
     still_job_release(s);
 }
 
 int owe_still_start(struct owe_still *s, const char *path, int max_w, int max_h) {
-    struct still_job *job;
-    if (!s || !path || !*path) {
-        return -1;
-    }
-    if (s->job) {
-        /* A decode cannot be interrupted, so wait for the finished frame
-         * before replacing the request. The event loop only blocks for the
-         * remainder of that one decode. */
-        still_job_join(s);
-    }
-    job = calloc(1, sizeof(*job));
-    if (!job) {
-        return -1;
-    }
+    if (!s || !path || !*path) return -1;
+    struct still_job *job = calloc(1, sizeof(*job));
+    if (!job) return -1;
+    atomic_init(&job->cancelled, false);
     if (pipe2(job->done_fd, O_CLOEXEC | O_NONBLOCK) != 0) {
         free(job);
         return -1;
@@ -284,13 +291,18 @@ int owe_still_start(struct owe_still *s, const char *path, int max_w, int max_h)
     snprintf(job->path, sizeof(job->path), "%s", path);
     job->max_w = max_w;
     job->max_h = max_h;
-    if (pthread_create(&job->thread, NULL, still_job_main, job) != 0) {
-        close(job->done_fd[0]);
-        close(job->done_fd[1]);
-        free(job);
-        return -1;
+    if (s->job && s->job->ready) still_job_release(s);
+    if (s->job) {
+        atomic_store(&s->job->cancelled, true);
+        job_free(s->queued);
+        s->queued = job;
+    } else {
+        if (pthread_create(&job->thread, NULL, still_job_main, job) != 0) {
+            job_free(job);
+            return -1;
+        }
+        s->job = job;
     }
-    s->job = job;
     return 0;
 }
 
@@ -316,8 +328,12 @@ int owe_still_decoded_max(struct owe_still *s, int *w, int *h) {
 }
 
 void owe_still_cancel(struct owe_still *s) {
-    if (s) {
-        still_job_join(s);
+    if (!s) return;
+    job_free(s->queued);
+    s->queued = NULL;
+    if (s->job) {
+        atomic_store(&s->job->cancelled, true);
+        if (s->job->ready) still_job_release(s);
     }
 }
 
@@ -341,6 +357,17 @@ int owe_still_poll(struct owe_still *s) {
             return -1;
         }
         pthread_join(job->thread, NULL);
+        job->ready = 1;
+        if (atomic_load(&job->cancelled)) {
+            still_job_release(s);
+            s->job = s->queued;
+            s->queued = NULL;
+            if (s->job && pthread_create(&s->job->thread, NULL, still_job_main, s->job) != 0) {
+                still_job_release(s);
+                return -1;
+            }
+            return 0;
+        }
         if (job->rc != 0 || !job->rgba) {
             OWE_ERROR("still decode failed: %s", job->path);
             still_job_release(s);

@@ -10,6 +10,7 @@ void owed_policy_free(struct owed_policy *p);
 void owed_policy_recompute(struct owed_policy *p);
 bool owed_policy_should_pause(struct owed_policy *p);
 bool owed_policy_should_poster(struct owed_policy *p);
+bool owed_policy_allows_feed(struct owed_policy *p);
 const char *owed_policy_reason(struct owed_policy *p);
 
 void owed_policy_set_blocklisted(struct owed_policy *p, bool blocked);

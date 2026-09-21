@@ -6,9 +6,11 @@
 #include <QString>
 #include <QTimer>
 #include <QVector>
+#include <QSharedPointer>
 
 class QSocketNotifier;
 class QSGTexture;
+struct LockFeedFrameCache;
 
 /* Displays the frame stream that the OWE renderer publishes on its lock feed
  * socket. The renderer owns the buffers and sends them as memfds, so this item
@@ -46,6 +48,7 @@ signals:
     void fillModeChanged();
 
 private:
+    friend class LockFeedTest;
     void connectSocket();
     void disconnectSocket();
     void retrySocket();
@@ -73,4 +76,5 @@ private:
     int m_stride = 0;
 
     QImage m_frame;
+    QSharedPointer<LockFeedFrameCache> m_frameCache;
 };

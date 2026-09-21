@@ -4,21 +4,32 @@ For missing checks and follow-up work, see [Performance checks and follow-up wor
 
 ## Method
 
-Run `bench/bench.sh [outdir]`. It samples renderer CPU ticks from
-`/proc/<pid>/stat` per state and captures `gputop` rows per state.
-It stores `owe status` JSON per state. No absolute numbers ship here.
-Compare each run against the local baseline.
+Run `bench/bench.sh [outdir]` with a working video wallpaper. It measures
+renderer and daemon CPU ticks and resident memory using `/proc`. The script
+identifies the daemon through its socket credentials and verifies the renderer
+belongs to that daemon. It records effective configuration and each sample's
+before/after status and resource measurements as JSON.
 
 States sampled:
 
-- `playing` with `always-animate on` and a verified `always-animate` or `visible` reason.
-- `paused` after `owe pause`, with a verified `manual` reason.
-- `policy` only when a policy reason other than `visible`, `always-animate`, `manual`, or `resume` is active.
-- `still` when `OWE_BENCH_STILL` names a still image. The previous background is restored.
+- `playing` clears manual pause and enables `always-animate`.
+- `paused` uses manual pause.
+- `policy` sets the idle pause explicitly.
+- `still` runs when `OWE_BENCH_STILL` names an image, and measures the daemon
+  after the renderer has stopped.
 
-Each state is sampled three times by default. The summary reports the
-minimum, median, and maximum for renderer and daemon CPU and the resident
-memory range. The initial pause and animation state is restored on exit.
+Each state is sampled three times for five seconds by default. Set
+`OWE_BENCH_RUNS` and `OWE_BENCH_SECONDS` to change these durations. The summary
+reports median CPU and maximum sampled RSS. Playback state is verified before,
+during and after each sample; a process restart, media change, failed load or
+advancing paused video aborts the run. Locked sessions require a separate feed
+benchmark. The initial manual pause, idle pause, animation override and any
+changed background are restored on normal exit, failure, SIGINT or SIGTERM.
+
+The periodic verification itself adds a small amount of control traffic. These
+measurements do not establish GPU utilization, frame pacing or battery power;
+capture those separately under a controlled display configuration. No new
+hardware performance claims are implied by the regression tests.
 
 ## Budget
 

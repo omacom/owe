@@ -203,6 +203,7 @@ static owe_output_t *output_new(struct owe_wayland *wl, struct wl_output *wl_out
     owe_output_t *out = calloc(1, sizeof(*out));
     struct wl_region *region;
     if (!out) {
+        wl_output_destroy(wl_output);
         return NULL;
     }
     out->wl_output = wl_output;
@@ -216,10 +217,7 @@ static owe_output_t *output_new(struct owe_wayland *wl, struct wl_output *wl_out
     wl_output_add_listener(wl_output, &output_listener, out);
 
     out->surface = wl_compositor_create_surface(wl->compositor);
-    if (!out->surface) {
-        free(out);
-        return NULL;
-    }
+    if (!out->surface) goto fail;
     wl_surface_set_buffer_scale(out->surface, out->scale > 0 ? out->scale : 1);
     if (wl->viewporter) {
         out->viewport = wp_viewporter_get_viewport(wl->viewporter, out->surface);
@@ -234,11 +232,7 @@ static owe_output_t *output_new(struct owe_wayland *wl, struct wl_output *wl_out
     out->layer = zwlr_layer_shell_v1_get_layer_surface(wl->layer_shell, out->surface, wl_output,
                                                        ZWLR_LAYER_SHELL_V1_LAYER_BACKGROUND,
                                                        "owe-background");
-    if (!out->layer) {
-        wl_surface_destroy(out->surface);
-        free(out);
-        return NULL;
-    }
+    if (!out->layer) goto fail;
     zwlr_layer_surface_v1_add_listener(out->layer, &layer_listener, out);
     zwlr_layer_surface_v1_set_size(out->layer, 0, 0);
     zwlr_layer_surface_v1_set_anchor(out->layer, ZWLR_LAYER_SURFACE_V1_ANCHOR_TOP |
@@ -255,27 +249,19 @@ static owe_output_t *output_new(struct owe_wayland *wl, struct wl_output *wl_out
     wl_surface_commit(out->surface);
 
     out->egl_window = wl_egl_window_create(out->surface, 64, 64);
-    if (!out->egl_window) {
-        zwlr_layer_surface_v1_destroy(out->layer);
-        wl_surface_destroy(out->surface);
-        free(out);
-        return NULL;
-    }
+    if (!out->egl_window) goto fail;
     if (app && app->egl) {
         out->egl_surface = owe_egl_create_window_surface(app->egl, out->egl_window);
-        if (!out->egl_surface) {
-            wl_egl_window_destroy(out->egl_window);
-            zwlr_layer_surface_v1_destroy(out->layer);
-            wl_surface_destroy(out->surface);
-            free(out);
-            return NULL;
-        }
+        if (!out->egl_surface) goto fail;
     }
 
     out->next = wl->outputs;
     wl->outputs = out;
     wl->output_count++;
     return out;
+fail:
+    output_free(wl, out);
+    return NULL;
 }
 
 static void output_free(struct owe_wayland *wl, owe_output_t *out) {
@@ -306,10 +292,10 @@ static void output_free(struct owe_wayland *wl, owe_output_t *out) {
     for (link = &wl->outputs; *link; link = &(*link)->next) {
         if (*link == out) {
             *link = out->next;
+            wl->output_count--;
             break;
         }
     }
-    wl->output_count--;
     free(out);
 }
 
@@ -329,9 +315,7 @@ static void registry_global(void *data, struct wl_registry *registry, uint32_t n
         uint32_t v = version >= 4 ? 4 : version;
         wo = wl_registry_bind(registry, name, &wl_output_interface, v);
         if (wo && wl->compositor && wl->layer_shell) {
-            if (!output_new(wl, wo, name)) {
-                wl_output_destroy(wo);
-            }
+            output_new(wl, wo, name);
         } else if (wo) {
             wl_output_destroy(wo);
         }

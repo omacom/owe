@@ -48,6 +48,10 @@ The decoder rejects images above 64 million pixels.
 A still decodes on a worker thread and uploads its texture on the render
 thread, so a large image does not stall the control loop.
 When an output grows, the current still decodes again at the larger size.
+Replacement requests cancel the worker's I/O and keep only the newest queued
+request. The event loop reaps the old decoder when it completes; it never
+joins an unfinished decoder during media changes. Shutdown joins the worker
+before freeing its state.
 The renderer uploads one texture, presents the fade, and stops frame requests after the fully opaque final frame.
 
 Pause sets `pause` to `yes`. Decode stops, update callbacks stop,
@@ -57,7 +61,7 @@ while paused, so the main loop sleeps in `poll`.
 ## Lock feed
 
 A locked session keeps its video. The daemon sends `feed` to the renderer
-instead of `pause` when logind reports the session locked and the loaded
+instead of `pause` when logind or Hyprland reports the session locked and the loaded
 media is a video. The renderer resumes playback muted and writes frames
 into a three slot shared memory ring, one memfd per slot. `lock-feed.sock`
 sits next to `render.sock` and carries a fixed size binary protocol. A
@@ -72,11 +76,21 @@ It pauses decode when no clients remain and resumes decode when a client connect
 Each buffer tracks the clients that must acknowledge its frame.
 Duplicate acknowledgements and client disconnects cannot release another client's buffer.
 Frame sequence numbers remain unique across buffer size changes.
+Clients that hold a frame for a second without acknowledging it are disconnected,
+so one stalled output cannot exhaust the ring for every other output.
+Readback resolution follows the outputs' physical cover requirements, capped
+at the source resolution and the protocol's 3840×2160 limit. QML items in the
+same process share one CPU copy of a frame. Geometry-only updates reuse the
+existing texture. The feed still uses GPU readback and texture uploads;
+these changes reduce their cost without claiming zero-copy GPU transport.
 
 The QML client reads one protocol message at a time, so descriptors stay with their `HELLO` message.
 It retries the connection after a disconnect while `active` remains true.
 The daemon ends the feed before sleep, when all monitors turn off, or after a still replaces the video.
 The renderer also ends the feed after a successful still decode and requests a desktop redraw.
+Stopping the feed releases its shared-memory and GPU buffers. Manual, idle,
+blocklist and battery pause rules also apply to a locked session; the animation
+override bypasses the automatic rules, but never manual pause, sleep or DPMS.
 
 ## Daemon
 
@@ -87,8 +101,9 @@ because `ln -nsf` swaps the entry atomically.
 It owns the engine choice. While a video or GIF plays it starts
 `owe-render` and disables the shell background plugin. A still always
 belongs to the shell: it enables the plugin, stops the renderer, and
-keeps only the daemon. The plugin is disabled only after the new media
-presents its first frame, so the handoff never shows a black frame.
+keeps only the daemon. The plugin is disabled after the renderer starts, before waiting for its first
+frame: an occluded background surface may never receive a frame callback.
+Readiness and fallback are tracked separately from releasing the shell layer.
 
 It connects to the Hyprland event socket for `fullscreen`, `openwindow`,
 `closewindow`, `movewindow`, `workspace`, and monitor events. It queries
@@ -104,6 +119,8 @@ Cancellation terminates FFmpeg and joins the worker before it frees job memory.
 Only the worker reaps its FFmpeg child.
 Conversions use temporary files and publish complete results with an atomic rename.
 Cache keys include the source path, size, nanosecond timestamps, conversion version, and encoding settings.
+Startup removes abandoned conversion temporary files older than a day, leaving
+recent files alone so an orphaned worker can finish safely.
 
 The daemon tracks what the renderer currently shows. A load is sent only
 when the target path or kind changes. Pause and resume are sent only on
@@ -112,7 +129,8 @@ request, so the daemon polls the renderer status until the first frame
 presents. A video that fails to decode, or that never presents a frame
 within five seconds, falls back to the last media that proved it plays.
 The renderer child is reaped on `SIGCHLD` and restarted with the current
-media when it dies.
+media when it dies. Only the daemon restart path spawns a replacement;
+individual IPC sends fail if the child has exited, preserving state recovery.
 Retry delays prevent a renderer failure from causing a rapid restart loop.
 
 ## IPC
@@ -120,7 +138,10 @@ Retry delays prevent a renderer failure from causing a rapid restart loop.
 Both sockets use JSON lines. Each command gets one reply line.
 `owed.sock` serves CLI and hook clients. `render.sock` serves the
 daemon and direct debug clients. No broadcast exists. Each reply
-goes to its own requester.
+goes to its own requester, including asynchronous replies after a client slot
+is reused. Both servers use the same bounded transport: idle connections and
+incomplete requests expire after two minutes, and partial writes are queued
+with a four-message-size limit. Slow readers cannot grow the queue indefinitely.
 
 ## Shutdown
 

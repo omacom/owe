@@ -25,6 +25,7 @@
 #define FEED_MAX_WIDTH 3840
 #define FEED_MAX_HEIGHT 2160
 #define FEED_FORMAT_RGBA8888 0
+#define FEED_ACK_TIMEOUT_MS 1000
 
 enum {
     FEED_MSG_HELLO = 1,
@@ -55,6 +56,7 @@ struct feed_slot {
     int stride;
     uint64_t seq;
     uint32_t pending; /* One bit per client that must acknowledge this frame. */
+    int64_t published_ms;
 };
 
 struct feed_client {
@@ -71,6 +73,8 @@ struct owe_feed {
     struct feed_slot slots[OWE_FEED_SLOTS];
     int width;
     int height;
+    int target_width;
+    int target_height;
     uint64_t seq;
     bool active;
 };
@@ -360,7 +364,7 @@ static void handle_ack(struct owe_feed *f, int client, uint32_t slot, uint64_t s
 
 static void poll_client(struct owe_feed *f, int idx) {
     struct feed_client *c = &f->clients[idx];
-    for (;;) {
+    for (int messages = 0; messages < 64; messages++) {
         ssize_t n = recv(c->fd, (char *)&c->msg + c->len, sizeof(c->msg) - c->len, 0);
         if (n == 0) {
             client_remove(f, idx);
@@ -395,6 +399,18 @@ void owe_feed_poll_clients(struct owe_feed *f, struct owe_mpv *m) {
             poll_client(f, i);
         }
     }
+    int64_t now = owe_ipc_now_ms();
+    for (i = 0; i < OWE_FEED_SLOTS; i++) {
+        struct feed_slot *slot = &f->slots[i];
+        if (slot->pending && now - slot->published_ms >= FEED_ACK_TIMEOUT_MS) {
+            for (int client = 0; client < OWE_FEED_MAX_CLIENTS; client++) {
+                if (slot->pending & (UINT32_C(1) << client)) {
+                    OWE_WARN("feed client %d missed its acknowledgement deadline", client);
+                    client_remove(f, client);
+                }
+            }
+        }
+    }
     if (f->active && m) {
         /* A new client needs decode to start before the first buffers exist. */
         owe_mpv_set_paused(m, client_count(f) == 0);
@@ -426,11 +442,40 @@ void owe_feed_stop(struct owe_feed *f) {
     for (i = 0; i < OWE_FEED_MAX_CLIENTS; i++) {
         client_remove(f, i);
     }
+    if (f->egl) owe_egl_make_current(f->egl);
+    for (i = 0; i < OWE_FEED_SLOTS; i++) slot_reset(&f->slots[i]);
+    f->width = f->height = 0;
     OWE_INFO("feed stopped");
 }
 
 bool owe_feed_running(struct owe_feed *f) {
     return f && f->active;
+}
+
+void owe_feed_set_target_size(struct owe_feed *f, int width, int height) {
+    if (!f) return;
+    f->target_width = width;
+    f->target_height = height;
+}
+
+static void frame_size(struct owe_feed *f, int *w, int *h) {
+    double scale = 1.0;
+    if (f->target_width > 0 && f->target_height > 0) {
+        double sx = (double)f->target_width / *w;
+        double sy = (double)f->target_height / *h;
+        double cover = sx > sy ? sx : sy;
+        if (cover < scale) scale = cover;
+    }
+    double sx = (double)FEED_MAX_WIDTH / *w;
+    double sy = (double)FEED_MAX_HEIGHT / *h;
+    if (sx < scale) scale = sx;
+    if (sy < scale) scale = sy;
+    if (scale < 1.0) {
+        *w = (int)(*w * scale);
+        *h = (int)(*h * scale);
+        if (*w < 1) *w = 1;
+        if (*h < 1) *h = 1;
+    }
 }
 
 int owe_feed_publish(struct owe_feed *f, struct owe_mpv *m) {
@@ -446,18 +491,10 @@ int owe_feed_publish(struct owe_feed *f, struct owe_mpv *m) {
     if (!owe_mpv_has_video(m) || owe_mpv_video_size(m, &w, &h) != 0) {
         return -1;
     }
-    if (w > FEED_MAX_WIDTH || h > FEED_MAX_HEIGHT) {
-        double scale = (double)FEED_MAX_WIDTH / (double)w;
-        double hscale = (double)FEED_MAX_HEIGHT / (double)h;
-        if (hscale < scale) {
-            scale = hscale;
-        }
-        w = (int)((double)w * scale) & ~1;
-        h = (int)((double)h * scale) & ~1;
-    }
     if (w <= 0 || h <= 0) {
         return -1;
     }
+    frame_size(f, &w, &h);
     owe_egl_make_current(f->egl);
     if (ensure_slots(f, w, h) != 0) {
         return -1;
@@ -483,6 +520,7 @@ int owe_feed_publish(struct owe_feed *f, struct owe_mpv *m) {
     glReadPixels(0, 0, s->w, s->h, GL_RGBA, GL_UNSIGNED_BYTE, s->map);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     s->seq = ++f->seq;
+    s->published_ms = owe_ipc_now_ms();
     s->pending = 0;
     memset(&frame, 0, sizeof(frame));
     frame.magic = FEED_MAGIC;

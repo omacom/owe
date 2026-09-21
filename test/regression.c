@@ -242,6 +242,15 @@ static void test_jobs(void) {
     owed_async_job_free(job);
     CHECK(!owed_transcode_file_ready(target));
     no_parts();
+    CHECK(setenv("OWE_TEST_FFMPEG_MODE", "large", 1) == 0);
+    owed_transcode_set_cache_limit(1);
+    CHECK(owed_transcode_gif(input, 20, 20, 640, 360, target, sizeof(target)) == 0);
+    CHECK(owed_transcode_file_ready(target));
+    char poster[PATH_MAX];
+    CHECK(owed_transcode_poster(target, poster, sizeof(poster)) == 0);
+    CHECK(owed_transcode_file_ready(poster) && owed_transcode_file_ready(target));
+    owed_transcode_set_cache_limit(512);
+    CHECK(unsetenv("OWE_TEST_FFMPEG_MODE") == 0);
     groups++;
 }
 
@@ -255,6 +264,23 @@ static void test_spawn(void) {
     start = seconds();
     CHECK(owe_spawn_capture("sleep", slow, out, sizeof(out), 100) < 0);
     CHECK(seconds() - start < 1);
+    groups++;
+}
+
+static void test_abandoned_cache_files(void) {
+    const char *old = "owe/gif/abandoned.part-ABCDEF.mp4";
+    const char *fresh = "owe/gif/active.part-ABCDEF.mp4";
+    char path[PATH_MAX];
+    put(old, "incomplete");
+    put(fresh, "active");
+    path_for(path, sizeof(path), old);
+    struct timespec times[2] = {{.tv_sec = time(NULL) - 86401}, {.tv_sec = time(NULL) - 86401}};
+    CHECK(utimensat(AT_FDCWD, path, times, 0) == 0);
+    owed_transcode_cleanup_cache();
+    CHECK(access(path, F_OK) != 0);
+    path_for(path, sizeof(path), fresh);
+    CHECK(access(path, F_OK) == 0);
+    CHECK(unlink(path) == 0);
     groups++;
 }
 
@@ -291,6 +317,7 @@ int main(int argc, char **argv) {
     test_display_state();
     test_symlink();
     test_jobs();
+    test_abandoned_cache_files();
     test_spawn();
     test_config_errors();
     char *remove[] = {"rm", "-rf", "--", root, NULL}, log[256];

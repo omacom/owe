@@ -1,5 +1,4 @@
 module Owe.LockFeed
 plugin owe_lockfeed
 classname OweLockFeedPlugin
-typeinfo owe_lockfeed.qmltypes
 depends QtQuick

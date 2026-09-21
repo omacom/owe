@@ -33,6 +33,7 @@ typedef struct owed_app {
     int engine;
     int shell_enabled; /* -1 unknown, 0 disabled, 1 enabled */
     int64_t shell_stop_at_ms;
+    int64_t shell_retry_at_ms;
     int64_t renderer_retry_at_ms;
 
     char source_path[4096];
@@ -51,7 +52,9 @@ typedef struct owed_app {
     int64_t media_deadline_ms;
 
     owed_async_job_t *job;
+    bool job_is_poster;
     char fail_path[4096];
+    char poster_fail_path[4096];
     int render_paused; /* -1 unknown, 0 playing, 1 paused */
     int render_feeding; /* 1 while the lock feed owns the renderer */
     unsigned long source_generation;

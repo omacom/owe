@@ -96,7 +96,10 @@ static int load_if_needed(const char *path, const char *kind) {
         /* The renderer keeps its previous media after a rejected load, so
          * loaded_path stays as the last successful media to keep policy in
          * control of what is playing. */
-        copy_path(app->fail_path, sizeof(app->fail_path), app->source_path);
+        char *failed = strcmp(kind, "still") == 0 && battery_poster_active() &&
+                       strcmp(path, app->source_path) != 0
+                           ? app->poster_fail_path : app->fail_path;
+        copy_path(failed, sizeof(app->fail_path), app->source_path);
         return -1;
     }
     /* Snapshot the media that already proved it plays. A video whose decode
@@ -127,9 +130,7 @@ static int apply_feed_state(void) {
     }
     locked = (app->power && owed_power_locked(app->power)) ||
              (app->hypr && owed_hypr_locked(app->hypr));
-    want_feed = locked && !owed_policy_manual_pause(app->policy) &&
-                !(app->power && owed_power_sleeping(app->power)) &&
-                !(app->hypr && owed_hypr_all_monitors_off(app->hypr)) &&
+    want_feed = locked && owed_policy_allows_feed(app->policy) &&
                 strcmp(app->loaded_kind, "video") == 0 &&
                 owed_render_is_alive(app->supervisor);
     if (want_feed) {
@@ -193,9 +194,14 @@ bool owed_app_renderer_expected(void) {
  * costs only the daemon. */
 static int switch_to_shell(void) {
     owed_app_t *app = &g_app;
+    int64_t now = monotonic_ms();
+    if (now < app->shell_retry_at_ms) return -1;
     if (app->shell_enabled != 1 && owed_shell_plugin_set(true) != 0) {
+        OWE_WARN("shell handoff failed, keeping the renderer for the still");
+        app->shell_retry_at_ms = now + 30000;
         return -1;
     }
+    app->shell_retry_at_ms = 0;
     app->shell_enabled = 1;
     app->engine = OWE_ENGINE_SHELL;
     app->media_pending = false;
@@ -208,8 +214,7 @@ static int switch_to_shell(void) {
     return 0;
 }
 
-/* Start the renderer. The shell plugin is disabled once the new media is
- * ready, so the handoff never shows a black frame. */
+/* Start the renderer and release the shell layer so it can receive frames. */
 static int switch_to_renderer(void) {
     owed_app_t *app = &g_app;
     int64_t now = monotonic_ms();
@@ -217,6 +222,7 @@ static int switch_to_renderer(void) {
         return -1;
     }
     if (owed_supervisor_ensure_running(app->supervisor) != 0) {
+        OWE_ERROR("renderer start failed");
         app->renderer_retry_at_ms = now + 30000;
         return -1;
     }
@@ -346,6 +352,11 @@ static void sync_output_skips(void) {
         name[len] = '\0';
         quoted = owe_json_quote(name);
         if (quoted) {
+            size_t needed = strlen(quoted) + (used > 1 ? 1 : 0);
+            if (needed > sizeof(array) - used - 2) {
+                free(quoted);
+                return;
+            }
             used += (size_t)snprintf(array + used, sizeof(array) - used, "%s%s",
                                      used > 1 ? "," : "", quoted);
             free(quoted);
@@ -376,6 +387,7 @@ void owed_app_apply_policy(void) {
     if (!*app->source_path) {
         return;
     }
+    if (!battery_poster_active()) app->poster_fail_path[0] = '\0';
     /* OWE owns video and GIF backgrounds only. A still background belongs to
      * Omarchy's shell, so the renderer never starts for one. */
     shell_engine = strcmp(app->source_kind, "still") == 0;
@@ -385,15 +397,12 @@ void owed_app_apply_policy(void) {
                 OWE_INFO("engine: shell");
                 return;
             }
-            OWE_WARN("shell handoff failed, keeping the renderer for the still");
         } else {
             return;
         }
     }
     if (app->engine != OWE_ENGINE_RENDERER) {
         if (switch_to_renderer() != 0) {
-            OWE_ERROR("renderer start failed");
-            copy_path(app->fail_path, sizeof(app->fail_path), app->source_path);
             return;
         }
         OWE_INFO("engine: renderer");
@@ -416,11 +425,13 @@ void owed_app_apply_policy(void) {
                                     app->config.transcode_max_width,
                                     app->config.transcode_max_height, cache, sizeof(cache)) != 0) {
             OWE_ERROR("cannot resolve gif cache path: %s", app->source_path);
+            copy_path(app->fail_path, sizeof(app->fail_path), app->source_path);
             return;
         }
         if (owed_transcode_file_ready(cache)) {
             snprintf(video, sizeof(video), "%s", cache);
         } else {
+            app->job_is_poster = false;
             app->job = owed_async_gif(app->source_path, app->config.gif_fps, app->config.gif_crf,
                                       app->config.transcode_max_width,
                                       app->config.transcode_max_height);
@@ -440,22 +451,26 @@ void owed_app_apply_policy(void) {
     }
 
     if (battery_poster_active()) {
+        if (strcmp(app->poster_fail_path, app->source_path) == 0) {
+            apply_playback_state();
+            return;
+        }
         if (owed_transcode_poster_path(video, cache, sizeof(cache)) != 0) {
             OWE_ERROR("cannot resolve poster path: %s", app->source_path);
+            copy_path(app->poster_fail_path, sizeof(app->poster_fail_path), app->source_path);
             return;
         }
         if (owed_transcode_file_ready(cache)) {
-            app->fail_path[0] = '\0';
+            app->poster_fail_path[0] = '\0';
             finish_media(cache, "still");
             return;
         }
-        if (strcmp(app->fail_path, app->source_path) == 0) {
-            return;
-        }
         if (strcmp(app->loaded_kind, "video") == 0) apply_playback_state();
+        app->job_is_poster = true;
         app->job = owed_async_poster(video);
         if (!app->job) {
             OWE_ERROR("cannot start poster job: %s", app->source_path);
+            copy_path(app->poster_fail_path, sizeof(app->poster_fail_path), app->source_path);
         } else {
             OWE_INFO("poster extraction started for %s", app->source_path);
         }
@@ -474,13 +489,14 @@ void owed_app_on_job_done(void) {
     if (!app->job) {
         return;
     }
+    char *failed = app->job_is_poster ? app->poster_fail_path : app->fail_path;
     snprintf(input, sizeof(input), "%s", owed_async_job_input(app->job));
     if (owed_async_job_finish(app->job, &result) != 0) {
         OWE_WARN("job for %s produced no result", input);
-        copy_path(app->fail_path, sizeof(app->fail_path), app->source_path);
+        copy_path(failed, sizeof(app->fail_path), app->source_path);
     } else if (!result.ok) {
         OWE_ERROR("job failed for %s", input);
-        copy_path(app->fail_path, sizeof(app->fail_path), app->source_path);
+        copy_path(failed, sizeof(app->fail_path), app->source_path);
     } else {
         OWE_INFO("job done for %s", input);
     }
@@ -495,6 +511,7 @@ void owed_app_on_renderer_restarted(void) {
     g_app.render_paused = -1;
     g_app.render_feeding = 0;
     g_app.fail_path[0] = '\0';
+    g_app.poster_fail_path[0] = '\0';
     g_app.media_pending = false;
     g_last_skip[0] = '\0';
     owed_supervisor_fade(g_app.supervisor, g_app.config.fade_ms);
@@ -525,6 +542,7 @@ void owed_app_on_background_changed(const char *resolved_path) {
     snprintf(app->source_path, sizeof(app->source_path), "%s", resolved_path);
     snprintf(app->source_kind, sizeof(app->source_kind), "%s", owe_kind_to_string(kind));
     app->fail_path[0] = '\0';
+    app->poster_fail_path[0] = '\0';
     owed_policy_recompute(app->policy);
     owed_app_apply_policy();
     owed_app_emit_event("background", resolved_path);
@@ -693,6 +711,7 @@ int main(int argc, char **argv) {
         }
     }
     owed_transcode_set_cache_limit(g_app.config.cache_max_mb);
+    owed_transcode_cleanup_cache();
 
     g_app.supervisor = owed_supervisor_new();
     g_app.policy = owed_policy_new();
@@ -796,8 +815,6 @@ int main(int argc, char **argv) {
                 owed_watch_poll(g_app.watch);
             } else if (pfds[i].fd == owed_hypr_event_fd(g_app.hypr)) {
                 owed_hypr_poll(g_app.hypr);
-            } else if (pfds[i].fd == owed_power_fd_system(g_app.power)) {
-                owed_power_poll(g_app.power);
             } else if (pfds[i].fd == owed_ipc_fd(g_app.ipc)) {
                 owed_ipc_accept(g_app.ipc);
             } else if (have_job && job_generation == g_app.source_generation &&
@@ -808,6 +825,7 @@ int main(int argc, char **argv) {
         if (!g_app.running) break;
         owed_ipc_poll_clients(g_app.ipc);
         if (!g_app.running) break;
+        owed_power_poll(g_app.power);
         check_media_ready();
         sync_output_skips();
         process_shell_handoff();

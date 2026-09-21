@@ -38,4 +38,9 @@ rm -f "${HOME}/.config/omarchy/hooks/theme-set.d/10-owe-sync"
 echo "==> remove binaries"
 rm -f "${PREFIX}/bin/owe" "${PREFIX}/bin/owed" "${PREFIX}/bin/owe-render" "${PREFIX}/bin/owe-idle"
 
+echo "==> remove the lock feed plugin"
+rm -f "${PREFIX}/lib/qt6/qml/Owe/LockFeed/libowe_lockfeed.so" \
+  "${PREFIX}/lib/qt6/qml/Owe/LockFeed/qmldir"
+rmdir "${PREFIX}/lib/qt6/qml/Owe/LockFeed" 2>/dev/null || true
+
 echo "done. shell background renderer is active again."

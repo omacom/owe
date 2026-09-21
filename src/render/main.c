@@ -186,12 +186,14 @@ int main(int argc, char **argv) {
             owe_wayland_render_pending(g_app.wl);
         }
         owe_wayland_outputs_max_size(g_app.wl, &max_w, &max_h);
+        owe_feed_set_target_size(g_app.feed, max_w, max_h);
         if (max_w != g_last_max_w || max_h != g_last_max_h) {
-            g_last_max_w = max_w;
-            g_last_max_h = max_h;
             /* A still texture is cut for the output that decoded it. Give a
              * larger output the extra detail. */
-            owe_render_ipc_reload_still(g_app.ipc);
+            if (owe_render_ipc_reload_still(g_app.ipc)) {
+                g_last_max_w = max_w;
+                g_last_max_h = max_h;
+            }
         }
         int wlfd = owe_wayland_fd(g_app.wl);
         int ipcfd = owe_render_ipc_fd(g_app.ipc);

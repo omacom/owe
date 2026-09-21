@@ -47,10 +47,10 @@ bool owed_transcode_file_ready(const char *path) {
     return path && stat(path, &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0;
 }
 
-static int g_cache_max_mb = 512;
+static atomic_int g_cache_max_mb = 512;
 
 void owed_transcode_set_cache_limit(int max_mb) {
-    g_cache_max_mb = max_mb;
+    atomic_store(&g_cache_max_mb, max_mb);
 }
 
 struct cache_entry {
@@ -69,7 +69,7 @@ static int cache_entry_cmp(const void *a, const void *b) {
 
 /* Remove the oldest cache files until the budget is met. A limit of 0 or
  * less disables eviction. */
-void owed_transcode_prune_cache(void) {
+static void prune_cache(const char *keep, const char *input) {
     char dir[PATH_MAX];
     DIR *handle;
     struct dirent *entry;
@@ -78,7 +78,8 @@ void owed_transcode_prune_cache(void) {
     size_t capacity = 0;
     long long total = 0;
     long long budget;
-    if (g_cache_max_mb <= 0) {
+    int max_mb = atomic_load(&g_cache_max_mb);
+    if (max_mb <= 0) {
         return;
     }
     if (owe_transcode_cache_dir(dir, sizeof(dir)) != 0) {
@@ -94,6 +95,7 @@ void owed_transcode_prune_cache(void) {
         if (entry->d_name[0] == '.') {
             continue;
         }
+        if (strstr(entry->d_name, ".part-")) continue;
         if (snprintf(path, sizeof(path), "%s/%s", dir, entry->d_name) >= (int)sizeof(path)) {
             continue;
         }
@@ -116,11 +118,15 @@ void owed_transcode_prune_cache(void) {
         count++;
     }
     closedir(handle);
-    budget = (long long)g_cache_max_mb * 1024 * 1024;
+    budget = (long long)max_mb * 1024 * 1024;
     if (total > budget && count > 0) {
         size_t i;
         qsort(files, count, sizeof(*files), cache_entry_cmp);
         for (i = 0; i < count && total > budget; i++) {
+            /* The current result and its source must survive until the daemon
+             * loads them. A single oversized selection may exceed the budget. */
+            if ((keep && strcmp(files[i].path, keep) == 0) ||
+                (input && strcmp(files[i].path, input) == 0)) continue;
             if (unlink(files[i].path) == 0) {
                 total -= files[i].size;
                 OWE_INFO("cache pruned %s", files[i].path);
@@ -128,6 +134,30 @@ void owed_transcode_prune_cache(void) {
         }
     }
     free(files);
+}
+
+void owed_transcode_prune_cache(void) {
+    prune_cache(NULL, NULL);
+}
+
+/* Conversion jobs time out after five minutes. A day's grace also avoids
+ * interfering with an FFmpeg child left running by a just-killed daemon. */
+void owed_transcode_cleanup_cache(void) {
+    char path[PATH_MAX];
+    if (owe_transcode_cache_dir(path, sizeof(path)) != 0) return;
+    DIR *dir = opendir(path);
+    if (!dir) return;
+    time_t now = time(NULL);
+    struct dirent *entry;
+    while ((entry = readdir(dir))) {
+        struct stat st;
+        if (!strstr(entry->d_name, ".part-") ||
+            fstatat(dirfd(dir), entry->d_name, &st, AT_SYMLINK_NOFOLLOW) != 0 ||
+            !S_ISREG(st.st_mode) || now < st.st_mtime || now - st.st_mtime < 86400) continue;
+        if (unlinkat(dirfd(dir), entry->d_name, 0) == 0)
+            OWE_INFO("removed abandoned conversion %s", entry->d_name);
+    }
+    closedir(dir);
 }
 
 static int gif_cache_path(const char *gif_path, int fps, int crf, int max_w, int max_h, char *out,
@@ -256,7 +286,7 @@ static int run_gif(const owed_async_job_t *job, char *out, unsigned long out_len
     }
     snprintf(out, out_len, "%s", cached);
     OWE_INFO("gif cached %s", cached);
-    owed_transcode_prune_cache();
+    prune_cache(cached, job->input);
     return 0;
 }
 
@@ -302,7 +332,7 @@ static int run_poster(const owed_async_job_t *job, char *out, unsigned long out_
         return -1;
     }
     snprintf(out, out_len, "%s", poster);
-    owed_transcode_prune_cache();
+    prune_cache(poster, job->input);
     return 0;
 }
 

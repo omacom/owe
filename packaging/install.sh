@@ -4,17 +4,16 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PREFIX="${HOME}/.local"
-SHELL_JSON="${HOME}/.config/omarchy/shell.json"
 
 missing=()
-for command in meson ninja gcc pkg-config ffmpeg socat python3; do
+for command in meson ninja gcc pkg-config ffmpeg socat python3 cmake; do
   command -v "$command" >/dev/null 2>&1 || missing+=("$command")
 done
 if ((${#missing[@]})); then
   printf 'missing: %s\n' "${missing[@]}" >&2
   printf '%s\n' \
     'On Omarchy, install the prerequisites with:' \
-    '  omarchy pkg add meson ninja gcc pkgconf wayland wayland-protocols libglvnd libepoxy mpv ffmpeg systemd-libs socat python' >&2
+    '  omarchy pkg add meson ninja gcc pkgconf wayland wayland-protocols libglvnd libepoxy mpv ffmpeg systemd-libs socat python cmake qt6-declarative' >&2
   exit 1
 fi
 
@@ -23,6 +22,11 @@ meson setup --reconfigure -Dbuildtype=release "${ROOT}/build" "${ROOT}" >/dev/nu
   meson setup -Dbuildtype=release "${ROOT}/build" "${ROOT}"
 ninja -C "${ROOT}/build"
 meson test -C "${ROOT}/build"
+cmake -S "${ROOT}/qml-plugin" -B "${ROOT}/build-qml" \
+  -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="${PREFIX}" -DCMAKE_INSTALL_LIBDIR=lib
+cmake --build "${ROOT}/build-qml"
+ctest --test-dir "${ROOT}/build-qml" --output-on-failure
+cmake --install "${ROOT}/build-qml"
 
 echo "==> install binaries to ${PREFIX}/bin"
 install_binary() {
@@ -59,4 +63,5 @@ echo "==> enable and (re)start owed.service"
 systemctl --user enable owed.service
 systemctl --user restart owed.service
 
+echo "QML consumers need ${PREFIX}/lib/qt6/qml in their QML_IMPORT_PATH."
 echo "done. run: owe status"
