@@ -190,10 +190,10 @@ static void frame_done(void *data, struct wl_callback *cb, uint32_t time) {
     (void)time;
     wl_callback_destroy(cb);
     out->frame_callback = NULL;
-    /* The compositor is ready for another frame. Present the final still
-     * frame after the fade, but never force a duplicate video frame. */
+    /* Animate stills and transition overlays when the compositor is ready.
+     * Outside transitions, mpv controls the video frame rate. */
     out->frame_ready = 1;
-    if (app && app->still && owe_still_has_image(app->still)) {
+    if (app && (owe_still_has_image(app->still) || owe_still_has_image(app->transition))) {
         out->frame_pending = 1;
     }
 }
@@ -553,11 +553,16 @@ void owe_wayland_render_pending(struct owe_wayland *wl) {
     owe_output_t *out;
     int want_video = 0;
     int rendered_video = 0;
+    bool rendered_transition = false;
     if (!wl) {
         return;
     }
     app = owe_app_get();
     if (!app || !app->egl) {
+        return;
+    }
+    /* Keep the last buffer until the outgoing image can cover video startup. */
+    if (owe_mpv_has_video(app->mpv) && owe_still_busy(app->transition)) {
         return;
     }
     want_video = app->mpv && owe_mpv_has_video(app->mpv) && !app->paused;
@@ -568,6 +573,7 @@ void owe_wayland_render_pending(struct owe_wayland *wl) {
                              owe_still_needs_frames(app->transition));
         for (out = wl->outputs; out; out = out->next) {
             struct wl_callback *cb;
+            bool video_drawn = false;
             if (!out->configured || !out->frame_pending || !out->egl_surface) {
                 continue;
             }
@@ -577,17 +583,20 @@ void owe_wayland_render_pending(struct owe_wayland *wl) {
             out->frame_pending = 0;
             if (want_video) {
                 owe_mpv_render_output(app->mpv, out);
-                if (app->transition && owe_still_has_image(app->transition)) {
-                    owe_still_render_overlay(app->transition, out);
-                }
+                video_drawn = true;
                 rendered_video = 1;
             } else if (app->still && owe_still_has_image(app->still)) {
                 owe_still_render_output(app->still, out);
             } else if (app->mpv && owe_mpv_has_video(app->mpv)) {
                 owe_mpv_render_output(app->mpv, out);
+                video_drawn = true;
                 rendered_video = 1;
             } else {
                 owe_egl_clear_output(app->egl, out, 0.0f, 0.0f, 0.0f, 1.0f);
+            }
+            if (video_drawn && owe_still_has_image(app->transition)) {
+                owe_still_render_overlay(app->transition, out);
+                rendered_transition = true;
             }
             /* Re-read the connector state without the cache. A blank between
              * the check above and this swap would block inside Mesa until the
@@ -614,10 +623,12 @@ void owe_wayland_render_pending(struct owe_wayland *wl) {
         }
         if (want_video && rendered_video) owe_mpv_report_swap(app->mpv);
     }
-    if (app->transition && owe_still_has_image(app->transition) &&
+    if (rendered_transition && owe_still_has_image(app->transition) &&
         owe_still_fade_done(app->transition)) {
         owe_egl_make_current(app->egl);
         owe_still_unload(app->transition);
+        /* Outputs can finish at different times, including while video is paused. */
+        owe_wayland_request_render(wl);
     }
     wl_display_flush(wl->display);
 }

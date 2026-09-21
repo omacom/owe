@@ -223,6 +223,28 @@ def main():
                         break
                     time.sleep(0.1)
                 check(renderer_gone, "renderer stopped while the shell draws the still")
+
+                previous_loads = [json.loads(line) for line in commands_path.read_text().splitlines()
+                                  if json.loads(line).get("cmd") == "load"]
+                check(call(daemon_socket, "resume")["status"] == "ok", "resume command accepted")
+                check(call(daemon_socket, "set", path=str(root / "good.mp4"))["status"] == "ok",
+                      "daemon accepts a video after a shell still")
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    loads = [json.loads(line) for line in commands_path.read_text().splitlines()
+                             if json.loads(line).get("cmd") == "load"]
+                    if len(loads) > len(previous_loads):
+                        break
+                    time.sleep(0.05)
+                check(len(loads) == len(previous_loads) + 1,
+                      "still-to-video handoff sends one load", json.dumps(loads))
+                check(loads[-1].get("from") == str(root / "still.png"),
+                      "renderer receives the outgoing shell still", json.dumps(loads[-1]))
+                check(loads[-1]["path"] == str(root / "good.mp4") and loads[-1]["kind"] == "video",
+                      "transition loads the selected video", json.dumps(loads[-1]))
+                check(not any(load["kind"] == "still" for load in loads),
+                      "the shell retains normal still wallpaper ownership")
+                print("daemon still-to-video transition command passed")
             finally:
                 daemon.send_signal(signal.SIGTERM)
                 try:

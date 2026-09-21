@@ -45,6 +45,7 @@ struct owe_still {
     char path[4096];
     int fade_ms;
     bool fade_out;
+    bool fade_started;
     struct timespec loaded_at;
     struct still_job *job;
     struct still_job *queued;
@@ -397,6 +398,7 @@ int owe_still_poll(struct owe_still *s) {
     s->tex = tex;
     s->tex_w = job->w;
     s->tex_h = job->h;
+    s->fade_started = false;
     s->max_w = job->max_w;
     s->max_h = job->max_h;
     snprintf(s->path, sizeof(s->path), "%s", job->path);
@@ -416,6 +418,7 @@ void owe_still_unload(struct owe_still *s) {
         if (owe_egl_make_current(s->egl) == 0) owe_egl_tex_free(s->egl, s->tex);
     }
     s->tex = 0;
+    s->fade_started = false;
     s->path[0] = '\0';
 }
 
@@ -455,6 +458,11 @@ void owe_still_render_overlay(struct owe_still *s, struct owe_output *out) {
     if (!s || !s->tex || !out) {
         return;
     }
+    /* Decode and output delays must not consume the visible transition. */
+    if (!s->fade_started) {
+        clock_gettime(CLOCK_MONOTONIC, &s->loaded_at);
+        s->fade_started = true;
+    }
     if (s->fade_ms > 0) {
         long ms;
         clock_gettime(CLOCK_MONOTONIC, &now);
@@ -477,13 +485,14 @@ void owe_still_set_fade_ms(struct owe_still *s, int ms) {
 void owe_still_set_fade_out(struct owe_still *s, int ms) {
     if (s) {
         s->fade_out = true;
+        s->fade_started = false;
         s->fade_ms = ms;
     }
 }
 
 bool owe_still_fade_done(struct owe_still *s) {
     struct timespec now;
-    if (!s || !s->tex || !s->fade_out) {
+    if (!s || !s->tex || !s->fade_out || !s->fade_started) {
         return false;
     }
     if (s->fade_ms <= 0) {
@@ -498,6 +507,7 @@ bool owe_still_needs_frames(struct owe_still *s) {
     if (!s || !s->tex || s->fade_ms <= 0) {
         return false;
     }
+    if (s->fade_out && !s->fade_started) return true;
     clock_gettime(CLOCK_MONOTONIC, &now);
     return elapsed_ms(&s->loaded_at, &now) < s->fade_ms;
 }

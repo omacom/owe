@@ -167,7 +167,7 @@ static void handle_load(struct owe_render_ipc *ipc, struct owe_ipc_client *c, yy
         app->intro = once;
         /* A still that was just on screen fades out over the incoming video,
          * so a background switch to a video keeps its transition. */
-        if (*from && !once && app->transition) {
+        if (*from && !once && !app->feeding && app->fade_ms > 0 && app->transition) {
             int max_w = 0;
             int max_h = 0;
             owe_still_unload(app->transition);
@@ -245,6 +245,7 @@ static void handle_command(void *context, struct owe_ipc_client *c, const char *
         send_ok(c, NULL);
     } else if (strcmp(cmd, "feed") == 0) {
         if (app && app->feed) {
+            owe_still_unload(app->transition);
             owe_feed_start(app->feed);
             app->feeding = true;
             app->paused = false;
@@ -259,6 +260,7 @@ static void handle_command(void *context, struct owe_ipc_client *c, const char *
         if (app) {
             stop_feed(app);
             owe_mpv_stop(app->mpv);
+            owe_still_unload(app->transition);
             owe_still_unload(app->still);
             app->current_path[0] = '\0';
             app->current_kind[0] = '\0';
@@ -409,6 +411,7 @@ void owe_render_ipc_poll_still(struct owe_render_ipc *ipc) {
     if (rc > 0) {
         stop_feed(app);
         owe_mpv_stop(app->mpv);
+        owe_still_unload(app->transition);
         snprintf(app->current_path, sizeof(app->current_path), "%s", ipc->pending_path);
         snprintf(app->current_kind, sizeof(app->current_kind), "still");
         pending_reply(ipc, 1, NULL);

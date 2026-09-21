@@ -85,6 +85,19 @@ render_feed_test = executable('owe-render-feed-test',
   link_args : ['-Wl,--gc-sections'])
 test('render-feed', render_feed_test)
 
+transition_test = executable('owe-transition-test',
+  files('transition.c', '../src/render/mpv.c', '../src/render/still.c',
+    '../src/render/render_ipc.c', '../src/render/feed.c') + common_sources + yyjson_sources +
+    [layer_shell_client_h, layer_shell_c, xdg_shell_c, viewporter_client_h, viewporter_c,
+     fractional_scale_client_h, fractional_scale_c],
+  include_directories : [common_inc, yyjson_inc, include_directories('..', '../src/render')],
+  dependencies : [egl_dep, epoxy_dep, wayland_client, wayland_egl, mpv_dep,
+                  avformat_dep, avcodec_dep, avutil_dep, swscale_dep, threads_dep],
+  c_args : ['-ffunction-sections', '-fdata-sections'],
+  link_args : ['-Wl,--gc-sections'])
+test('transition', transition_test, timeout : 30,
+  env : ['LIBGL_ALWAYS_SOFTWARE=1', 'OWE_HWDEC=no', 'OWE_MPV_OPTIONS='])
+
 # This test needs an explicitly started daemon and a video wallpaper.
 executable('owe-live-test', files('live.c') + common_sources + yyjson_sources,
   include_directories : [common_inc, yyjson_inc])
