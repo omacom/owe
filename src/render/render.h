@@ -14,12 +14,14 @@ typedef struct owe_app {
     struct owe_egl *egl;
     struct owe_mpv *mpv;
     struct owe_still *still;
+    struct owe_still *transition;
     struct owe_render_ipc *ipc;
     struct owe_feed *feed;
     bool running;
     bool paused;
     bool feeding;
     bool intro;
+    int fade_ms;
     char current_path[4096];
     char current_kind[16];
 } owe_app_t;

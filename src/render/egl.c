@@ -384,3 +384,52 @@ void owe_egl_draw_texture(struct owe_egl *egl, struct owe_output *out, unsigned 
     glBindVertexArray(0);
     glUseProgram(0);
 }
+
+/* Draw over what is already in the framebuffer with premultiplied alpha, so a
+ * fading still can blend into the video below it. Never clears. */
+void owe_egl_draw_texture_overlay(struct owe_egl *egl, struct owe_output *out, unsigned int tex,
+                                  float alpha, int tex_w, int tex_h) {
+    struct owe_gl_prog *b;
+    int out_w;
+    int out_h;
+    float src_aspect;
+    float dst_aspect;
+    float scale_u = 1.0f;
+    float scale_v = 1.0f;
+    float off_u = 0.0f;
+    float off_v = 0.0f;
+    if (!egl || !out || !tex || alpha <= 0.0f) {
+        return;
+    }
+    if (owe_egl_prepare_output(egl, out) != 0) {
+        return;
+    }
+    owe_output_buffer_size(out, &out_w, &out_h);
+    if (tex_w > 0 && tex_h > 0 && out_w > 0 && out_h > 0) {
+        src_aspect = (float)tex_w / (float)tex_h;
+        dst_aspect = (float)out_w / (float)out_h;
+        if (dst_aspect > src_aspect) {
+            scale_v = src_aspect / dst_aspect;
+        } else {
+            scale_u = dst_aspect / src_aspect;
+        }
+        off_u = (1.0f - scale_u) * 0.5f;
+        off_v = (1.0f - scale_v) * 0.5f;
+    }
+    b = &egl->blit;
+    glDisable(GL_DEPTH_TEST);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+    glUseProgram(b->prog);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glUniform1i(b->tex_loc, 0);
+    glUniform1f(b->alpha_loc, alpha);
+    glUniform2f(b->uv_offset_loc, off_u, off_v);
+    glUniform2f(b->uv_scale_loc, scale_u, scale_v);
+    glBindVertexArray(b->vao);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glBindVertexArray(0);
+    glUseProgram(0);
+    glDisable(GL_BLEND);
+}

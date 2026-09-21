@@ -91,7 +91,8 @@ static int load_if_needed(const char *path, const char *kind) {
     if (strcmp(app->loaded_path, path) == 0 && strcmp(app->loaded_kind, kind) == 0) {
         return 0;
     }
-    if (owed_supervisor_load(app->supervisor, path, kind) != 0) {
+    if (owed_supervisor_load(app->supervisor, path, kind,
+                             strcmp(kind, "video") == 0 ? app->transition_from : NULL) != 0) {
         OWE_ERROR("renderer load failed: %s", path);
         /* The renderer keeps its previous media after a rejected load, so
          * loaded_path stays as the last successful media to keep policy in
@@ -106,6 +107,7 @@ static int load_if_needed(const char *path, const char *kind) {
      * fails later falls back to it. */
     copy_path(app->restore_path, sizeof(app->restore_path), app->last_good_path);
     copy_path(app->restore_kind, sizeof(app->restore_kind), app->last_good_kind);
+    app->transition_from[0] = '\0';
     copy_path(app->loaded_path, sizeof(app->loaded_path), path);
     copy_path(app->loaded_kind, sizeof(app->loaded_kind), kind);
     if (strcmp(kind, "video") == 0) {
@@ -636,6 +638,7 @@ void owed_app_on_renderer_restarted(void) {
     g_app.fail_path[0] = '\0';
     g_app.poster_fail_path[0] = '\0';
     g_app.media_pending = false;
+    g_app.transition_from[0] = '\0';
     g_last_skip[0] = '\0';
     owed_supervisor_fade(g_app.supervisor, g_app.config.fade_ms);
     owed_app_apply_policy();
@@ -663,6 +666,14 @@ void owed_app_on_background_changed(const char *resolved_path) {
     if (app->job) {
         owed_async_job_free(app->job);
         app->job = NULL;
+    }
+    /* A still that is on screen becomes the wipe source when the next
+     * background is a video. */
+    if (strcmp(app->source_kind, "still") == 0 && *app->source_path &&
+        kind != OWE_KIND_STILL) {
+        copy_path(app->transition_from, sizeof(app->transition_from), app->source_path);
+    } else {
+        app->transition_from[0] = '\0';
     }
     app->source_generation++;
     snprintf(app->source_path, sizeof(app->source_path), "%s", resolved_path);

@@ -48,6 +48,9 @@ typedef struct owed_app {
     char last_good_kind[16];
     char restore_path[4096];
     char restore_kind[16];
+    /* The still on screen when a video load starts, so the renderer can fade
+     * the new video in over it. */
+    char transition_from[4096];
     bool media_pending;
     int64_t media_deadline_ms;
 

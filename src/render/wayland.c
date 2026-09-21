@@ -562,8 +562,10 @@ void owe_wayland_render_pending(struct owe_wayland *wl) {
     }
     want_video = app->mpv && owe_mpv_has_video(app->mpv) && !app->paused;
     {
-        int need_frame_cb = app->still && owe_still_has_image(app->still) &&
-                            owe_still_needs_frames(app->still);
+        int need_frame_cb = (app->still && owe_still_has_image(app->still) &&
+                             owe_still_needs_frames(app->still)) ||
+                            (app->transition && owe_still_has_image(app->transition) &&
+                             owe_still_needs_frames(app->transition));
         for (out = wl->outputs; out; out = out->next) {
             struct wl_callback *cb;
             if (!out->configured || !out->frame_pending || !out->egl_surface) {
@@ -575,6 +577,9 @@ void owe_wayland_render_pending(struct owe_wayland *wl) {
             out->frame_pending = 0;
             if (want_video) {
                 owe_mpv_render_output(app->mpv, out);
+                if (app->transition && owe_still_has_image(app->transition)) {
+                    owe_still_render_overlay(app->transition, out);
+                }
                 rendered_video = 1;
             } else if (app->still && owe_still_has_image(app->still)) {
                 owe_still_render_output(app->still, out);
@@ -608,6 +613,11 @@ void owe_wayland_render_pending(struct owe_wayland *wl) {
             owe_egl_swap_output(app->egl, out);
         }
         if (want_video && rendered_video) owe_mpv_report_swap(app->mpv);
+    }
+    if (app->transition && owe_still_has_image(app->transition) &&
+        owe_still_fade_done(app->transition)) {
+        owe_egl_make_current(app->egl);
+        owe_still_unload(app->transition);
     }
     wl_display_flush(wl->display);
 }

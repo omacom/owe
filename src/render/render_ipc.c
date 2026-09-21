@@ -150,6 +150,8 @@ static void handle_load(struct owe_render_ipc *ipc, struct owe_ipc_client *c, yy
     if (strcmp(kind, "video") == 0) {
         yyjson_val *vonce = yyjson_obj_get(root, "once");
         yyjson_val *vmute = yyjson_obj_get(root, "mute");
+        yyjson_val *vfrom = yyjson_obj_get(root, "from");
+        const char *from = vfrom && yyjson_is_str(vfrom) ? yyjson_get_str(vfrom) : "";
         bool once = yyjson_is_bool(vonce) && yyjson_get_bool(vonce);
         bool mute = yyjson_is_bool(vmute) && yyjson_get_bool(vmute);
         if (owe_mpv_load(app->mpv, path) != 0) {
@@ -163,6 +165,21 @@ static void handle_load(struct owe_render_ipc *ipc, struct owe_ipc_client *c, yy
             owe_mpv_set_paused(app->mpv, false);
         }
         app->intro = once;
+        /* A still that was just on screen fades out over the incoming video,
+         * so a background switch to a video keeps its transition. */
+        if (*from && !once && app->transition) {
+            int max_w = 0;
+            int max_h = 0;
+            owe_still_unload(app->transition);
+            owe_wayland_outputs_max_size(app->wl, &max_w, &max_h);
+            if (owe_still_start(app->transition, from, max_w > 0 ? max_w : 4096,
+                                max_h > 0 ? max_h : 4096) == 0) {
+                owe_still_set_fade_out(app->transition, app->fade_ms);
+                OWE_INFO("transition from %s", from);
+            }
+        } else if (app->transition) {
+            owe_still_unload(app->transition);
+        }
         owe_still_unload(app->still);
         pending_reply(ipc, 0, "load superseded");
         if (!once) {
@@ -276,7 +293,8 @@ static void handle_command(void *context, struct owe_ipc_client *c, const char *
         yyjson_val *vms = yyjson_obj_get(root, "ms");
         if (app && vms && yyjson_is_int(vms) && yyjson_get_sint(vms) >= 0 &&
             yyjson_get_sint(vms) <= 2000) {
-            owe_still_set_fade_ms(app->still, (int)yyjson_get_num(vms));
+            app->fade_ms = (int)yyjson_get_num(vms);
+            owe_still_set_fade_ms(app->still, app->fade_ms);
         } else {
             send_err(c, "Fade must be an integer from 0 to 2000");
             yyjson_doc_free(doc);

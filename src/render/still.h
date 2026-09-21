@@ -22,5 +22,8 @@ bool owe_still_has_image(struct owe_still *s);
 const char *owe_still_path(struct owe_still *s);
 
 void owe_still_render_output(struct owe_still *s, struct owe_output *out);
+void owe_still_render_overlay(struct owe_still *s, struct owe_output *out);
 void owe_still_set_fade_ms(struct owe_still *s, int ms);
+void owe_still_set_fade_out(struct owe_still *s, int ms);
+bool owe_still_fade_done(struct owe_still *s);
 bool owe_still_needs_frames(struct owe_still *s);

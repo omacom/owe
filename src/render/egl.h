@@ -26,3 +26,5 @@ unsigned int owe_egl_tex_from_rgba(struct owe_egl *egl, const uint8_t *rgba, int
 void owe_egl_tex_free(struct owe_egl *egl, unsigned int tex);
 void owe_egl_draw_texture(struct owe_egl *egl, struct owe_output *out, unsigned int tex,
                           float alpha, int tex_w, int tex_h);
+void owe_egl_draw_texture_overlay(struct owe_egl *egl, struct owe_output *out, unsigned int tex,
+                                  float alpha, int tex_w, int tex_h);

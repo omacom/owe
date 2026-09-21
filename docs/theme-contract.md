@@ -31,8 +31,10 @@ It preserves shell settings added after installation.
 ## Transitions
 
 Stills belong to the shell, so a still to still switch uses the shell
-reveal wipe. Video and GIF changes use a hard cut. A battery poster fades
-in through the renderer GPU fade.
+reveal wipe. A still to video switch crossfades in the renderer: the
+daemon passes the outgoing still, the renderer draws it over the incoming
+video, and fades it out over the configured fade. Video and GIF changes
+use a hard cut. A battery poster fades in through the renderer GPU fade.
 A renderer load reply acknowledges the request. It does not guarantee successful asynchronous video decode.
 `owe render-status` reports decode failures in its `error` field.
 

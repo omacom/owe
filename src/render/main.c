@@ -71,6 +71,7 @@ static void on_signal(int sig) {
 static void cleanup(void) {
     owe_render_ipc_free(g_app.ipc);
     owe_feed_free(g_app.feed);
+    owe_still_free(g_app.transition);
     owe_still_free(g_app.still);
     owe_mpv_free(g_app.mpv);
     owe_wayland_destroy_outputs(g_app.wl);
@@ -162,6 +163,14 @@ int main(int argc, char **argv) {
         cleanup();
         return fail_init();
     }
+    /* Holds the outgoing still while a video fades in over it. */
+    g_app.transition = owe_still_new(g_app.wl, g_app.egl);
+    if (!g_app.transition) {
+        OWE_ERROR("transition init failed");
+        cleanup();
+        return fail_init();
+    }
+    g_app.fade_ms = 250;
     g_app.ipc = owe_render_ipc_new(socket_path);
     if (!g_app.ipc) {
         OWE_ERROR("ipc init failed");
@@ -200,6 +209,7 @@ int main(int argc, char **argv) {
         int feedfd = owe_feed_fd(g_app.feed);
         int mpvfd = owe_mpv_fd(g_app.mpv);
         int stillfd = owe_still_fd(g_app.still);
+        int transitionfd = owe_still_fd(g_app.transition);
         struct pollfd pfds[7 + OWE_IPC_MAX_CLIENTS + OWE_FEED_MAX_CLIENTS];
         int n = 0;
         int rc;
@@ -232,9 +242,15 @@ int main(int argc, char **argv) {
             pfds[n].events = POLLIN;
             n++;
         }
+        if (transitionfd >= 0) {
+            pfds[n].fd = transitionfd;
+            pfds[n].events = POLLIN;
+            n++;
+        }
         n += owe_render_ipc_pollfds(g_app.ipc, &pfds[n]);
         n += owe_feed_pollfds(g_app.feed, &pfds[n]);
-        rc = poll(pfds, (nfds_t)n, owe_still_busy(g_app.still) ? 200 : 1000);
+        rc = poll(pfds, (nfds_t)n,
+                  (owe_still_busy(g_app.still) || owe_still_busy(g_app.transition)) ? 200 : 1000);
         if (rc < 0) {
             if (errno == EINTR) {
                 continue;
@@ -268,6 +284,10 @@ int main(int argc, char **argv) {
         if (!g_app.running) break;
         owe_render_ipc_poll_clients(g_app.ipc);
         owe_render_ipc_poll_still(g_app.ipc);
+        if (owe_still_busy(g_app.transition)) {
+            owe_still_poll(g_app.transition);
+            owe_app_request_render();
+        }
         owe_feed_poll_clients(g_app.feed, g_app.mpv);
         if (!g_app.feeding) {
             owe_wayland_render_pending(g_app.wl);

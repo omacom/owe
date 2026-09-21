@@ -44,6 +44,7 @@ struct owe_still {
     int max_h;
     char path[4096];
     int fade_ms;
+    bool fade_out;
     struct timespec loaded_at;
     struct still_job *job;
     struct still_job *queued;
@@ -436,17 +437,60 @@ void owe_still_render_output(struct owe_still *s, struct owe_output *out) {
         long ms;
         clock_gettime(CLOCK_MONOTONIC, &now);
         ms = elapsed_ms(&s->loaded_at, &now);
-        if (ms < s->fade_ms) {
+        if (s->fade_out) {
+            alpha = ms < s->fade_ms ? 1.0f - (float)ms / (float)s->fade_ms : 0.0f;
+        } else if (ms < s->fade_ms) {
             alpha = (float)ms / (float)s->fade_ms;
         }
+    } else if (s->fade_out) {
+        alpha = 0.0f;
     }
     owe_egl_draw_texture(s->egl, out, s->tex, alpha, s->tex_w, s->tex_h);
+}
+
+/* Blend a fading still over whatever is already in the framebuffer. */
+void owe_still_render_overlay(struct owe_still *s, struct owe_output *out) {
+    struct timespec now;
+    float alpha = 1.0f;
+    if (!s || !s->tex || !out) {
+        return;
+    }
+    if (s->fade_ms > 0) {
+        long ms;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        ms = elapsed_ms(&s->loaded_at, &now);
+        alpha = ms < s->fade_ms ? 1.0f - (float)ms / (float)s->fade_ms : 0.0f;
+    } else {
+        alpha = 0.0f;
+    }
+    owe_egl_draw_texture_overlay(s->egl, out, s->tex, alpha, s->tex_w, s->tex_h);
 }
 
 void owe_still_set_fade_ms(struct owe_still *s, int ms) {
     if (s) {
         s->fade_ms = ms;
     }
+}
+
+/* Draw the decoded still over the incoming video and fade it out, so a still
+ * to video switch keeps the wallpaper transition instead of a hard cut. */
+void owe_still_set_fade_out(struct owe_still *s, int ms) {
+    if (s) {
+        s->fade_out = true;
+        s->fade_ms = ms;
+    }
+}
+
+bool owe_still_fade_done(struct owe_still *s) {
+    struct timespec now;
+    if (!s || !s->tex || !s->fade_out) {
+        return false;
+    }
+    if (s->fade_ms <= 0) {
+        return true;
+    }
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return elapsed_ms(&s->loaded_at, &now) >= s->fade_ms;
 }
 
 bool owe_still_needs_frames(struct owe_still *s) {

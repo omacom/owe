@@ -11,7 +11,8 @@ void owed_supervisor_stop(struct owed_supervisor *s);
 
 int owed_supervisor_send(struct owed_supervisor *s, const char *line, char *reply,
                          unsigned long reply_len);
-int owed_supervisor_load(struct owed_supervisor *s, const char *path, const char *kind);
+int owed_supervisor_load(struct owed_supervisor *s, const char *path, const char *kind,
+                         const char *from);
 int owed_supervisor_pause(struct owed_supervisor *s);
 int owed_supervisor_resume(struct owed_supervisor *s);
 int owed_supervisor_feed_start(struct owed_supervisor *s);

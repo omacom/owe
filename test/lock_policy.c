@@ -53,8 +53,9 @@ int owed_supervisor_feed_stop(struct owed_supervisor *s) {
 }
 int owed_supervisor_pause(struct owed_supervisor *s) { s->paused = true; return 0; }
 int owed_supervisor_resume(struct owed_supervisor *s) { s->paused = false; return 0; }
-int owed_supervisor_load(struct owed_supervisor *s, const char *path, const char *kind) {
-    s->loads++; (void)path; (void)kind;
+int owed_supervisor_load(struct owed_supervisor *s, const char *path, const char *kind,
+                         const char *from) {
+    s->loads++; (void)path; (void)kind; (void)from;
     return s->fail_load ? -1 : 0;
 }
 int owed_supervisor_ensure_running(struct owed_supervisor *s) { s->starts++; return s->fail_start ? -1 : 0; }

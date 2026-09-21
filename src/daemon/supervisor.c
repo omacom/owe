@@ -200,15 +200,25 @@ int owed_supervisor_send(struct owed_supervisor *s, const char *line, char *repl
     return 0;
 }
 
-int owed_supervisor_load(struct owed_supervisor *s, const char *path, const char *kind) {
+int owed_supervisor_load(struct owed_supervisor *s, const char *path, const char *kind,
+                         const char *from) {
     char *line = NULL;
     char reply[8192];
     char *qp = owe_json_quote(path), *qk = owe_json_quote(kind);
+    char *qf = from && *from ? owe_json_quote(from) : NULL;
     int rc = -1;
-    if (qp && qk && asprintf(&line, "{\"cmd\":\"load\",\"path\":%s,\"kind\":%s}", qp, qk) >= 0)
-        rc = owed_supervisor_send(s, line, reply, sizeof(reply));
+    if (qp && qk) {
+        if (qf) {
+            if (asprintf(&line, "{\"cmd\":\"load\",\"path\":%s,\"kind\":%s,\"from\":%s}",
+                         qp, qk, qf) >= 0)
+                rc = owed_supervisor_send(s, line, reply, sizeof(reply));
+        } else if (asprintf(&line, "{\"cmd\":\"load\",\"path\":%s,\"kind\":%s}", qp, qk) >= 0) {
+            rc = owed_supervisor_send(s, line, reply, sizeof(reply));
+        }
+    }
     free(qp);
     free(qk);
+    free(qf);
     free(line);
     if (rc != 0) return -1;
     if (!owe_json_ok(reply)) {
