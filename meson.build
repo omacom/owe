@@ -1,5 +1,5 @@
 project('owe', 'c',
-  version : '0.2.1',
+  version : '0.2.2',
   license : 'MIT',
   default_options : [
     'c_std=gnu11',
