@@ -14,16 +14,17 @@ It adds no Omarchy-side hooks and edits no packaged file.
 - Shell config: `owed` controls `omarchy.background` in `shell.json` at
   runtime through `omarchy-shell shell setPluginEnabled`. It disables the
   plugin while a video or GIF plays, and enables it while a still shows.
-  OWE never draws stills.
-- Lock screen: `LockView` renders its own `BackgroundMedia` from the
-  symlink. It needs no background plugin.
+  The renderer handles battery posters and still fallback if the shell is unavailable.
+- Lock screen: a consumer can import `Owe.LockFeed` to show the daemon's
+  shared video feed. `BackgroundMedia` remains the fallback for stills or
+  when the feed is inactive. It needs no background plugin.
 - Bar sampler, `bg-switcher`, and `bg-cache`: they read files and the
   symlink. They keep their behavior.
 
 ## Shell handoff
 
-Only one background layer owner wins. The installer disables the shell
-renderer so `owe-render` owns the background layer alone.
+The daemon manages ownership at runtime: it enables the shell background
+plugin for stills and releases that layer after the video renderer starts.
 Uninstall re-enables the background plugin in the current `shell.json`.
 It preserves shell settings added after installation.
 

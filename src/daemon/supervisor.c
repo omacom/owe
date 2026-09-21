@@ -174,7 +174,9 @@ int owed_supervisor_send(struct owed_supervisor *s, const char *line, char *repl
     if (!s || !line) {
         return -1;
     }
-    if (owed_supervisor_ensure_running(s) != 0) {
+    /* Only the daemon's restart path may spawn: it also resets loaded-media
+     * and playback state. A send must never silently create an empty renderer. */
+    if (!owed_render_is_alive(s)) {
         return -1;
     }
     fd = owe_ipc_connect(s->socket_path);

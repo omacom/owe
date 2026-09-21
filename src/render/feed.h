@@ -25,6 +25,7 @@ void owe_feed_poll_clients(struct owe_feed *f, struct owe_mpv *m);
 void owe_feed_start(struct owe_feed *f);
 void owe_feed_stop(struct owe_feed *f);
 bool owe_feed_running(struct owe_feed *f);
+void owe_feed_set_target_size(struct owe_feed *f, int width, int height);
 
 /* Publishes one decoded frame to every connected client. Returns 0 when a
  * frame was rendered and sent. */

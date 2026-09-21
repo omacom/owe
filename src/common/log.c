@@ -19,6 +19,7 @@ void owe_log_set_level(owe_log_level_t level) {
 }
 
 void owe_log(owe_log_level_t level, const char *file, int line, const char *fmt, ...) {
+    if (!fmt) return;
     static const char *names[] = { "DEBUG", "INFO", "WARN", "ERROR" };
     FILE *out;
     struct timespec ts;

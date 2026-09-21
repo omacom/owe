@@ -8,6 +8,11 @@ int main(int argc, char **argv) {
     const char *mode = getenv("OWE_TEST_FFMPEG_MODE");
     FILE *out = fopen(argv[argc - 1], "w");
     if (!out) return 2;
+    if (mode && strcmp(mode, "large") == 0) {
+        int rc = ftruncate(fileno(out), 2 * 1024 * 1024);
+        fclose(out);
+        return rc != 0;
+    }
     fputs("partial", out);
     fflush(out);
     const char *started = getenv("OWE_TEST_FFMPEG_STARTED");

@@ -95,9 +95,9 @@ static void check_no_message(int fd) {
 static void test_restart(void) {
     struct owe_feed *f = new_feed();
     struct owe_mpv mpv = {0};
-    prepare_slots(f);
     uint64_t previous_seq = 0;
     for (int i = 0; i < 2; i++) {
+        prepare_slots(f);
         int fd = connect_client(f);
         check_no_message(fd);
         owe_feed_start(f);
@@ -107,6 +107,10 @@ static void test_restart(void) {
         CHECK(frame.seq > previous_seq);
         previous_seq = frame.seq;
         owe_feed_stop(f);
+        CHECK(f->width == 0 && f->height == 0);
+        for (int slot = 0; slot < OWE_FEED_SLOTS; slot++) {
+            CHECK(f->slots[slot].fd == -1 && f->slots[slot].map == NULL);
+        }
         char byte;
         CHECK(recv(fd, &byte, 1, 0) == 0);
         close(fd);
@@ -213,6 +217,33 @@ static void test_send_failure(void) {
     owe_feed_free(f);
 }
 
+static void test_stalled_client(void) {
+    struct owe_feed *f = new_feed();
+    struct owe_mpv mpv = {0};
+    prepare_slots(f);
+    owe_feed_start(f);
+    int stalled = connect_client(f), healthy = connect_client(f);
+    receive(stalled, FEED_MSG_HELLO);
+    receive(healthy, FEED_MSG_HELLO);
+    for (int i = 0; i < OWE_FEED_SLOTS; i++) {
+        CHECK(owe_feed_publish(f, &mpv) == 0);
+        receive(stalled, FEED_MSG_FRAME);
+        ack(healthy, receive(healthy, FEED_MSG_FRAME));
+        owe_feed_poll_clients(f, &mpv);
+    }
+    CHECK(owe_feed_publish(f, &mpv) == -1);
+    f->slots[0].published_ms -= FEED_ACK_TIMEOUT_MS;
+    owe_feed_poll_clients(f, &mpv);
+    char byte;
+    CHECK(recv(stalled, &byte, 1, 0) == 0);
+    CHECK(!mpv.paused);
+    CHECK(owe_feed_publish(f, &mpv) == 0);
+    receive(healthy, FEED_MSG_FRAME);
+    close(stalled);
+    close(healthy);
+    owe_feed_free(f);
+}
+
 int main(void) {
     char root[] = "/tmp/owe-feed-XXXXXX";
     CHECK(mkdtemp(root));
@@ -220,10 +251,21 @@ int main(void) {
     epoxy_glBindFramebuffer = bind_framebuffer;
     epoxy_glPixelStorei = pixel_store;
     epoxy_glReadPixels = read_pixels;
+    struct owe_feed dimensions = {.target_width = 1920, .target_height = 1080};
+    int w = 3840, h = 2160;
+    frame_size(&dimensions, &w, &h);
+    CHECK(w == 1920 && h == 1080);
+    w = 1200; h = 2400;
+    frame_size(&dimensions, &w, &h);
+    CHECK(w == 1080 && h == 2160); /* Protocol cap, with aspect preserved. */
+    w = 640; h = 360;
+    frame_size(&dimensions, &w, &h);
+    CHECK(w == 640 && h == 360); /* Never upscale readback. */
     test_restart();
     test_client_pause();
     test_frame_ownership();
     test_send_failure();
+    test_stalled_client();
     char lock[128];
     snprintf(lock, sizeof(lock), "%s.lock", socket_path);
     unlink(lock);

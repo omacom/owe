@@ -4,6 +4,7 @@
 #include <QTemporaryDir>
 #include <QTemporaryFile>
 #include <QtTest>
+#include <QSGSimpleTextureNode>
 
 #include <cerrno>
 #include <cstring>
@@ -120,6 +121,30 @@ private:
     }
 
 private slots:
+    void defaultRuntimePath() {
+        const bool hadRuntime = qEnvironmentVariableIsSet("XDG_RUNTIME_DIR");
+        const QByteArray runtime = qgetenv("XDG_RUNTIME_DIR");
+        qunsetenv("XDG_RUNTIME_DIR");
+        LockFeed item;
+        const QString expected = QStringLiteral("/run/user/%1/owe/lock-feed.sock").arg(getuid());
+        const QString actual = item.socketPath();
+        if (hadRuntime) qputenv("XDG_RUNTIME_DIR", runtime);
+        QCOMPARE(actual, expected);
+    }
+
+    void emptyFrameDeletesNode() {
+        bool destroyed = false;
+        struct TrackedNode : QSGSimpleTextureNode {
+            bool &destroyed;
+            explicit TrackedNode(bool &flag) : destroyed(flag) {}
+            ~TrackedNode() override { destroyed = true; }
+        };
+        LockFeed item;
+        item.setActive(false);
+        QCOMPARE(item.updatePaintNode(new TrackedNode(destroyed), nullptr), nullptr);
+        QVERIFY(destroyed);
+        QCOMPARE(item.updatePaintNode(nullptr, nullptr), nullptr);
+    }
     void init() {
         QVERIFY(m_directory.isValid());
         startServer();
@@ -168,6 +193,29 @@ private slots:
         QVERIFY(send(m_peer, remaining, sizeof(hello) - 7, MSG_NOSIGNAL) == sizeof(hello) - 7);
         QVERIFY(sendFrame(m_peer, 1));
         verifyAck(1);
+    }
+
+    void outputsShareFrameCopy() {
+        LockFeed first;
+        first.setSocketPath(socketPath());
+        acceptClient();
+        int firstPeer = m_peer;
+        m_peer = -1;
+        LockFeed second;
+        second.setSocketPath(socketPath());
+        acceptClient();
+        QTemporaryFile backing;
+        QVERIFY(backing.open() && backing.resize(4));
+        QVERIFY(sendHello(firstPeer, backing.handle(), Message{}));
+        QVERIFY(sendHello(m_peer, backing.handle(), Message{}));
+        QVERIFY(sendFrame(firstPeer, 1));
+        QTRY_VERIFY(!first.m_frame.isNull());
+        QVERIFY(sendFrame(m_peer, 1));
+        verifyAck(1);
+        QCOMPARE(first.m_frame.cacheKey(), second.m_frame.cacheKey());
+        first.setActive(false);
+        QVERIFY(!second.m_frame.isNull());
+        close(firstPeer);
     }
 
     void reconnectAfterServerRestart() {

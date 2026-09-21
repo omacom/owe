@@ -108,6 +108,9 @@ Commands:
 - `{"cmd":"stop"}` — unload all media.
 - `{"cmd":"status"}` reports the path, kind, pause state, outputs, `time_pos`, `hwdec`, and playback `error`.
 - `{"cmd":"fade","ms":250}` — set the still fade length.
+- `{"cmd":"feed"}` — start muted video output to the lock feed.
+- `{"cmd":"feed-stop"}` — stop the lock feed and release its buffers.
+- `{"cmd":"skip","outputs":["DP-1"]}` — stop desktop swaps on the named outputs.
 
 ## Examples
 
@@ -133,7 +136,7 @@ and sleep. Reasons in priority order:
 2. `sleep` pauses playback before suspend.
 3. `always-animate` bypasses automatic pause rules.
 4. `idle` pause from the `owe-idle` helper.
-5. `locked` follows logind session state.
+5. `locked` follows logind or Hyprland session state.
 6. `dpms-off` applies when every connected monitor reports a known off state.
    Missing DRM data falls back to Hyprland state.
 7. `battery` holds or replaces playback while on battery. Off by default.
@@ -149,7 +152,16 @@ Idle pauses are optional. Wire the `owe-idle` helper into `hypridle`
 and it sets the idle pause. `owe resume` clears only the manual pause,
 so an idle resume never releases a manual pause.
 
-To force motion regardless of policy, run `owe always-animate on`.
+To bypass automatic pause rules, run `owe always-animate on`.
+Manual pause and sleep still take precedence.
+
+A locked session can keep video moving through the muted lock feed instead
+of the desktop layer. The feed honors manual pause, sleep, DPMS, idle,
+blocklist and battery pause/poster settings. The animation override bypasses
+the automatic rules, but the feed still stops for manual pause, sleep and DPMS.
+Fullscreen and occupied desktop windows do not stop the lock feed.
+A lock screen can import `Owe.LockFeed` and display a `LockFeed` item;
+it should provide its own still fallback when the feed is inactive.
 
 ## GIF handling
 
@@ -160,7 +172,8 @@ same cache.
 
 The GIF and poster cache keeps the newest 512 MiB by default. Set
 `cache_max_mb` in `[transcode]` to change the budget. `0` disables
-eviction.
+eviction. The current conversion and its cached source are retained even when
+they exceed the budget; older unused entries are evicted first.
 
 ## Audio
 
@@ -232,6 +245,11 @@ cmake --build build-qml
 ctest --test-dir build-qml --output-on-failure
 ```
 
+The AUR package installs the plugin to `/usr/lib/qt6/qml/Owe/LockFeed`.
+The local installer uses `~/.local/lib/qt6/qml/Owe/LockFeed`; add
+`~/.local/lib/qt6/qml` to the consuming application's `QML_IMPORT_PATH`.
+Installing the module does not change the lock screen's QML layout.
+
 The plugin tests use an offscreen Qt platform and local sockets. They cover reconnects, fragmented messages, and descriptor ownership.
 
 To run sanitizer checks, use a separate build directory:
@@ -246,7 +264,7 @@ To check live playback and IPC, run `build/test/owe-live-test`.
 
 Build and install deps: `meson`, `ninja`, `gcc`, `pkgconf`, `wayland`,
 `wayland-protocols`, `libglvnd`, `libepoxy`, `mpv`, `ffmpeg`, `systemd-libs`,
-`socat`, `python`.
-Runtime deps: `mpv`, `ffmpeg`, `socat`.
+`socat`, `python`, `cmake`, `qt6-declarative`.
+Runtime deps: `mpv`, `ffmpeg`, `socat`, `qt6-declarative`.
 
 Docs: `docs/architecture.md`, `docs/theme-contract.md`, `docs/benchmarks.md`.

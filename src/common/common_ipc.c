@@ -11,6 +11,107 @@
 #include <sys/time.h>
 #include <sys/un.h>
 #include <unistd.h>
+#include <time.h>
+
+int64_t owe_ipc_now_ms(void) {
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+}
+
+void owe_ipc_client_close(struct owe_ipc_client *c) {
+    if (c->fd >= 0) close(c->fd);
+    c->fd = -1;
+    c->len = 0;
+    c->request_ms = 0;
+    free(c->output);
+    c->output = NULL;
+    c->output_len = c->output_sent = 0;
+}
+
+void owe_ipc_client_open(struct owe_ipc_client *c, int fd) {
+    owe_ipc_client_close(c);
+    c->fd = fd;
+    c->generation++;
+    c->active_ms = owe_ipc_now_ms();
+}
+
+short owe_ipc_client_events(const struct owe_ipc_client *c) {
+    return POLLIN | (c->output_len > c->output_sent ? POLLOUT : 0);
+}
+
+static void client_flush(struct owe_ipc_client *c) {
+    while (c->fd >= 0 && c->output_sent < c->output_len) {
+        ssize_t n = send(c->fd, c->output + c->output_sent,
+                         c->output_len - c->output_sent, MSG_NOSIGNAL | MSG_DONTWAIT);
+        if (n < 0 && errno == EINTR) continue;
+        if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return;
+        if (n <= 0) {
+            owe_ipc_client_close(c);
+            return;
+        }
+        c->output_sent += (size_t)n;
+    }
+    free(c->output);
+    c->output = NULL;
+    c->output_len = c->output_sent = 0;
+}
+
+void owe_ipc_client_send(struct owe_ipc_client *c, const char *line) {
+    if (c->fd < 0 || !line) return;
+    size_t len = strlen(line);
+    size_t pending = c->output_len - c->output_sent;
+    if (len >= OWE_IPC_MAX_LINE || pending + len + 1 > 4 * OWE_IPC_MAX_LINE) {
+        owe_ipc_client_close(c);
+        return;
+    }
+    if (pending) memmove(c->output, c->output + c->output_sent, pending);
+    char *output = realloc(c->output, pending + len + 1);
+    if (!output) {
+        owe_ipc_client_close(c);
+        return;
+    }
+    c->output = output;
+    memcpy(output + pending, line, len);
+    output[pending + len] = '\n';
+    c->output_len = pending + len + 1;
+    c->output_sent = 0;
+    client_flush(c);
+}
+
+void owe_ipc_client_poll(struct owe_ipc_client *c, int64_t now, owe_ipc_handler handler,
+                         void *context) {
+    if (c->fd < 0) return;
+    if (now - c->active_ms >= OWE_IPC_CLIENT_IDLE_MS ||
+        (c->len && now - c->request_ms >= OWE_IPC_CLIENT_IDLE_MS)) {
+        owe_ipc_client_close(c);
+        return;
+    }
+    client_flush(c);
+    if (c->fd < 0) return;
+    ssize_t n = recv(c->fd, c->buf + c->len, sizeof(c->buf) - c->len - 1, MSG_DONTWAIT);
+    if (n < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) return;
+    if (n <= 0 || memchr(c->buf + c->len, '\0', (size_t)n)) {
+        owe_ipc_client_close(c);
+        return;
+    }
+    if (!c->len) c->request_ms = now;
+    c->active_ms = now;
+    c->len += (size_t)n;
+    c->buf[c->len] = '\0';
+    char *nl;
+    while ((nl = strchr(c->buf, '\n'))) {
+        *nl = '\0';
+        if (nl > c->buf && nl[-1] == '\r') nl[-1] = '\0';
+        if (*c->buf) handler(context, c, c->buf);
+        if (c->fd < 0) return;
+        size_t used = (size_t)(nl - c->buf) + 1;
+        memmove(c->buf, c->buf + used, c->len - used + 1);
+        c->len -= used;
+        c->request_ms = now;
+    }
+    if (c->len == sizeof(c->buf) - 1) owe_ipc_client_close(c);
+}
 
 struct owe_ipc_server {
     int fd;

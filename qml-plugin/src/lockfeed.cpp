@@ -11,8 +11,36 @@
 #include <QSGSimpleTextureNode>
 #include <QSGTexture>
 #include <QSocketNotifier>
+#include <QHash>
+
+/* Items on multiple outputs share one CPU copy of each decoded frame. The
+ * cache lives only as long as its clients and is keyed by the ring's memfd,
+ * so a renderer restart cannot reuse an old frame sequence. GUI thread only. */
+struct LockFeedFrameCache {
+    quint64 seq = 0;
+    QImage image;
+};
 
 namespace {
+
+QSharedPointer<LockFeedFrameCache> frameCache(const QString &key) {
+    static QHash<QString, QWeakPointer<LockFeedFrameCache>> caches;
+    for (auto it = caches.begin(); it != caches.end();) {
+        if (it.value().isNull()) it = caches.erase(it);
+        else ++it;
+    }
+    auto cache = caches.value(key).toStrongRef();
+    if (!cache) {
+        cache = QSharedPointer<LockFeedFrameCache>::create();
+        caches.insert(key, cache.toWeakRef());
+    }
+    return cache;
+}
+
+class FrameNode : public QSGSimpleTextureNode {
+public:
+    qint64 frameKey = 0;
+};
 
 constexpr quint32 kMagic = 0x4645574Fu;
 constexpr quint32 kVersion = 1;
@@ -57,7 +85,7 @@ QByteArray writeMessage(quint32 type, quint32 slot, quint64 seq) {
 QString defaultSocketPath() {
     const QByteArray runtime = qgetenv("XDG_RUNTIME_DIR");
     if (runtime.isEmpty()) {
-        return QStringLiteral("/run/user/owe/lock-feed.sock");
+        return QStringLiteral("/run/user/%1/owe/lock-feed.sock").arg(getuid());
     }
     return QString::fromLocal8Bit(runtime) + QStringLiteral("/owe/lock-feed.sock");
 }
@@ -196,6 +224,7 @@ void LockFeed::retrySocket() {
 }
 
 void LockFeed::resetMaps() {
+    m_frameCache.clear();
     for (const FrameSlot &slot : m_slots) {
         if (slot.map && slot.size) {
             munmap(slot.map, slot.size);
@@ -282,6 +311,7 @@ bool LockFeed::handleMessage(const QByteArray &message, const QVector<int> &fds)
         m_width = (int)msg.width;
         m_height = (int)msg.height;
         m_stride = (int)msg.stride;
+        QString cacheKey;
         for (int fd : fds) {
             FrameSlot slot;
             struct stat st;
@@ -289,12 +319,17 @@ bool LockFeed::handleMessage(const QByteArray &message, const QVector<int> &fds)
             if (fstat(fd, &st) != 0 || st.st_size < (off_t)slot.size) {
                 return false;
             }
+            if (cacheKey.isEmpty()) {
+                cacheKey = QStringLiteral("%1:%2:%3:%4")
+                    .arg(qulonglong(st.st_dev)).arg(qulonglong(st.st_ino)).arg(m_width).arg(m_height);
+            }
             slot.map = mmap(nullptr, slot.size, PROT_READ, MAP_SHARED, fd, 0);
             if (slot.map == MAP_FAILED) {
                 return false;
             }
             m_slots.append(slot);
         }
+        m_frameCache = frameCache(cacheKey);
         m_frame = QImage();
         update();
         return true;
@@ -304,16 +339,16 @@ bool LockFeed::handleMessage(const QByteArray &message, const QVector<int> &fds)
         if (slot < 0 || slot >= m_slots.size() || !m_slots[slot].map || m_width <= 0 || m_height <= 0) {
             return false;
         }
-        QImage image(m_width, m_height, QImage::Format_RGBA8888);
-        if (image.isNull()) {
-            return false;
+        if (!m_frameCache || msg.seq == 0) return false;
+        if (m_frameCache->seq != msg.seq || m_frameCache->image.isNull()) {
+            QImage image(static_cast<const uchar *>(m_slots[slot].map), m_width, m_height,
+                         m_stride, QImage::Format_RGBA8888);
+            QImage copy = image.copy();
+            if (copy.isNull()) return false;
+            m_frameCache->image = copy;
+            m_frameCache->seq = msg.seq;
         }
-        for (int row = 0; row < m_height; row++) {
-            memcpy(image.scanLine(row),
-                   static_cast<const char *>(m_slots[slot].map) + (size_t)row * (size_t)m_stride,
-                   (size_t)m_width * 4);
-        }
-        m_frame = image;
+        m_frame = m_frameCache->image;
         update();
         const QByteArray ack = writeMessage(Ack, (quint32)slot, msg.seq);
         return send(m_fd, ack.constData(), (size_t)ack.size(), MSG_NOSIGNAL) == ack.size();
@@ -322,26 +357,32 @@ bool LockFeed::handleMessage(const QByteArray &message, const QVector<int> &fds)
 }
 
 QSGNode *LockFeed::updatePaintNode(QSGNode *node, UpdatePaintNodeData *) {
-    QSGSimpleTextureNode *textureNode = static_cast<QSGSimpleTextureNode *>(node);
+    if (m_frame.isNull() || !window()) {
+        delete node;
+        return nullptr;
+    }
+    FrameNode *textureNode = static_cast<FrameNode *>(node);
     if (!textureNode) {
-        textureNode = new QSGSimpleTextureNode();
+        textureNode = new FrameNode();
         textureNode->setOwnsTexture(true);
         textureNode->setFiltering(QSGTexture::Linear);
     }
-    if (m_frame.isNull() || !window()) {
-        return nullptr;
+    if (textureNode->frameKey != m_frame.cacheKey()) {
+        QSGTexture *texture = window()->createTextureFromImage(m_frame);
+        if (!texture) {
+            delete textureNode;
+            return nullptr;
+        }
+        texture->setFiltering(QSGTexture::Linear);
+        textureNode->setTexture(texture);
+        textureNode->frameKey = m_frame.cacheKey();
     }
-    QSGTexture *texture = window()->createTextureFromImage(m_frame);
-    if (!texture) {
-        return nullptr;
-    }
-    texture->setFiltering(QSGTexture::Linear);
-    textureNode->setTexture(texture);
 
     const QRectF bounds = boundingRect();
     const qreal imageWidth = m_frame.width();
     const qreal imageHeight = m_frame.height();
     if (imageWidth <= 0 || imageHeight <= 0) {
+        delete textureNode;
         return nullptr;
     }
     if (m_fillMode == Stretch) {

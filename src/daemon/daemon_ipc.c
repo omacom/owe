@@ -15,7 +15,6 @@
 #include "common_ipc.h"
 #include "daemon.h"
 #include "hypr.h"
-#include "common_ipc.h"
 #include "log.h"
 #include "policy.h"
 #include "power.h"
@@ -27,58 +26,38 @@
 #include "xdg.h"
 
 #define MAX_CLIENTS OWE_IPC_MAX_CLIENTS
-#define CLIENT_IDLE_MS 120000
-
-struct owed_client {
-    int fd;
-    char buf[OWE_IPC_MAX_LINE];
-    size_t len;
-    int64_t active_ms;
-};
-
 struct owed_ipc {
     owe_ipc_server_t *srv;
     char path[PATH_MAX];
-    struct owed_client clients[MAX_CLIENTS];
+    struct owe_ipc_client clients[MAX_CLIENTS];
 };
 
-static int64_t now_ms(void) {
-    struct timespec now;
-    clock_gettime(CLOCK_MONOTONIC, &now);
-    return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
-}
-
 static void client_remove(struct owed_ipc *ipc, int idx) {
-    if (ipc->clients[idx].fd >= 0) {
-        close(ipc->clients[idx].fd);
-    }
-    ipc->clients[idx].fd = -1;
-    ipc->clients[idx].len = 0;
-    ipc->clients[idx].active_ms = 0;
+    owe_ipc_client_close(&ipc->clients[idx]);
 }
 
-static void send_ok(struct owed_client *c, const char *extra) {
+static void send_ok(struct owe_ipc_client *c, const char *extra) {
     char line[OWE_IPC_MAX_LINE];
     if (extra && *extra) {
         snprintf(line, sizeof(line), "{\"status\":\"ok\",%s}", extra);
     } else {
         snprintf(line, sizeof(line), "{\"status\":\"ok\"}");
     }
-    owe_ipc_send_line(c->fd, line);
+    owe_ipc_client_send(c, line);
 }
 
-static void send_err(struct owed_client *c, const char *msg) {
+static void send_err(struct owe_ipc_client *c, const char *msg) {
     char line[1024];
     snprintf(line, sizeof(line), "{\"status\":\"error\",\"message\":\"%s\"}", msg ? msg : "failed");
-    owe_ipc_send_line(c->fd, line);
+    owe_ipc_client_send(c, line);
 }
 
-static void handle_status(struct owed_client *c) {
+static void handle_status(struct owe_ipc_client *c) {
     owed_app_t *app = owed_app_get();
     char *line = NULL;
     char *source = owe_json_quote(app->source_path);
     char *loaded = owe_json_quote(app->loaded_path);
-    char *failed = owe_json_quote(app->fail_path);
+    char *failed = owe_json_quote(*app->fail_path ? app->fail_path : app->poster_fail_path);
     if (!source || !loaded || !failed) goto done;
     if (asprintf(&line,
              "{\"status\":\"ok\",\"source_path\":%s,\"source_kind\":\"%s\","
@@ -105,7 +84,7 @@ static void handle_status(struct owed_client *c) {
                  ? "true"
                  : "false",
              app->supervisor && owed_render_is_alive(app->supervisor) ? "true" : "false") >= 0)
-        owe_ipc_send_line(c->fd, line);
+        owe_ipc_client_send(c, line);
 done:
     free(line);
     free(source);
@@ -113,7 +92,7 @@ done:
     free(failed);
 }
 
-static void handle_config(struct owed_client *c) {
+static void handle_config(struct owe_ipc_client *c) {
     owed_app_t *app = owed_app_get();
     char *blocklist = NULL;
     char *line = NULL;
@@ -154,13 +133,13 @@ static void handle_config(struct owed_client *c) {
                  app->config.gif_crf, app->config.transcode_max_width,
                  app->config.transcode_max_height, app->config.cache_max_mb,
                  app->config.fade_ms, app->config.blocklist_count, blocklist) >= 0) {
-        owe_ipc_send_line(c->fd, line);
+        owe_ipc_client_send(c, line);
     }
     free(line);
     free(blocklist);
 }
 
-static void handle_set(struct owed_client *c, yyjson_val *root) {
+static void handle_set(struct owe_ipc_client *c, yyjson_val *root) {
     yyjson_val *v = yyjson_obj_get(root, "path");
     const char *path = v && yyjson_is_str(v) ? yyjson_get_str(v) : "";
     if (!owe_json_path(v)) {
@@ -174,7 +153,8 @@ static void handle_set(struct owed_client *c, yyjson_val *root) {
     send_ok(c, NULL);
 }
 
-static void handle_command(struct owed_ipc *ipc, struct owed_client *c, const char *line) {
+static void handle_command(void *context, struct owe_ipc_client *c, const char *line) {
+    struct owed_ipc *ipc = context;
     owed_app_t *app = owed_app_get();
     yyjson_doc *doc;
     yyjson_val *root;
@@ -260,7 +240,7 @@ static void handle_command(struct owed_ipc *ipc, struct owed_client *c, const ch
                          "\"has_video\":%s,\"has_still\":%s,\"time_pos\":-1.000,"
                          "\"hwdec\":\"no\",\"error\":\"\",\"skipped\":\"\"}",
                          path, kind, video ? "true" : "false", video ? "false" : "true") >= 0) {
-                owe_ipc_send_line(c->fd, line);
+                owe_ipc_client_send(c, line);
             } else {
                 send_err(c, "render unavailable");
             }
@@ -270,7 +250,7 @@ static void handle_command(struct owed_ipc *ipc, struct owed_client *c, const ch
         } else {
             char reply[8192];
             if (owed_supervisor_send(app->supervisor, "{\"cmd\":\"status\"}", reply, sizeof(reply)) == 0) {
-                owe_ipc_send_line(c->fd, reply);
+                owe_ipc_client_send(c, reply);
             } else {
                 send_err(c, "render unreachable");
             }
@@ -284,15 +264,7 @@ static void handle_command(struct owed_ipc *ipc, struct owed_client *c, const ch
         }
         owed_supervisor_stop(app->supervisor);
         if (owed_supervisor_ensure_running(app->supervisor) == 0) {
-            char resolved[4096];
-            app->loaded_path[0] = '\0';
-            app->loaded_kind[0] = '\0';
-            app->render_paused = -1;
-            owed_supervisor_fade(app->supervisor, app->config.fade_ms);
-            if (owed_watch_resolve_current(resolved, sizeof(resolved)) == 0) {
-                app->source_path[0] = '\0';
-                owed_app_on_background_changed(resolved);
-            }
+            owed_app_on_renderer_restarted();
             send_ok(c, NULL);
         } else {
             send_err(c, "render restart failed");
@@ -357,7 +329,7 @@ int owed_ipc_pollfds(struct owed_ipc *ipc, struct pollfd *fds) {
     int n = 0;
     for (int i = 0; ipc && i < MAX_CLIENTS; i++) {
         if (ipc->clients[i].fd >= 0)
-            fds[n++] = (struct pollfd){.fd = ipc->clients[i].fd, .events = POLLIN};
+            fds[n++] = (struct pollfd){.fd = ipc->clients[i].fd, .events = owe_ipc_client_events(&ipc->clients[i])};
     }
     return n;
 }
@@ -371,9 +343,7 @@ void owed_ipc_accept(struct owed_ipc *ipc) {
     while ((fd = owe_ipc_server_accept(ipc->srv)) >= 0) {
         for (i = 0; i < MAX_CLIENTS; i++) {
             if (ipc->clients[i].fd < 0) {
-                ipc->clients[i].fd = fd;
-                ipc->clients[i].len = 0;
-                ipc->clients[i].active_ms = now_ms();
+                owe_ipc_client_open(&ipc->clients[i], fd);
                 break;
             }
         }
@@ -384,57 +354,10 @@ void owed_ipc_accept(struct owed_ipc *ipc) {
 }
 
 void owed_ipc_poll_clients(struct owed_ipc *ipc) {
-    int i;
-    if (!ipc) {
-        return;
-    }
-    for (i = 0; i < MAX_CLIENTS; i++) {
-        struct owed_client *c = &ipc->clients[i];
-        ssize_t n;
-        char *nl;
-        if (c->fd < 0) {
-            continue;
-        }
-        if (c->len == 0 && now_ms() - c->active_ms > CLIENT_IDLE_MS) {
-            client_remove(ipc, i);
-            continue;
-        }
-        n = recv(c->fd, c->buf + c->len, sizeof(c->buf) - c->len - 1, 0);
-        if (n == 0) {
-            client_remove(ipc, i);
-            continue;
-        }
-        if (n < 0) {
-            if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
-                continue;
-            }
-            client_remove(ipc, i);
-            continue;
-        }
-        if (memchr(c->buf + c->len, '\0', (size_t)n)) {
-            client_remove(ipc, i);
-            continue;
-        }
-        c->len += (size_t)n;
-        c->buf[c->len] = '\0';
-        c->active_ms = now_ms();
-        while ((nl = strchr(c->buf, '\n')) != NULL) {
-            *nl = '\0';
-            if (nl > c->buf && nl[-1] == '\r') {
-                nl[-1] = '\0';
-            }
-            if (*c->buf) {
-                handle_command(ipc, c, c->buf);
-            }
-            {
-                size_t used = (size_t)(nl - c->buf) + 1;
-                memmove(c->buf, c->buf + used, c->len - used + 1);
-                c->len -= used;
-            }
-        }
-        if (c->len >= sizeof(c->buf) - 1) {
-            client_remove(ipc, i);
-        }
+    if (!ipc) return;
+    int64_t now = owe_ipc_now_ms();
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        owe_ipc_client_poll(&ipc->clients[i], now, handle_command, ipc);
     }
 }
 

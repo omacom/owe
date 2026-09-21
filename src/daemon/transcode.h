@@ -20,6 +20,7 @@ bool owed_transcode_file_ready(const char *path);
 
 void owed_transcode_set_cache_limit(int max_mb);
 void owed_transcode_prune_cache(void);
+void owed_transcode_cleanup_cache(void);
 
 owed_async_job_t *owed_async_gif(const char *gif_path, int fps, int crf, int max_w, int max_h);
 owed_async_job_t *owed_async_poster(const char *video_path);
