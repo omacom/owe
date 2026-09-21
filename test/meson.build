@@ -33,7 +33,7 @@ wayland_lifecycle_test = executable('owe-wayland-lifecycle-test',
   files('wayland_lifecycle.c', '../src/common/log.c') +
     [layer_shell_client_h, layer_shell_c, xdg_shell_c, viewporter_client_h, viewporter_c,
      fractional_scale_client_h, fractional_scale_c],
-  include_directories : [common_inc, include_directories('..', '../src/render')],
+  include_directories : [common_inc, yyjson_inc, include_directories('..', '../src/render')],
   dependencies : [wayland_client, wayland_egl],
   c_args : ['-ffunction-sections', '-fdata-sections'],
   link_args : ['-Wl,--gc-sections'])
