@@ -83,7 +83,8 @@ static void handle_status(struct owe_ipc_client *c) {
     }
     if (asprintf(&line,
              "{\"status\":\"ok\",\"path\":%s,\"kind\":\"%s\",\"paused\":%s,\"ready\":%s,\"outputs\":%d,"
-             "\"max_width\":%d,\"max_height\":%d,\"has_video\":%s,\"has_still\":%s,\"time_pos\":%.3f,\"hwdec\":\"%s\",\"error\":%s,\"skipped\":%s}",
+             "\"max_width\":%d,\"max_height\":%d,\"has_video\":%s,\"has_still\":%s,\"time_pos\":%.3f,\"hwdec\":\"%s\",\"error\":%s,\"skipped\":%s,"
+             "\"intro\":%s,\"eof\":%s}",
              path, app ? app->current_kind : "",
              app && app->paused ? "true" : "false",
              app && app->mpv && owe_mpv_ready(app->mpv) ? "true" : "false",
@@ -91,7 +92,9 @@ static void handle_status(struct owe_ipc_client *c) {
              mw, mh, app && app->mpv && owe_mpv_has_video(app->mpv) ? "true" : "false",
              app && app->still && owe_still_has_image(app->still) ? "true" : "false",
              app && app->mpv ? owe_mpv_time_pos(app->mpv) : -1.0,
-             owe_mpv_hwdec(app ? app->mpv : NULL), error, skipped_json) >= 0)
+             owe_mpv_hwdec(app ? app->mpv : NULL), error, skipped_json,
+             app && app->intro ? "true" : "false",
+             app && app->mpv && owe_mpv_eof(app->mpv) ? "true" : "false") >= 0)
         client_send(c, line);
     free(line);
     free(path);
@@ -145,13 +148,26 @@ static void handle_load(struct owe_render_ipc *ipc, struct owe_ipc_client *c, yy
         return;
     }
     if (strcmp(kind, "video") == 0) {
+        yyjson_val *vonce = yyjson_obj_get(root, "once");
+        yyjson_val *vmute = yyjson_obj_get(root, "mute");
+        bool once = yyjson_is_bool(vonce) && yyjson_get_bool(vonce);
+        bool mute = yyjson_is_bool(vmute) && yyjson_get_bool(vmute);
         if (owe_mpv_load(app->mpv, path) != 0) {
             send_err(c, "video load failed");
             return;
         }
+        owe_mpv_set_loop(app->mpv, !once);
+        owe_mpv_set_muted(app->mpv, mute);
+        if (once) {
+            app->paused = false;
+            owe_mpv_set_paused(app->mpv, false);
+        }
+        app->intro = once;
         owe_still_unload(app->still);
         pending_reply(ipc, 0, "load superseded");
-        owe_mpv_set_paused(app->mpv, app->paused);
+        if (!once) {
+            owe_mpv_set_paused(app->mpv, app->paused);
+        }
         snprintf(app->current_path, sizeof(app->current_path), "%s", path);
         snprintf(app->current_kind, sizeof(app->current_kind), "video");
         send_ok(c, NULL);

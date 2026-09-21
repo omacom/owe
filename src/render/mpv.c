@@ -25,6 +25,7 @@ struct owe_mpv {
     bool has_video;
     bool paused;
     bool ready;
+    bool eof;
     char error[256];
     int wakeup_pipe[2];
 };
@@ -127,6 +128,9 @@ struct owe_mpv *owe_mpv_new(struct owe_wayland *wl) {
     set_opt(m->handle, "sub", "no");
     set_opt(m->handle, "sid", "no");
     set_opt(m->handle, "loop-file", "inf");
+    /* A one-shot intro must hold its last frame until the daemon hands the
+     * background back to the shell. */
+    set_opt(m->handle, "keep-open", "yes");
     set_opt(m->handle, "interpolation", "no");
     set_opt(m->handle, "profile", "fast");
     set_opt(m->handle, "scale", "bilinear");
@@ -224,6 +228,7 @@ int owe_mpv_load(struct owe_mpv *m, const char *path) {
     m->error[0] = '\0';
     m->has_video = true;
     m->ready = false;
+    m->eof = false;
     return 0;
 }
 
@@ -256,6 +261,17 @@ void owe_mpv_set_muted(struct owe_mpv *m, bool muted) {
     }
     v = muted ? 1 : 0;
     mpv_set_property(m->handle, "mute", MPV_FORMAT_FLAG, &v);
+}
+
+void owe_mpv_set_loop(struct owe_mpv *m, bool loop) {
+    if (!m) {
+        return;
+    }
+    mpv_set_property_string(m->handle, "loop-file", loop ? "inf" : "no");
+}
+
+bool owe_mpv_eof(struct owe_mpv *m) {
+    return m && m->eof;
 }
 
 bool owe_mpv_has_video(struct owe_mpv *m) {
@@ -319,6 +335,8 @@ bool owe_mpv_process_updates(struct owe_mpv *m) {
                 snprintf(m->error, sizeof(m->error), "%s", mpv_error_string(end->error));
                 m->has_video = false;
                 OWE_ERROR("Video playback failed: %s", m->error);
+            } else if (end && end->reason != MPV_END_FILE_REASON_QUIT) {
+                m->eof = true;
             }
         }
     }

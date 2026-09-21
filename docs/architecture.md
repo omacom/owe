@@ -58,6 +58,18 @@ Pause sets `pause` to `yes`. Decode stops, update callbacks stop,
 and the last frame stays presented. No frame callbacks get requested
 while paused, so the main loop sleeps in `poll`.
 
+## One-shot intros
+
+A still background can play one short intro video at login. The shell
+resolves the matching intro, then calls `owe intro <path>`. The daemon
+starts the renderer if needed, loads the file with `once` and `mute`, and
+reports progress until EOF. The renderer holds the final frame through
+`keep-open`, so the handoff to the shell's still has no black gap. The
+daemon ends an intro early when the screen locks, the session sleeps, a
+fullscreen window appears, the background changes, or the renderer dies.
+After an intro the daemon returns the engine to the shell. `intro-status`
+reports `running` and the last result, and `intro-stop` cancels.
+
 ## Lock feed
 
 A locked session keeps its video. The daemon sends `feed` to the renderer

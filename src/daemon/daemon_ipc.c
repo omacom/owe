@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -65,7 +66,8 @@ static void handle_status(struct owe_ipc_client *c) {
              "\"job_running\":%s,\"failed_path\":%s,\"media_ready\":%s,\"engine\":\"%s\","
              "\"paused\":%s,\"reason\":\"%s\",\"always_animate\":%s,\"manual_pause\":%s,\"idle_pause\":%s,"
              "\"fullscreen\":%s,\"window_visible\":%s,\"monitors_off\":%s,\"monitor_count\":%d,"
-             "\"on_battery\":%s,\"locked\":%s,\"render_alive\":%s}",
+             "\"on_battery\":%s,\"locked\":%s,\"render_alive\":%s,"
+             "\"intro\":%s,\"intro_result\":\"%s\"}",
              source, app->source_kind, loaded, app->loaded_kind,
              app->job ? "true" : "false", failed, app->media_pending ? "false" : "true",
              owed_app_engine(),
@@ -83,7 +85,9 @@ static void handle_status(struct owe_ipc_client *c) {
                      (app->hypr && owed_hypr_locked(app->hypr))
                  ? "true"
                  : "false",
-             app->supervisor && owed_render_is_alive(app->supervisor) ? "true" : "false") >= 0)
+             app->supervisor && owed_render_is_alive(app->supervisor) ? "true" : "false",
+             owed_app_intro_active() ? "true" : "false",
+             owed_app_intro_result()) >= 0)
         owe_ipc_client_send(c, line);
 done:
     free(line);
@@ -178,6 +182,34 @@ static void handle_command(void *context, struct owe_ipc_client *c, const char *
         handle_config(c);
     } else if (strcmp(cmd, "set") == 0) {
         handle_set(c, root);
+    } else if (strcmp(cmd, "intro") == 0) {
+        yyjson_val *vpath = yyjson_obj_get(root, "path");
+        const char *path = vpath && yyjson_is_str(vpath) ? yyjson_get_str(vpath) : "";
+        struct stat st;
+        if (!owe_json_path(vpath) || path[0] != '/' || stat(path, &st) != 0 ||
+            !S_ISREG(st.st_mode) || access(path, R_OK) != 0) {
+            send_err(c, "Invalid intro path");
+            yyjson_doc_free(doc);
+            return;
+        }
+        if (owed_app_start_intro(path) != 0) {
+            send_err(c, "Intro start failed");
+        } else {
+            send_ok(c, NULL);
+        }
+    } else if (strcmp(cmd, "intro-status") == 0) {
+        char *intro_line = NULL;
+        if (asprintf(&intro_line, "{\"status\":\"ok\",\"running\":%s,\"result\":\"%s\"}",
+                     owed_app_intro_active() ? "true" : "false",
+                     owed_app_intro_result()) >= 0) {
+            owe_ipc_client_send(c, intro_line);
+        } else {
+            send_err(c, "intro status failed");
+        }
+        free(intro_line);
+    } else if (strcmp(cmd, "intro-stop") == 0) {
+        owed_app_stop_intro("intro cancelled");
+        send_ok(c, NULL);
     } else if (strcmp(cmd, "refresh") == 0) {
         char resolved[4096];
         if (owed_watch_resolve_current(resolved, sizeof(resolved)) == 0) {

@@ -57,6 +57,10 @@ typedef struct owed_app {
     char poster_fail_path[4096];
     int render_paused; /* -1 unknown, 0 playing, 1 paused */
     int render_feeding; /* 1 while the lock feed owns the renderer */
+    int intro_active; /* 1 while a one-shot intro video owns the renderer */
+    char intro_path[4096];
+    char intro_result[16];
+    int64_t intro_deadline_ms;
     unsigned long source_generation;
 } owed_app_t;
 
@@ -70,3 +74,9 @@ void owed_app_apply_policy(void);
 void owed_app_emit_event(const char *name, const char *detail);
 const char *owed_app_engine(void);
 bool owed_app_renderer_expected(void);
+
+int owed_app_start_intro(const char *path);
+void owed_app_poll_intro(void);
+void owed_app_stop_intro(const char *reason);
+bool owed_app_intro_active(void);
+const char *owed_app_intro_result(void);

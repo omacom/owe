@@ -61,6 +61,7 @@ owe refresh               # Re-read the background symlink now
 owe pause                 # Pause video manually
 owe resume                # Clear manual pause
 owe always-animate on|off # Force animation regardless of policy
+owe intro <video>         # Play a one-shot intro video and wait
 owe status                # Daemon status as JSON
 owe config                # Effective config as JSON
 owe render-status         # Renderer status as JSON
@@ -95,6 +96,9 @@ Commands:
 - `{"cmd":"reload-config"}` — reload `~/.config/owe/config.toml`.
 - `{"cmd":"render-status"}` — proxy the renderer status reply.
 - `{"cmd":"render-restart"}` — restart `owe-render` and reload current media.
+- `{"cmd":"intro","path":"/abs/file.mp4"}` — play a one-shot intro video over a still background, muted. Reply means it started. Cancel with `intro-stop`.
+- `{"cmd":"intro-status"}` — reply `{"running":bool,"result":"running|ok|error"}`.
+- `{"cmd":"intro-stop"}` — cancel a running intro.
 - `{"cmd":"shutdown"}` — stop the daemon.
 
 ### Renderer socket: `render.sock`
@@ -102,7 +106,7 @@ Commands:
 Commands:
 
 - `{"cmd":"hello"}` — reply `{"status":"ok","version":1}`.
-- `{"cmd":"load","path":"/abs/file","kind":"video|still"}` — load media.
+- `{"cmd":"load","path":"/abs/file","kind":"video|still"}` — load media. `"once":true` and `"mute":true` load a one-shot intro.
 - `{"cmd":"pause"}` — pause decode. The last frame stays presented.
 - `{"cmd":"resume"}` — resume decode.
 - `{"cmd":"stop"}` — unload all media.

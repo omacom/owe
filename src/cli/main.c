@@ -78,6 +78,74 @@ static int render_call(const char *line) {
     return 1;
 }
 
+static int reply_line(int fd, char *reply, size_t len, int timeout_ms) {
+    struct pollfd pfd = { .fd = fd, .events = POLLIN };
+    if (poll(&pfd, 1, timeout_ms) <= 0) {
+        return -1;
+    }
+    return owe_ipc_recv_line(fd, reply, len) == 0 ? 0 : -1;
+}
+
+/* Play a one-shot intro video and block until it ends. The shell starts this
+ * when a still background has a matching boot intro and reveals the still
+ * after the process exits. */
+static int cmd_intro(const char *path) {
+    char socket_path[PATH_MAX];
+    char reply[OWE_IPC_MAX_LINE];
+    char line[OWE_IPC_MAX_LINE];
+    char *quoted;
+    int fd;
+    int i;
+    if (owe_socket_path_daemon(socket_path, sizeof(socket_path)) != 0) {
+        fprintf(stderr, "owe: cannot resolve daemon socket\n");
+        return 1;
+    }
+    fd = owe_ipc_connect(socket_path);
+    if (fd < 0) {
+        fprintf(stderr, "owe: daemon not running (no socket at %s)\n", socket_path);
+        return 1;
+    }
+    quoted = owe_json_quote(path);
+    if (!quoted || snprintf(line, sizeof(line), "{\"cmd\":\"intro\",\"path\":%s}", quoted) >=
+                       (int)sizeof(line)) {
+        free(quoted);
+        close(fd);
+        return 1;
+    }
+    free(quoted);
+    if (owe_ipc_send_line(fd, line) != 0 || reply_line(fd, reply, sizeof(reply), 5000) != 0) {
+        fprintf(stderr, "owe: no reply from daemon\n");
+        close(fd);
+        return 1;
+    }
+    if (!owe_json_ok(reply)) {
+        fprintf(stderr, "owe: intro rejected: %s\n", reply);
+        close(fd);
+        return 1;
+    }
+    for (i = 0; i < 240; i++) {
+        if (owe_ipc_send_line(fd, "{\"cmd\":\"intro-status\"}") != 0 ||
+            reply_line(fd, reply, sizeof(reply), 5000) != 0) {
+            fprintf(stderr, "owe: intro status unavailable\n");
+            close(fd);
+            return 1;
+        }
+        if (strstr(reply, "\"running\":false")) {
+            int ok = strstr(reply, "\"result\":\"ok\"") != NULL;
+            if (!ok) {
+                fprintf(stderr, "owe: intro ended early: %s\n", reply);
+            }
+            close(fd);
+            return ok ? 0 : 1;
+        }
+        usleep(200000);
+    }
+    owe_ipc_send_line(fd, "{\"cmd\":\"intro-stop\"}");
+    close(fd);
+    fprintf(stderr, "owe: intro timed out\n");
+    return 1;
+}
+
 static void usage(const char *argv0) {
     fprintf(stderr,
             "Usage: %s <command> [args]\n"
@@ -92,6 +160,7 @@ static void usage(const char *argv0) {
             "  pause                   Pause video manually\n"
             "  resume                  Clear manual pause\n"
             "  always-animate on|off   Force animation regardless of policy\n"
+            "  intro <video>           Play a one-shot intro video and wait\n"
             "\n"
             "State:\n"
             "  status                  Daemon status as JSON\n"
@@ -189,6 +258,13 @@ int main(int argc, char **argv) {
     }
     if (strcmp(cmd, "resume") == 0) {
         return daemon_call("{\"cmd\":\"resume\"}", 1);
+    }
+    if (strcmp(cmd, "intro") == 0) {
+        if (argc < 3) {
+            fprintf(stderr, "owe intro <video>\n");
+            return 1;
+        }
+        return cmd_intro(argv[2]);
     }
     if (strcmp(cmd, "always-animate") == 0) {
         if (argc < 3) {

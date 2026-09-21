@@ -274,6 +274,124 @@ static bool render_status_flags(const char *reply, bool *ready, bool *error) {
     return ok;
 }
 
+static void intro_finish(const char *error) {
+    owed_app_t *app = &g_app;
+    if (!app->intro_active) {
+        return;
+    }
+    app->intro_active = 0;
+    app->intro_deadline_ms = 0;
+    app->intro_path[0] = '\0';
+    snprintf(app->intro_result, sizeof(app->intro_result), "%s", error ? "error" : "ok");
+    if (error) {
+        OWE_WARN("intro ended: %s", error);
+    } else {
+        OWE_INFO("intro finished");
+    }
+    /* Hand the background back to the shell. The renderer keeps the last
+     * frame until its stop timer fires, so the still underneath takes over. */
+    if (app->engine == OWE_ENGINE_RENDERER) {
+        app->engine = OWE_ENGINE_NONE;
+        owed_app_apply_policy();
+    }
+}
+
+int owed_app_start_intro(const char *path) {
+    owed_app_t *app = &g_app;
+    char reply[8192];
+    char *quoted;
+    char *line = NULL;
+    int rc;
+    if (!path || !*path || !app->supervisor || app->intro_active) {
+        return -1;
+    }
+    /* A one-shot intro pairs with a still background. A video or GIF already
+     * owns the renderer and needs no intro. */
+    if (strcmp(app->source_kind, "still") != 0) {
+        return -1;
+    }
+    if (switch_to_renderer() != 0) {
+        return -1;
+    }
+    quoted = owe_json_quote(path);
+    if (!quoted) {
+        goto fail;
+    }
+    if (asprintf(&line, "{\"cmd\":\"load\",\"path\":%s,\"kind\":\"video\","
+                        "\"once\":true,\"mute\":true}", quoted) < 0) {
+        free(quoted);
+        goto fail;
+    }
+    free(quoted);
+    rc = owed_supervisor_send(app->supervisor, line, reply, sizeof(reply));
+    free(line);
+    if (rc != 0 || !owe_json_ok(reply)) {
+        OWE_ERROR("intro load rejected: %s", reply);
+        goto fail;
+    }
+    app->intro_active = 1;
+    snprintf(app->intro_path, sizeof(app->intro_path), "%s", path);
+    snprintf(app->intro_result, sizeof(app->intro_result), "running");
+    app->intro_deadline_ms = monotonic_ms() + 30000;
+    OWE_INFO("intro playing: %s", path);
+    return 0;
+fail:
+    app->engine = OWE_ENGINE_NONE;
+    owed_app_apply_policy();
+    return -1;
+}
+
+void owed_app_poll_intro(void) {
+    owed_app_t *app = &g_app;
+    char reply[8192];
+    bool ready = false;
+    bool error = false;
+    if (!app->intro_active) {
+        return;
+    }
+    if (!owed_render_is_alive(app->supervisor)) {
+        intro_finish("renderer stopped");
+        return;
+    }
+    if (monotonic_ms() >= app->intro_deadline_ms) {
+        intro_finish("intro timed out");
+        return;
+    }
+    if ((app->power && owed_power_locked(app->power)) ||
+        (app->power && owed_power_sleeping(app->power)) ||
+        (app->hypr && owed_hypr_any_fullscreen(app->hypr))) {
+        intro_finish("intro interrupted");
+        return;
+    }
+    if (owed_supervisor_send(app->supervisor, "{\"cmd\":\"status\"}", reply,
+                             sizeof(reply)) != 0) {
+        intro_finish("renderer unreachable");
+        return;
+    }
+    if (!render_status_flags(reply, &ready, &error)) {
+        return;
+    }
+    if (error) {
+        intro_finish("intro decode failed");
+        return;
+    }
+    if (strstr(reply, "\"eof\":true")) {
+        intro_finish(NULL);
+    }
+}
+
+void owed_app_stop_intro(const char *reason) {
+    intro_finish(reason);
+}
+
+bool owed_app_intro_active(void) {
+    return g_app.intro_active != 0;
+}
+
+const char *owed_app_intro_result(void) {
+    return g_app.intro_result;
+}
+
 static void media_failed(void) {
     owed_app_t *app = &g_app;
     app->media_pending = false;
@@ -388,6 +506,11 @@ void owed_app_apply_policy(void) {
         return;
     }
     if (!battery_poster_active()) app->poster_fail_path[0] = '\0';
+    /* A one-shot intro owns the renderer until it ends. Policy changes cancel
+     * it through owed_app_poll_intro instead of tearing it down here. */
+    if (app->intro_active) {
+        return;
+    }
     /* OWE owns video and GIF backgrounds only. A still background belongs to
      * Omarchy's shell, so the renderer never starts for one. */
     shell_engine = strcmp(app->source_kind, "still") == 0;
@@ -524,6 +647,9 @@ void owed_app_on_background_changed(const char *resolved_path) {
 
     if (!resolved_path || !*resolved_path) {
         return;
+    }
+    if (app->intro_active) {
+        owed_app_stop_intro("background changed");
     }
     kind = owe_kind_from_path(resolved_path);
     if (kind == OWE_KIND_UNKNOWN) {
@@ -779,7 +905,8 @@ int main(int argc, char **argv) {
         }
         n += owed_ipc_pollfds(g_app.ipc, &pfds[n]);
 
-        rc = poll(pfds, (nfds_t)n, (have_job || g_app.media_pending) ? 200 : 1000);
+        rc = poll(pfds, (nfds_t)n,
+                  (have_job || g_app.media_pending || g_app.intro_active) ? 200 : 1000);
         if (rc < 0) {
             if (errno == EINTR) {
                 continue;
@@ -803,7 +930,7 @@ int main(int argc, char **argv) {
                 }
                 owed_supervisor_reap(g_app.supervisor);
                 if (g_app.running && g_app.engine == OWE_ENGINE_RENDERER &&
-                    !owed_render_is_alive(g_app.supervisor)) {
+                    !g_app.intro_active && !owed_render_is_alive(g_app.supervisor)) {
                     OWE_WARN("renderer died, restarting");
                     if (owed_supervisor_ensure_running(g_app.supervisor) == 0) {
                         owed_app_on_renderer_restarted();
@@ -827,9 +954,10 @@ int main(int argc, char **argv) {
         if (!g_app.running) break;
         owed_power_poll(g_app.power);
         check_media_ready();
+        owed_app_poll_intro();
         sync_output_skips();
         process_shell_handoff();
-        if (g_app.engine == OWE_ENGINE_RENDERER &&
+        if (g_app.engine == OWE_ENGINE_RENDERER && !g_app.intro_active &&
             !owed_render_is_alive(g_app.supervisor) &&
             owed_supervisor_ensure_running(g_app.supervisor) == 0)
             owed_app_on_renderer_restarted();

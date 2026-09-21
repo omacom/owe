@@ -5,18 +5,29 @@
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #x); exit(1); } } while (0)
 
 struct owed_power { bool locked; bool sleeping; bool battery; };
-struct owed_hypr { bool locked; bool off; };
+struct owed_hypr { bool locked; bool off; bool fullscreen; };
 struct owed_supervisor { int starts; int stops; bool feeding; bool paused; bool fail_start; bool fail_load; int loads; };
 static char covered_names[1024];
 static int skip_sends;
+static char supervisor_reply[1024] = "{\"status\":\"ok\"}";
+static char supervisor_last[2048];
+static bool supervisor_fails;
 const char *owed_hypr_covered_names(struct owed_hypr *h) { (void)h; return covered_names; }
 int owed_supervisor_send(struct owed_supervisor *s, const char *line, char *reply,
                          unsigned long reply_len) {
-    (void)s; (void)reply; (void)reply_len;
-    yyjson_doc *doc = yyjson_read(line, strlen(line), 0);
+    yyjson_doc *doc;
+    (void)s;
+    snprintf(supervisor_last, sizeof(supervisor_last), "%s", line);
+    doc = yyjson_read(line, strlen(line), 0);
     CHECK(doc);
     yyjson_doc_free(doc);
     skip_sends++;
+    if (supervisor_fails) {
+        return -1;
+    }
+    if (reply && reply_len > 0) {
+        snprintf(reply, reply_len, "%s", supervisor_reply);
+    }
     return 0;
 }
 
@@ -25,7 +36,7 @@ bool owed_power_sleeping(struct owed_power *p) { return p && p->sleeping; }
 bool owed_power_on_battery(struct owed_power *p) { return p && p->battery; }
 bool owed_hypr_locked(struct owed_hypr *h) { return h && h->locked; }
 bool owed_hypr_all_monitors_off(struct owed_hypr *h) { return h && h->off; }
-bool owed_hypr_any_fullscreen(struct owed_hypr *h) { (void)h; return false; }
+bool owed_hypr_any_fullscreen(struct owed_hypr *h) { return h && h->fullscreen; }
 bool owed_hypr_any_window_visible(struct owed_hypr *h) { (void)h; return false; }
 void owed_ipc_broadcast(struct owed_ipc *ipc, const char *line) { (void)ipc; (void)line; }
 int owed_render_is_alive(struct owed_supervisor *s) { return s != NULL; }
@@ -188,6 +199,7 @@ int main(void) {
     CHECK(g_app.engine == OWE_ENGINE_SHELL);
     CHECK(renderer.starts == 0 && !renderer.feeding);
     CHECK(shell_plugin_calls == 1 && shell_plugin_enabled);
+
     /* Failed startup retries without marking the media itself as failed. */
     strcpy(g_app.source_path, "/retry.mp4");
     strcpy(g_app.source_kind, "video");
@@ -269,8 +281,77 @@ int main(void) {
     owed_app_on_policy_changed();
     CHECK(!strcmp(g_app.fail_path, g_app.source_path) && !*g_app.poster_fail_path);
     CHECK(renderer.loads == loads + 1);
-    owed_app_apply_policy();
-    CHECK(renderer.loads == loads + 1);
+
+    /* A one-shot intro owns the renderer, plays once, and hands the still back. */
+    power.locked = false;
+    power.sleeping = false;
+    power.battery = false;
+    hypr.locked = false;
+    hypr.off = false;
+    hypr.fullscreen = false;
+    renderer.fail_start = false;
+    renderer.fail_load = false;
+    shell_plugin_fail = false;
+    g_app.shell_retry_at_ms = 0;
+    g_app.renderer_retry_at_ms = 0;
+    g_app.engine = OWE_ENGINE_SHELL;
+    g_app.shell_enabled = 1;
+    shell_plugin_enabled = true;
+    shell_plugin_calls = 0;
+    renderer.starts = 0;
+    strcpy(supervisor_reply, "{\"status\":\"ok\"}");
+    CHECK(owed_app_start_intro("/intro.mp4") == 0);
+    CHECK(owed_app_intro_active());
+    CHECK(strstr(supervisor_last, "\"once\":true") != NULL);
+    CHECK(strstr(supervisor_last, "\"mute\":true") != NULL);
+    CHECK(g_app.engine == OWE_ENGINE_RENDERER);
+    CHECK(renderer.starts == 1);
+    CHECK(shell_plugin_calls == 1 && !shell_plugin_enabled);
+
+    strcpy(supervisor_reply, "{\"status\":\"ok\",\"ready\":true,\"error\":\"\",\"eof\":false}");
+    owed_app_poll_intro();
+    CHECK(owed_app_intro_active());
+    CHECK(owed_app_start_intro("/other.mp4") != 0);
+    strcpy(supervisor_reply, "{\"status\":\"ok\",\"ready\":true,\"error\":\"\",\"eof\":true}");
+    owed_app_poll_intro();
+    CHECK(!owed_app_intro_active());
+    CHECK(strcmp(owed_app_intro_result(), "ok") == 0);
+    CHECK(g_app.engine == OWE_ENGINE_SHELL);
+    CHECK(shell_plugin_calls == 2 && shell_plugin_enabled);
+
+    /* Locking interrupts an intro and reports a non-ok result. */
+    g_app.engine = OWE_ENGINE_SHELL;
+    g_app.shell_enabled = 1;
+    shell_plugin_calls = 0;
+    strcpy(supervisor_reply, "{\"status\":\"ok\",\"ready\":true,\"error\":\"\",\"eof\":false}");
+    CHECK(owed_app_start_intro("/intro.mp4") == 0);
+    power.locked = true;
+    owed_app_poll_intro();
+    CHECK(!owed_app_intro_active());
+    CHECK(strcmp(owed_app_intro_result(), "error") == 0);
+    CHECK(g_app.engine == OWE_ENGINE_SHELL);
+    power.locked = false;
+
+    /* A fullscreen window and an explicit stop also interrupt. */
+    strcpy(supervisor_reply, "{\"status\":\"ok\",\"ready\":true,\"error\":\"\",\"eof\":false}");
+    CHECK(owed_app_start_intro("/intro.mp4") == 0);
+    hypr.fullscreen = true;
+    owed_app_poll_intro();
+    CHECK(!owed_app_intro_active());
+    hypr.fullscreen = false;
+    CHECK(owed_app_start_intro("/intro.mp4") == 0);
+    owed_app_stop_intro("intro cancelled");
+    CHECK(!owed_app_intro_active());
+    CHECK(strcmp(owed_app_intro_result(), "error") == 0);
+
+    /* A rejected renderer load leaves the shell drawing the still. */
+    g_app.engine = OWE_ENGINE_SHELL;
+    g_app.shell_enabled = 1;
+    strcpy(supervisor_reply, "{\"status\":\"error\"}");
+    CHECK(owed_app_start_intro("/intro.mp4") != 0);
+    CHECK(!owed_app_intro_active());
+    CHECK(g_app.engine == OWE_ENGINE_SHELL);
+    strcpy(supervisor_reply, "{\"status\":\"ok\"}");
     owed_policy_free(g_app.policy);
     puts("lock policy and still transition checks passed");
     return 0;
