@@ -54,6 +54,11 @@ joins an unfinished decoder during media changes. Shutdown joins the worker
 before freeing its state.
 The renderer uploads one texture, presents the fade, and stops frame requests after the fully opaque final frame.
 
+The outgoing transition image can upload through any available output surface.
+Video waits at most one second for that optional image.
+If the image is not ready, the renderer cancels the transition and continues video playback.
+The event loop discards a cancelled image when its worker completes.
+
 Pause sets `pause` to `yes`. Decode stops, update callbacks stop,
 and the last frame stays presented. No frame callbacks get requested
 while paused, so the main loop sleeps in `poll`.

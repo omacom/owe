@@ -562,7 +562,8 @@ void owe_wayland_render_pending(struct owe_wayland *wl) {
         return;
     }
     /* Keep the last buffer until the outgoing image can cover video startup. */
-    if (owe_mpv_has_video(app->mpv) && owe_still_busy(app->transition)) {
+    if (owe_mpv_has_video(app->mpv) && owe_still_transition_waiting(app->transition)) {
+        owe_wayland_flush(wl);
         return;
     }
     want_video = app->mpv && owe_mpv_has_video(app->mpv) && !app->paused;

@@ -15,6 +15,7 @@ int owe_still_poll(struct owe_still *s);
 int owe_still_fd(struct owe_still *s);
 void owe_still_cancel(struct owe_still *s);
 bool owe_still_busy(struct owe_still *s);
+bool owe_still_transition_waiting(struct owe_still *s);
 int owe_still_decoded_max(struct owe_still *s, int *w, int *h);
 
 void owe_still_unload(struct owe_still *s);

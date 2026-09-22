@@ -244,7 +244,7 @@ The tests cover IPC framing, quoted paths, worker cancellation, atomic cache pub
 The lock feed tests cover feed restarts, client pause state, frame ownership, DPMS, and transitions to still images.
 
 The transition test reads actual OpenGL pixels from two offscreen output buffers with libmpv video playback.
-It checks the blend, delayed frames, pause, cancellation, and texture cleanup.
+It checks the blend, delayed frames, pause, cancellation, texture cleanup, unavailable outputs, and transition image timeouts.
 
 ```bash
 meson test -C build transition --print-errorlogs

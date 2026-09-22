@@ -24,6 +24,7 @@ static int total_frames;
 static bool capture;
 static int capture_stage;
 static bool callbacks_enabled = true;
+static bool poll_transition = true;
 
 owe_app_t *owe_app_get(void) { return &app; }
 void owe_app_request_render(void) { owe_wayland_request_render(&wl); }
@@ -91,7 +92,7 @@ static int init_display(void) {
 static void tick(void) {
     owe_render_ipc_poll_clients(app.ipc);
     owe_render_ipc_poll_still(app.ipc);
-    if (owe_still_busy(app.transition)) {
+    if (poll_transition && owe_still_busy(app.transition)) {
         owe_still_poll(app.transition);
         owe_app_request_render();
     }
@@ -101,6 +102,7 @@ static void tick(void) {
     }
     owe_wayland_render_pending(&wl);
     for (int i = 0; i < 2; i++) {
+        if (!outputs[i].egl_surface) continue;
         CHECK(owe_egl_prepare_output(app.egl, &outputs[i]) == 0);
         glReadPixels(outputs[i].width / 2, outputs[i].height / 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, samples[i]);
         CHECK(glGetError() == GL_NO_ERROR);
@@ -147,7 +149,8 @@ static void still(void) {
     command("{\"cmd\":\"fade\",\"ms\":0}");
     snprintf(line, sizeof(line), "{\"cmd\":\"load\",\"path\":\"%s/red.png\",\"kind\":\"still\"}", root);
     command(line);
-    run_ms(100);
+    /* Let the outgoing still settle before the next fade setting takes effect. */
+    run_ms(300);
     CHECK(samples[0][0] > 240 && samples[0][2] < 10);
     CHECK(samples[1][0] > 240 && samples[1][2] < 10);
 }
@@ -185,6 +188,39 @@ int main(void) {
     make_media();
     int rc = init_display();
     if (rc) return rc;
+    char line[1024];
+    snprintf(line, sizeof(line), "{\"cmd\":\"load\",\"path\":\"%s/blue.mp4\",\"kind\":\"video\"}", root);
+    command(line);
+    run_ms(350);
+    verify(samples[0][2] > 240 && samples[0][0] < 10 &&
+           samples[1][2] > 240 && samples[1][0] < 10,
+           "a cold MP4 load displays video without a transition image");
+
+    command("{\"cmd\":\"stop\"}");
+    run_ms(50);
+    void *unavailable_surface = outputs[0].egl_surface;
+    outputs[0].egl_surface = NULL;
+    outputs[0].configured = 0;
+    video(250);
+    run_ms(1400);
+    verify(samples[1][2] > 240 && samples[1][0] < 10,
+           "an unavailable first output does not block video on another output");
+    outputs[0].egl_surface = unavailable_surface;
+    outputs[0].configured = 1;
+    command("{\"cmd\":\"stop\"}");
+    run_ms(50);
+
+    /* Delay transition completion while the MP4 decoder remains available. */
+    poll_transition = false;
+    video(250);
+    run_ms(1400);
+    verify(samples[0][2] > 240 && samples[0][0] < 10 &&
+           samples[1][2] > 240 && samples[1][0] < 10,
+           "a slow transition image cannot leave a playable MP4 black");
+    poll_transition = true;
+    run_ms(100);
+    verify(!owe_still_has_image(app.transition), "a late transition cannot cover recovered video");
+
     still();
     capture = true;
     video(250);

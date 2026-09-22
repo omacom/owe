@@ -46,6 +46,7 @@ struct owe_still {
     int fade_ms;
     bool fade_out;
     bool fade_started;
+    struct timespec requested_at;
     struct timespec loaded_at;
     struct still_job *job;
     struct still_job *queued;
@@ -316,6 +317,19 @@ bool owe_still_busy(struct owe_still *s) {
     return s && s->job != NULL;
 }
 
+bool owe_still_transition_waiting(struct owe_still *s) {
+    if (!s || !s->fade_out || !s->job) return false;
+    if (atomic_load(&s->job->cancelled) && !s->queued) return false;
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    if (elapsed_ms(&s->requested_at, &now) < 1000) return true;
+    /* An optional image must not block video playback indefinitely. */
+    OWE_WARN("Transition image timed out, showing video: %s",
+             s->queued ? s->queued->path : s->job->path);
+    owe_still_unload(s);
+    return false;
+}
+
 int owe_still_decoded_max(struct owe_still *s, int *w, int *h) {
     if (!s) {
         return -1;
@@ -378,7 +392,8 @@ int owe_still_poll(struct owe_still *s) {
         job->ready = 1;
     }
     outs = owe_wayland_outputs(s->wl);
-    if (!outs || !outs->egl_surface) {
+    while (outs && !outs->egl_surface) outs = outs->next;
+    if (!outs) {
         /* Keep the decoded frame until an output can take the upload. */
         return 0;
     }
@@ -487,6 +502,7 @@ void owe_still_set_fade_out(struct owe_still *s, int ms) {
         s->fade_out = true;
         s->fade_started = false;
         s->fade_ms = ms;
+        clock_gettime(CLOCK_MONOTONIC, &s->requested_at);
     }
 }
 
