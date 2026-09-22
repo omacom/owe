@@ -17,6 +17,8 @@
 #include "owe_spawn.h"
 #include "xdg.h"
 
+#define RENDER_START_TIMEOUT_MS 3000
+
 struct owed_supervisor {
     pid_t child;
     char socket_path[4096];
@@ -118,7 +120,7 @@ int owed_supervisor_ensure_running(struct owed_supervisor *s) {
     }
     s->restarts++;
     OWE_INFO("owe-render spawned pid=%d (restart #%d)", (int)s->child, s->restarts);
-    while (waited < 1000) {
+    while (waited < RENDER_START_TIMEOUT_MS) {
         if (waitpid(s->child, NULL, WNOHANG) == s->child) {
             s->child = 0;
             return -1;
