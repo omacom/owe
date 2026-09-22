@@ -87,10 +87,22 @@ static int reply_line(int fd, char *reply, size_t len, int timeout_ms) {
     return owe_ipc_recv_line_timeout(fd, reply, len, timeout_ms);
 }
 
-/* Play a one-shot intro video and block until it ends. The shell starts this
- * when a still background has a matching boot intro and reveals the still
- * after the process exits. */
-static int cmd_intro(const char *path) {
+/* Prepare a one-shot intro after the daemon socket appears. Callers can either
+ * commit it immediately or persist their own once-per-boot state first. */
+static int intro_connect(const char *sock) {
+    int fd;
+    int64_t deadline = owe_ipc_now_ms() + 3000;
+    do {
+        fd = owe_ipc_connect(sock);
+        if (fd >= 0) {
+            return fd;
+        }
+        usleep(50000);
+    } while (owe_ipc_now_ms() < deadline);
+    return -1;
+}
+
+static int cmd_intro(const char *path, bool wait, bool commit) {
     char sock[PATH_MAX];
     char resolved[PATH_MAX];
     char reply[OWE_IPC_MAX_LINE];
@@ -105,10 +117,10 @@ static int cmd_intro(const char *path) {
         fprintf(stderr, "owe: cannot resolve daemon socket\n");
         return 1;
     }
-    fd = owe_ipc_connect(sock);
+    fd = intro_connect(sock);
     if (fd < 0) {
         fprintf(stderr, "owe: daemon not running at %s\n", sock);
-        return 1;
+        return 2;
     }
     quoted = owe_json_quote(resolved);
     if (!quoted || snprintf(line, sizeof(line), "{\"cmd\":\"intro\",\"path\":%s}", quoted) >=
@@ -121,12 +133,24 @@ static int cmd_intro(const char *path) {
     if (owe_ipc_send_line(fd, line) != 0 || reply_line(fd, reply, sizeof(reply), 10000) != 0) {
         fprintf(stderr, "owe: no reply from daemon\n");
         close(fd);
-        return 1;
+        return 2;
     }
     if (!owe_json_ok(reply)) {
         fprintf(stderr, "owe: intro rejected: %s\n", reply);
         close(fd);
-        return 1;
+        return 2;
+    }
+    if (commit &&
+        (owe_ipc_send_line(fd, "{\"cmd\":\"intro-commit\"}") != 0 ||
+         reply_line(fd, reply, sizeof(reply), 10000) != 0 || !owe_json_ok(reply))) {
+        owe_ipc_send_line(fd, "{\"cmd\":\"intro-stop\"}");
+        fprintf(stderr, "owe: intro commit failed\n");
+        close(fd);
+        return 2;
+    }
+    if (!wait) {
+        close(fd);
+        return 0;
     }
     int64_t deadline = owe_ipc_now_ms() + 35000;
     while (owe_ipc_now_ms() < deadline) {
@@ -182,6 +206,10 @@ static void usage(const char *argv0) {
             "  resume                  Clear manual pause\n"
             "  always-animate on|off   Force animation regardless of policy\n"
             "  intro <video>           Play a one-shot intro video and wait\n"
+            "  intro-start <video>     Start a one-shot intro after the daemon is ready\n"
+            "  intro-prepare <video>   Prepare an intro without revealing it\n"
+            "  intro-commit            Reveal a prepared intro\n"
+            "  intro-stop              Stop the active one-shot intro\n"
             "\n"
             "State:\n"
             "  status                  Daemon status as JSON\n"
@@ -299,7 +327,27 @@ int main(int argc, char **argv) {
             fprintf(stderr, "owe intro <video>\n");
             return 1;
         }
-        return cmd_intro(argv[2]);
+        return cmd_intro(argv[2], true, true);
+    }
+    if (strcmp(cmd, "intro-start") == 0) {
+        if (argc < 3) {
+            fprintf(stderr, "owe intro-start <video>\n");
+            return 1;
+        }
+        return cmd_intro(argv[2], false, true);
+    }
+    if (strcmp(cmd, "intro-prepare") == 0) {
+        if (argc < 3) {
+            fprintf(stderr, "owe intro-prepare <video>\n");
+            return 1;
+        }
+        return cmd_intro(argv[2], false, false);
+    }
+    if (strcmp(cmd, "intro-commit") == 0) {
+        return daemon_call("{\"cmd\":\"intro-commit\"}", 0);
+    }
+    if (strcmp(cmd, "intro-stop") == 0) {
+        return daemon_call("{\"cmd\":\"intro-stop\"}", 0);
     }
     if (strcmp(cmd, "always-animate") == 0) {
         if (argc < 3) {

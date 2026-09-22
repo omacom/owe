@@ -208,6 +208,12 @@ static void handle_command(void *context, struct owe_ipc_client *c, const char *
             send_err(c, "intro status failed");
         }
         free(intro_line);
+    } else if (strcmp(cmd, "intro-commit") == 0) {
+        if (owed_app_commit_intro() == 0) {
+            send_ok(c, NULL);
+        } else {
+            send_err(c, "no prepared intro");
+        }
     } else if (strcmp(cmd, "intro-stop") == 0) {
         owed_app_stop_intro("intro cancelled");
         send_ok(c, NULL);

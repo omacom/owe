@@ -28,9 +28,12 @@ server = socket.socket(socket.AF_UNIX)
 server.bind(str(path))
 server.listen()
 log = (root / "commands.jsonl").open("a")
-state = {"status": "ok", "paused": False, "path": "", "kind": "", "outputs": 1, "ready": False, "error": ""}
+state = {"status": "ok", "paused": False, "path": "", "kind": "", "outputs": 1,
+         "ready": False, "error": "", "has_transition": False,
+         "transition_busy": False, "transition_done": False}
 pending = None
 intro_end = None
+transition_end = None
 while True:
     client, _ = server.accept()
     with client:
@@ -50,6 +53,8 @@ while True:
         if command == "load":
             intro_end = time.monotonic() + 0.3 if request.get("once") else None
             state["eof"] = False
+            state.update(has_transition=bool(request.get("from")), transition_busy=False,
+                         transition_done=False)
             if "reject" in request["path"]:
                 reply = {"status": "error", "message": "rejected"}
             elif "slow" in request["path"]:
@@ -72,9 +77,16 @@ while True:
             state["paused"] = False
         elif command == "cancel-load":
             pending = None
+        elif command == "intro-show":
+            pass
+        elif command == "intro-finish":
+            state.update(has_transition=True, transition_busy=False, transition_done=False)
+            transition_end = time.monotonic() + 0.3
         elif command == "status":
             if intro_end and time.monotonic() >= intro_end:
                 state["eof"] = True
+            if transition_end and time.monotonic() >= transition_end:
+                state["transition_done"] = True
             if pending and time.monotonic() >= pending[0]:
                 state.update(path=pending[1], kind=pending[2], ready=True)
                 pending = None
@@ -294,6 +306,16 @@ def main():
                 result = subprocess.run(cli + ["intro", "good.mp4"], env=env, cwd=root,
                                         capture_output=True, text=True, timeout=8)
                 check(result.returncode == 0, "the CLI resolves relative intro paths and detects EOF", result.stderr)
+                intro_commands = [json.loads(line) for line in commands_path.read_text().splitlines()]
+                intro_load = next(command for command in reversed(intro_commands)
+                                  if command.get("cmd") == "load" and command.get("once"))
+                check(intro_load.get("from") == str(root / "still.png"),
+                      "the intro prepares from the exact shell still", json.dumps(intro_load))
+                check(any(command.get("cmd") == "intro-show" for command in intro_commands) and
+                      any(command.get("cmd") == "intro-finish" and command.get("path") == str(root / "still.png")
+                          for command in intro_commands),
+                      "the daemon reveals only a committed intro and brackets both transitions",
+                      json.dumps(intro_commands))
 
                 previous_loads = [json.loads(line) for line in commands_path.read_text().splitlines()
                                   if json.loads(line).get("cmd") == "load"]

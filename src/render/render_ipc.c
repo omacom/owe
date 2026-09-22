@@ -100,7 +100,9 @@ static void handle_status(struct owe_render_ipc *ipc, struct owe_ipc_client *c) 
     }
     if (asprintf(&line,
              "{\"status\":\"ok\",\"path\":%s,\"kind\":\"%s\",\"paused\":%s,\"ready\":%s,\"outputs\":%d,"
-             "\"max_width\":%d,\"max_height\":%d,\"has_video\":%s,\"has_still\":%s,\"time_pos\":%.3f,\"hwdec\":%s,\"error\":%s,\"skipped\":%s,"
+             "\"max_width\":%d,\"max_height\":%d,\"has_video\":%s,\"has_still\":%s,"
+             "\"has_transition\":%s,\"transition_busy\":%s,\"transition_done\":%s,"
+             "\"time_pos\":%.3f,\"hwdec\":%s,\"error\":%s,\"skipped\":%s,"
              "\"intro\":%s,\"eof\":%s,\"drm_dpms\":%s,\"swaps\":%" PRIu64 ",\"swap_failures\":%" PRIu64 "}",
              path, app ? app->current_kind : "",
              app && app->paused ? "true" : "false",
@@ -108,6 +110,9 @@ static void handle_status(struct owe_render_ipc *ipc, struct owe_ipc_client *c) 
              app && app->wl ? owe_wayland_output_count(app->wl) : 0,
              mw, mh, app && app->mpv && owe_mpv_has_video(app->mpv) ? "true" : "false",
              app && app->still && owe_still_has_image(app->still) ? "true" : "false",
+             app && app->transition && owe_still_has_image(app->transition) ? "true" : "false",
+             app && app->transition && owe_still_busy(app->transition) ? "true" : "false",
+             app && app->transition && owe_still_fade_done(app->transition) ? "true" : "false",
              app && app->mpv ? owe_mpv_time_pos(app->mpv) : -1.0,
              hwdec, error, skipped_json,
              app && app->intro ? "true" : "false",
@@ -189,9 +194,10 @@ static void handle_load(struct owe_render_ipc *ipc, struct owe_ipc_client *c, yy
             owe_mpv_set_paused(app->mpv, false);
         }
         app->intro = once;
+        app->intro_waiting = once && *from;
         /* A still that was just on screen fades out over the incoming video,
          * so a background switch to a video keeps its transition. */
-        if (*from && !once && !app->feeding && app->fade_ms > 0 && app->transition) {
+        if (*from && !app->feeding && app->fade_ms > 0 && app->transition) {
             int max_w = 0;
             int max_h = 0;
             owe_still_unload(app->transition);
@@ -236,6 +242,42 @@ static void handle_load(struct owe_render_ipc *ipc, struct owe_ipc_client *c, yy
     send_err(c, "unknown kind");
 }
 
+static void handle_intro_finish(struct owe_ipc_client *c, yyjson_val *root) {
+    owe_app_t *app = owe_app_get();
+    yyjson_val *vpath = yyjson_obj_get(root, "path");
+    yyjson_val *vms = yyjson_obj_get(root, "ms");
+    const char *path = vpath && yyjson_is_str(vpath) ? yyjson_get_str(vpath) : "";
+    struct stat st;
+    int max_w = 0;
+    int max_h = 0;
+    int ms;
+    if (!app || !app->intro || !app->transition) {
+        send_err(c, "no intro");
+        return;
+    }
+    if (!owe_json_path(vpath) || path[0] != '/' || stat(path, &st) != 0 ||
+        !S_ISREG(st.st_mode) || access(path, R_OK) != 0) {
+        send_err(c, "Invalid transition path");
+        return;
+    }
+    if (!vms || !yyjson_is_int(vms) || yyjson_get_sint(vms) < 0 ||
+        yyjson_get_sint(vms) > 2000) {
+        send_err(c, "Fade must be an integer from 0 to 2000");
+        return;
+    }
+    ms = (int)yyjson_get_sint(vms);
+    owe_wayland_outputs_max_size(app->wl, &max_w, &max_h);
+    owe_still_unload(app->transition);
+    if (owe_still_start(app->transition, path, max_w > 0 ? max_w : 4096,
+                        max_h > 0 ? max_h : 4096) != 0) {
+        send_err(c, "transition load failed");
+        return;
+    }
+    owe_still_set_fade_in(app->transition, ms);
+    OWE_INFO("intro transition to %s", path);
+    send_ok(c, NULL);
+}
+
 static void handle_command(void *context, struct owe_ipc_client *c, const char *line) {
     struct owe_render_ipc *ipc = context;
     owe_app_t *app = owe_app_get();
@@ -257,6 +299,16 @@ static void handle_command(void *context, struct owe_ipc_client *c, const char *
         send_ok(c, "\"version\":1");
     } else if (strcmp(cmd, "load") == 0) {
         handle_load(ipc, c, root);
+    } else if (strcmp(cmd, "intro-finish") == 0) {
+        handle_intro_finish(c, root);
+    } else if (strcmp(cmd, "intro-show") == 0) {
+        if (app && app->intro && owe_still_has_image(app->transition)) {
+            app->intro_waiting = false;
+            owe_app_request_render();
+            send_ok(c, NULL);
+        } else {
+            send_err(c, "intro is not prepared");
+        }
     } else if (strcmp(cmd, "pause") == 0) {
         if (app) {
             stop_feed(app);
@@ -293,6 +345,7 @@ static void handle_command(void *context, struct owe_ipc_client *c, const char *
             app->current_path[0] = '\0';
             app->current_kind[0] = '\0';
             app->intro = false;
+            app->intro_waiting = false;
             owe_app_request_render();
         }
         pending_reply(ipc, 0, "load cancelled");
@@ -456,6 +509,7 @@ void owe_render_ipc_poll_still(struct owe_render_ipc *ipc) {
         snprintf(app->current_path, sizeof(app->current_path), "%s", ipc->pending_path);
         snprintf(app->current_kind, sizeof(app->current_kind), "still");
         app->intro = false;
+        app->intro_waiting = false;
         pending_reply(ipc, 1, NULL);
     } else {
         snprintf(ipc->load_error, sizeof(ipc->load_error), "Still decode failed");

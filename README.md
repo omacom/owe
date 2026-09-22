@@ -72,6 +72,8 @@ owe pause                 # Pause video manually
 owe resume                # Clear manual pause
 owe always-animate on|off # Force animation regardless of policy
 owe intro <video>         # Play a one-shot intro video and wait
+owe intro-start <video>   # Start a one-shot intro and return after acceptance
+owe intro-stop            # Stop the active one-shot intro
 owe status                # Daemon status as JSON
 owe config                # Effective config as JSON
 owe render-status         # Renderer status as JSON
@@ -94,8 +96,7 @@ owe --socket "$XDG_RUNTIME_DIR/owe-test/owed.sock" status
 ```
 
 One daemon can run in each runtime directory.
-An intro requires a still background and ends after 30 seconds at most.
-The CLI accepts an absolute or relative intro path.
+An intro requires a still background and ends after 30 seconds at most. The CLI retries its daemon connection for three seconds during session startup and accepts an absolute or relative intro path. Integrations that must commit state before revealing the intro can use `intro-prepare`, write that state, and then call `intro-commit`.
 
 ## IPC reference
 
@@ -122,6 +123,7 @@ Commands:
 - `{"cmd":"render-status"}` — proxy the renderer status reply.
 - `{"cmd":"render-restart"}` — restart `owe-render` and reload current media.
 - `{"cmd":"intro","path":"/abs/file.mp4"}` — play a one-shot intro video over a still background, muted. Reply means it started. Cancel with `intro-stop`.
+- `{"cmd":"intro-commit"}` — allow a prepared intro to replace the shell layer.
 - `{"cmd":"intro-status"}` — reply `{"running":bool,"result":"running|ok|error"}`.
 - `{"cmd":"intro-stop"}` — cancel a running intro.
 - `{"cmd":"shutdown"}` — stop the daemon.
@@ -142,6 +144,8 @@ Commands:
 - `{"cmd":"stop"}` — unload all media.
 - `{"cmd":"status"}` reports the path, kind, pause state, outputs, `time_pos`, `hwdec`, and playback `error`.
 - `{"cmd":"fade","ms":250}` — set the still fade length.
+- `{"cmd":"intro-show"}` — reveal a prepared intro after its outgoing still is ready.
+- `{"cmd":"intro-finish","path":"/abs/still.png","ms":750}` — fade the final intro frame into a still and hold it for the shell handoff.
 - `{"cmd":"feed"}` — start muted video output to the lock feed.
 - `{"cmd":"feed-stop"}` — stop the lock feed and release its buffers.
 - `{"cmd":"skip","outputs":["DP-1"]}` — stop desktop swaps on the named outputs.

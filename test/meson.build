@@ -66,6 +66,10 @@ test('daemon', find_program('python3'),
   args : [files('daemon.py'), owed.full_path(), owe_cli.full_path()],
   depends : [owed, owe_cli], timeout : 45)
 
+test('intro-cli', find_program('python3'),
+  args : [files('intro_cli.py'), owe_cli.full_path()],
+  depends : owe_cli, timeout : 10)
+
 feed_test = executable('owe-feed-test',
   files('feed.c', '../src/common/common_ipc.c', '../src/common/xdg.c', '../src/common/log.c'),
   include_directories : [common_inc, include_directories('../src/render')],

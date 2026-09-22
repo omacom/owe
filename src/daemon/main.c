@@ -50,6 +50,9 @@ static bool battery_poster_active(void) {
 }
 
 #define MEDIA_READY_TIMEOUT_MS 5000
+#define INTRO_PREPARE_TIMEOUT_MS 3000
+#define INTRO_FINISH_TIMEOUT_MS 5000
+#define INTRO_FADE_OUT_MS 750
 
 static int64_t monotonic_ms(void) {
     struct timespec now;
@@ -192,12 +195,13 @@ static int switch_to_shell(void) {
     app->loaded_path[0] = '\0';
     app->loaded_kind[0] = '\0';
     app->restore_path[0] = '\0';
-    app->shell_stop_at_ms = monotonic_ms() + 400;
+    /* Keep the renderer's identical still alive while Quickshell recreates
+     * the background surface. On slower boots that takes more than a second. */
+    app->shell_stop_at_ms = monotonic_ms() + 2000;
     return 0;
 }
 
-/* Start the renderer and release the shell layer so it can receive frames. */
-static int switch_to_renderer(void) {
+static int ensure_renderer(void) {
     owed_app_t *app = &g_app;
     int64_t now = monotonic_ms();
     if (app->renderer_retry_at_ms && now < app->renderer_retry_at_ms) {
@@ -208,18 +212,34 @@ static int switch_to_renderer(void) {
         app->renderer_retry_at_ms = now + 30000;
         return -1;
     }
-    /* Release the layer now. An occluded renderer gets no frame callbacks,
-     * so waiting for readiness before the handoff would deadlock. */
+    app->renderer_retry_at_ms = 0;
+    owed_supervisor_fade(app->supervisor, app->config.fade_ms);
+    return 0;
+}
+
+/* Release the shell only after the renderer has a buffer that can replace it. */
+static int activate_renderer(void) {
+    owed_app_t *app = &g_app;
+    if (!owed_render_is_alive(app->supervisor)) {
+        return -1;
+    }
     if (app->shell_enabled != 0 && owed_shell_plugin_set(false) != 0) {
         app->renderer_retry_at_ms = monotonic_ms() + 30000;
         return -1;
     }
-    app->renderer_retry_at_ms = 0;
     app->engine = OWE_ENGINE_RENDERER;
     app->shell_stop_at_ms = 0;
     app->shell_enabled = 0;
-    owed_supervisor_fade(app->supervisor, app->config.fade_ms);
     return 0;
+}
+
+/* Normal video backgrounds still switch immediately. Boot intros use the two
+ * steps separately so their matching still is decoded before this handoff. */
+static int switch_to_renderer(void) {
+    if (ensure_renderer() != 0) {
+        return -1;
+    }
+    return activate_renderer();
 }
 
 static void process_shell_handoff(void) {
@@ -233,12 +253,17 @@ static void process_shell_handoff(void) {
     }
 }
 
-static bool render_status_flags(const char *reply, bool *ready, bool *error, bool *eof) {
+static bool render_status_flags(const char *reply, bool *ready, bool *error, bool *eof,
+                                bool *has_transition, bool *transition_busy,
+                                bool *transition_done) {
     yyjson_doc *doc = reply ? yyjson_read(reply, strlen(reply), 0) : NULL;
     bool ok = false;
     *ready = false;
     *error = false;
     if (eof) *eof = false;
+    if (has_transition) *has_transition = false;
+    if (transition_busy) *transition_busy = false;
+    if (transition_done) *transition_done = false;
     if (doc) {
         yyjson_val *root = yyjson_doc_get_root(doc);
         yyjson_val *status = yyjson_obj_get(root, "status");
@@ -254,6 +279,15 @@ static bool render_status_flags(const char *reply, bool *ready, bool *error, boo
             *error = true;
         }
         if (eof) *eof = yyjson_get_bool(yyjson_obj_get(root, "eof"));
+        if (has_transition) {
+            *has_transition = yyjson_get_bool(yyjson_obj_get(root, "has_transition"));
+        }
+        if (transition_busy) {
+            *transition_busy = yyjson_get_bool(yyjson_obj_get(root, "transition_busy"));
+        }
+        if (transition_done) {
+            *transition_done = yyjson_get_bool(yyjson_obj_get(root, "transition_done"));
+        }
         yyjson_doc_free(doc);
     }
     return ok;
@@ -261,11 +295,16 @@ static bool render_status_flags(const char *reply, bool *ready, bool *error, boo
 
 static void intro_finish(const char *error) {
     owed_app_t *app = &g_app;
+    bool renderer_owned;
     if (!app->intro_active) {
         return;
     }
+    renderer_owned = app->engine == OWE_ENGINE_RENDERER;
     app->intro_active = 0;
+    app->intro_phase = OWE_INTRO_IDLE;
+    app->intro_committed = false;
     app->intro_deadline_ms = 0;
+    app->intro_phase_deadline_ms = 0;
     app->intro_path[0] = '\0';
     snprintf(app->intro_result, sizeof(app->intro_result), "%s", error ? "error" : "ok");
     if (error) {
@@ -273,18 +312,22 @@ static void intro_finish(const char *error) {
     } else {
         OWE_INFO("intro finished");
     }
-    /* Hand the background back to the shell. The renderer keeps the last
-     * frame until its stop timer fires, so the still underneath takes over. */
-    if (app->engine == OWE_ENGINE_RENDERER) {
+    if (renderer_owned) {
+        /* The renderer now holds the matching still. Keep it for the shell's
+         * full surface startup window, then release it in process_shell_handoff. */
         app->engine = OWE_ENGINE_NONE;
         owed_app_apply_policy();
+    } else if (owed_render_is_alive(app->supervisor)) {
+        /* Preparation failed while the shell was still visible. */
+        owed_supervisor_stop(app->supervisor);
     }
 }
 
 int owed_app_start_intro(const char *path) {
     owed_app_t *app = &g_app;
     char reply[8192] = "";
-    char *quoted;
+    char *quoted = NULL;
+    char *from = NULL;
     char *line = NULL;
     int rc;
     if (!path || !*path || !app->supervisor || app->intro_active) {
@@ -295,35 +338,82 @@ int owed_app_start_intro(const char *path) {
     if (strcmp(app->source_kind, "still") != 0) {
         return -1;
     }
-    if (switch_to_renderer() != 0) {
+    if ((app->power && owed_power_locked(app->power)) ||
+        (app->hypr && owed_hypr_locked(app->hypr)) ||
+        (app->power && owed_power_sleeping(app->power)) ||
+        (app->hypr && owed_hypr_any_fullscreen(app->hypr))) {
+        return -1;
+    }
+    if (ensure_renderer() != 0) {
         return -1;
     }
     quoted = owe_json_quote(path);
-    if (!quoted) {
+    from = owe_json_quote(app->source_path);
+    if (!quoted || !from) {
         goto fail;
     }
     if (asprintf(&line, "{\"cmd\":\"load\",\"path\":%s,\"kind\":\"video\","
-                        "\"once\":true,\"mute\":true}", quoted) < 0) {
-        free(quoted);
+                        "\"once\":true,\"mute\":true,\"from\":%s}", quoted, from) < 0) {
         goto fail;
     }
     free(quoted);
+    quoted = NULL;
+    free(from);
+    from = NULL;
     rc = owed_supervisor_send(app->supervisor, line, reply, sizeof(reply));
     free(line);
+    line = NULL;
     if (rc != 0 || !owe_json_ok(reply)) {
         OWE_ERROR("intro load rejected: %s", reply);
         goto fail;
     }
     app->intro_active = 1;
+    app->intro_phase = OWE_INTRO_PREPARING;
+    app->intro_committed = false;
     snprintf(app->intro_path, sizeof(app->intro_path), "%s", path);
     snprintf(app->intro_result, sizeof(app->intro_result), "running");
     app->intro_deadline_ms = monotonic_ms() + 30000;
-    OWE_INFO("intro playing: %s", path);
+    app->intro_phase_deadline_ms = monotonic_ms() + INTRO_PREPARE_TIMEOUT_MS;
+    app->shell_stop_at_ms = 0;
+    OWE_INFO("intro preparing: %s", path);
     return 0;
 fail:
-    app->engine = OWE_ENGINE_NONE;
-    owed_app_apply_policy();
+    free(quoted);
+    free(from);
+    free(line);
+    if (app->engine != OWE_ENGINE_RENDERER && owed_render_is_alive(app->supervisor)) {
+        owed_supervisor_stop(app->supervisor);
+    }
     return -1;
+}
+
+int owed_app_commit_intro(void) {
+    owed_app_t *app = &g_app;
+    if (!app->intro_active || app->intro_phase != OWE_INTRO_PREPARING) {
+        return -1;
+    }
+    app->intro_committed = true;
+    return 0;
+}
+
+static int intro_begin_finish(void) {
+    owed_app_t *app = &g_app;
+    char reply[8192] = "";
+    char *quoted = owe_json_quote(app->source_path);
+    char *line = NULL;
+    int rc = -1;
+    if (quoted && asprintf(&line, "{\"cmd\":\"intro-finish\",\"path\":%s,\"ms\":%d}",
+                           quoted, INTRO_FADE_OUT_MS) >= 0 &&
+        owed_supervisor_send(app->supervisor, line, reply, sizeof(reply)) == 0 &&
+        owe_json_ok(reply)) {
+        app->intro_phase = OWE_INTRO_FINISHING;
+        app->intro_phase_deadline_ms = monotonic_ms() + INTRO_FINISH_TIMEOUT_MS;
+        OWE_INFO("intro fading to still: %s", app->source_path);
+        rc = 0;
+    }
+    free(quoted);
+    free(line);
+    return rc;
 }
 
 void owed_app_poll_intro(void) {
@@ -332,6 +422,10 @@ void owed_app_poll_intro(void) {
     bool ready = false;
     bool error = false;
     bool eof = false;
+    bool has_transition = false;
+    bool transition_busy = false;
+    bool transition_done = false;
+    int64_t now;
     if (!app->intro_active) {
         return;
     }
@@ -339,7 +433,8 @@ void owed_app_poll_intro(void) {
         intro_finish("renderer stopped");
         return;
     }
-    if (monotonic_ms() >= app->intro_deadline_ms) {
+    now = monotonic_ms();
+    if (now >= app->intro_deadline_ms) {
         intro_finish("intro timed out");
         return;
     }
@@ -355,15 +450,48 @@ void owed_app_poll_intro(void) {
         intro_finish("renderer unreachable");
         return;
     }
-    if (!render_status_flags(reply, &ready, &error, &eof)) {
+    if (!render_status_flags(reply, &ready, &error, &eof, &has_transition,
+                             &transition_busy, &transition_done)) {
         return;
     }
     if (error) {
         intro_finish("intro decode failed");
         return;
     }
-    if (eof) {
-        intro_finish(NULL);
+    if (app->intro_phase == OWE_INTRO_PREPARING) {
+        if (has_transition && app->intro_committed) {
+            if (activate_renderer() != 0) {
+                intro_finish("renderer handoff failed");
+                return;
+            }
+            if (owed_supervisor_intro_show(app->supervisor) != 0) {
+                intro_finish("intro reveal failed");
+                return;
+            }
+            app->intro_phase = OWE_INTRO_PLAYING;
+            app->intro_phase_deadline_ms = 0;
+            OWE_INFO("intro playing: %s", app->intro_path);
+        } else if (!has_transition && !transition_busy) {
+            intro_finish("intro still failed");
+        } else if (now >= app->intro_phase_deadline_ms) {
+            intro_finish("intro still timed out");
+        }
+        return;
+    }
+    if (app->intro_phase == OWE_INTRO_PLAYING && eof) {
+        if (intro_begin_finish() != 0) {
+            intro_finish("intro finish transition failed");
+        }
+        return;
+    }
+    if (app->intro_phase == OWE_INTRO_FINISHING) {
+        if (transition_done) {
+            intro_finish(NULL);
+        } else if (!has_transition && !transition_busy) {
+            intro_finish("intro finish still failed");
+        } else if (now >= app->intro_phase_deadline_ms) {
+            intro_finish("intro finish timed out");
+        }
     }
 }
 
@@ -416,7 +544,7 @@ static void check_media_ready(void) {
     if (owed_supervisor_send(app->supervisor, "{\"cmd\":\"status\"}", reply, sizeof(reply)) != 0) {
         return;
     }
-    if (!render_status_flags(reply, &ready, &error, NULL)) {
+    if (!render_status_flags(reply, &ready, &error, NULL, NULL, NULL, NULL)) {
         return;
     }
     if (error) {

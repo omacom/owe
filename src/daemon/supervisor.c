@@ -259,6 +259,10 @@ int owed_supervisor_stop_render(struct owed_supervisor *s) {
     return send_ok(s, "{\"cmd\":\"stop\"}");
 }
 
+int owed_supervisor_intro_show(struct owed_supervisor *s) {
+    return send_ok(s, "{\"cmd\":\"intro-show\"}");
+}
+
 int owed_supervisor_fade(struct owed_supervisor *s, int ms) {
     char line[128];
     snprintf(line, sizeof(line), "{\"cmd\":\"fade\",\"ms\":%d}", ms);
