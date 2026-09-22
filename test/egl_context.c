@@ -27,6 +27,18 @@ int main(void) {
     CHECK(eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT));
     CHECK(owe_egl_make_current(&egl) == 0);
     CHECK(eglGetCurrentContext() == context);
+    CHECK(compile_shader(GL_FRAGMENT_SHADER, "invalid shader") == 0);
+    CHECK(blit_init(&egl.blit) == 0);
+    GLint max_size = 0;
+    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &max_size);
+    const uint8_t rgba[] = {255, 0, 0, 255};
+    CHECK(owe_egl_tex_from_rgba(&egl, rgba, max_size + 1, 1) == 0);
+    GLuint texture = owe_egl_tex_from_rgba(&egl, rgba, 1, 1);
+    CHECK(texture && glIsTexture(texture));
+    owe_egl_tex_free(&egl, texture);
+    glDeleteBuffers(1, &egl.blit.vbo);
+    glDeleteVertexArrays(1, &egl.blit.vao);
+    glDeleteProgram(egl.blit.prog);
     CHECK(eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT));
     CHECK(eglDestroyContext(display, context));
     CHECK(eglTerminate(display));

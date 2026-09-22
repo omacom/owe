@@ -52,7 +52,7 @@ struct owed_watch {
 int owed_watch_resolve_current(char *buf, unsigned long len) {
     char link[PATH_MAX];
     char raw[PATH_MAX];
-    char resolved[PATH_MAX * 2];
+    char resolved[PATH_MAX];
     ssize_t n;
     if (!buf || len < 2) {
         return -1;
@@ -64,23 +64,10 @@ int owed_watch_resolve_current(char *buf, unsigned long len) {
     if (n < 0) {
         return -1;
     }
-    raw[n] = '\0';
-    if (raw[0] != '/') {
-        char abs[PATH_MAX * 2];
-        char *slash = strrchr(link, '/');
-        if (!slash) {
-            return -1;
-        }
-        *slash = '\0';
-        snprintf(abs, sizeof(abs), "%s/%s", link, raw);
-        if (realpath(abs, resolved) == NULL) {
-            snprintf(resolved, sizeof(resolved), "%s", abs);
-        }
-    } else if (realpath(raw, resolved) == NULL) {
+    if (realpath(link, resolved) == NULL) {
         return -1;
     }
-    snprintf(buf, len, "%s", resolved);
-    return 0;
+    return snprintf(buf, len, "%s", resolved) < (int)len ? 0 : -1;
 }
 
 struct owed_watch *owed_watch_new(void) {

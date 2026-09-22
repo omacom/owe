@@ -52,6 +52,7 @@ typedef struct owed_app {
      * the new video in over it. */
     char transition_from[4096];
     bool media_pending;
+    bool media_ready;
     int64_t media_deadline_ms;
 
     owed_async_job_t *job;
@@ -74,7 +75,6 @@ void owed_app_on_policy_changed(void);
 void owed_app_on_job_done(void);
 void owed_app_on_renderer_restarted(void);
 void owed_app_apply_policy(void);
-void owed_app_emit_event(const char *name, const char *detail);
 const char *owed_app_engine(void);
 bool owed_app_renderer_expected(void);
 

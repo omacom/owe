@@ -193,6 +193,11 @@ void LockFeed::connectSocket() {
     m_pendingFds.clear();
     m_notifier = new QSocketNotifier(fd, QSocketNotifier::Read, this);
     connect(m_notifier, &QSocketNotifier::activated, this, &LockFeed::readSocket);
+    m_writeNotifier = new QSocketNotifier(fd, QSocketNotifier::Write, this);
+    m_writeNotifier->setEnabled(false);
+    connect(m_writeNotifier, &QSocketNotifier::activated, this, [this]() {
+        if (!flushAcks()) retrySocket();
+    });
 }
 
 void LockFeed::disconnectSocket() {
@@ -201,6 +206,11 @@ void LockFeed::disconnectSocket() {
         m_notifier->setEnabled(false);
         m_notifier->deleteLater();
         m_notifier = nullptr;
+    }
+    if (m_writeNotifier) {
+        m_writeNotifier->setEnabled(false);
+        m_writeNotifier->deleteLater();
+        m_writeNotifier = nullptr;
     }
     if (m_fd >= 0) {
         ::close(m_fd);
@@ -211,6 +221,7 @@ void LockFeed::disconnectSocket() {
     }
     m_pendingFds.clear();
     m_buffer.clear();
+    m_acks.clear();
     resetMaps();
     m_frame = QImage();
     update();
@@ -234,6 +245,21 @@ void LockFeed::resetMaps() {
     m_width = 0;
     m_height = 0;
     m_stride = 0;
+}
+
+bool LockFeed::flushAcks() {
+    while (!m_acks.isEmpty()) {
+        const ssize_t bytes = send(m_fd, m_acks.constData(), (size_t)m_acks.size(), MSG_NOSIGNAL);
+        if (bytes < 0 && errno == EINTR) continue;
+        if (bytes < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+            m_writeNotifier->setEnabled(true);
+            return true;
+        }
+        if (bytes <= 0) return false;
+        m_acks.remove(0, bytes);
+    }
+    if (m_writeNotifier) m_writeNotifier->setEnabled(false);
+    return true;
 }
 
 void LockFeed::readSocket() {
@@ -351,7 +377,9 @@ bool LockFeed::handleMessage(const QByteArray &message, const QVector<int> &fds)
         m_frame = m_frameCache->image;
         update();
         const QByteArray ack = writeMessage(Ack, (quint32)slot, msg.seq);
-        return send(m_fd, ack.constData(), (size_t)ack.size(), MSG_NOSIGNAL) == ack.size();
+        if (m_acks.size() + ack.size() > 8 * (int)sizeof(FeedMessage)) return false;
+        m_acks.append(ack);
+        return flushAcks();
     }
     return false;
 }

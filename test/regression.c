@@ -88,9 +88,40 @@ static void test_ipc(void) {
     CHECK(owe_ipc_recv_line(fds[1], line, sizeof(line)) < 0);
     close(fds[0]); close(fds[1]);
     CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
-    CHECK(owe_ipc_send_line(fds[0], "12345678") == 0);
+    char oversized[1025];
+    memset(oversized, 'x', sizeof(oversized) - 1);
+    oversized[sizeof(oversized) - 1] = '\0';
+    CHECK(owe_ipc_send_line(fds[0], oversized) == 0);
     CHECK(owe_ipc_recv_line(fds[1], line, 4) < 0);
+    CHECK(errno == EMSGSIZE);
+    CHECK(send(fds[0], "next\n", 5, MSG_NOSIGNAL) < 0);
     close(fds[0]); close(fds[1]);
+
+    /* Each fragment must share the same reply deadline. */
+    CHECK(socketpair(AF_UNIX, SOCK_STREAM, 0, fds) == 0);
+    pid_t child = fork();
+    CHECK(child >= 0);
+    if (child == 0) {
+        close(fds[1]);
+        for (int i = 0; i < 20; i++) {
+            if (send(fds[0], "x", 1, MSG_NOSIGNAL) != 1) break;
+            usleep(20000);
+        }
+        close(fds[0]);
+        _exit(0);
+    }
+    close(fds[0]);
+    double start = seconds();
+    CHECK(owe_ipc_recv_line_timeout(fds[1], line, sizeof(line), 100) < 0);
+    CHECK(errno == ETIMEDOUT && seconds() - start < 0.35);
+    close(fds[1]);
+    CHECK(waitpid(child, NULL, 0) == child);
+
+    char long_path[200];
+    memset(long_path, 'x', sizeof(long_path) - 1);
+    long_path[sizeof(long_path) - 1] = '\0';
+    CHECK(owe_ipc_connect(long_path) < 0 && errno == ENAMETOOLONG);
+    CHECK(owe_ipc_listen(long_path) < 0 && errno == ENAMETOOLONG);
 
     char sock[PATH_MAX];
     path_for(sock, sizeof(sock), "test.sock");
@@ -110,6 +141,10 @@ static void test_ipc(void) {
 }
 
 static void test_display_state(void) {
+    const char *setting = getenv("OWE_DRM_DPMS");
+    char *saved = setting ? strdup(setting) : NULL;
+    CHECK(!setting || saved);
+    CHECK(unsetenv("OWE_DRM_DPMS") == 0);
     directory("drm/card0-eDP-1");
     char drm[PATH_MAX];
     path_for(drm, sizeof(drm), "drm");
@@ -120,6 +155,13 @@ static void test_display_state(void) {
     CHECK(owe_drm_all_off(drm) == 0);
     put("drm/card0-eDP-1/dpms", "Off\n");
     CHECK(owe_drm_all_off(drm) == 1);
+    CHECK(owe_drm_connector_state(drm, "eDP-1") == 1);
+    CHECK(setenv("OWE_DRM_DPMS", "0", 1) == 0);
+    CHECK(!owe_drm_dpms_enabled());
+    CHECK(owe_drm_all_off(drm) == -1);
+    CHECK(owe_drm_connector_state(drm, "eDP-1") == -1);
+    CHECK(setenv("OWE_DRM_DPMS", "1", 1) == 0);
+    CHECK(owe_drm_dpms_enabled() && owe_drm_all_off(drm) == 1);
     directory("drm/card0-DP-1");
     put("drm/card0-DP-1/status", "connected\n");
     CHECK(owe_drm_all_off(drm) == -1);
@@ -127,6 +169,17 @@ static void test_display_state(void) {
     CHECK(owe_drm_all_off(drm) == 0);
     put("drm/card0-DP-1/status", "disconnected\n");
     CHECK(owe_drm_all_off(drm) == 1);
+
+    directory("drm/card1-eDP-1");
+    put("drm/card1-eDP-1/status", "connected\n");
+    put("drm/card1-eDP-1/dpms", "On\n");
+    CHECK(owe_drm_all_off(drm) == 0);
+    CHECK(owe_drm_connector_state(drm, "eDP-1") == -1);
+    put("drm/card1-eDP-1/status", "disconnected\n");
+    CHECK(owe_drm_connector_state(drm, "eDP-1") == 1);
+    if (saved) CHECK(setenv("OWE_DRM_DPMS", saved, 1) == 0);
+    else CHECK(unsetenv("OWE_DRM_DPMS") == 0);
+    free(saved);
 
     const char *monitors = "[{\"activeWorkspace\":{\"id\":1},\"dpmsStatus\":true}]";
     CHECK(!owe_outputs_covered("[{\"workspace\":{\"id\":2},\"fullscreen\":2}]", monitors, true));
@@ -178,6 +231,16 @@ static void test_symlink(void) {
     CHECK(owed_watch_resolve_current(resolved, sizeof(resolved)) == 0);
     CHECK(strcmp(input, resolved) == 0);
     CHECK(owed_watch_set_current(root) < 0);
+    char link[PATH_MAX];
+    CHECK(owe_omarchy_background_link(link, sizeof(link)) == 0);
+    CHECK(unlink(link) == 0);
+    CHECK(symlink("../../missing.png", link) == 0);
+    CHECK(owed_watch_resolve_current(resolved, sizeof(resolved)) < 0);
+    CHECK(unlink(link) == 0);
+    CHECK(symlink("../../file\"\\\n.png", link) == 0);
+    CHECK(owed_watch_resolve_current(resolved, sizeof(resolved)) == 0);
+    CHECK(!strcmp(input, resolved));
+    CHECK(owed_watch_resolve_current(resolved, 4) < 0);
     groups++;
 }
 
@@ -219,7 +282,7 @@ static void test_jobs(void) {
     CHECK(setenv("OWE_TEST_FFMPEG_MODE", "ok", 1) == 0);
     job = owed_async_gif(input, 20, 20, 640, 360);
     CHECK(job);
-    struct owed_supervisor *supervisor = owed_supervisor_new();
+    struct owed_supervisor *supervisor = owed_supervisor_new(NULL);
     CHECK(supervisor);
     struct pollfd pfd = {.fd = owed_async_job_fd(job), .events = POLLIN};
     double deadline = seconds() + 5;
@@ -295,6 +358,25 @@ static void test_config_errors(void) {
     put("config.toml", "[pause]\nfullscreen=flase\n");
     CHECK(owe_config_load(&config, path) < 0);
     CHECK(config.pause_fullscreen);
+    put("config.toml", "[pause]\nblocklist = [\"a#b\", 'c,d', \"quote\\\"name\"] # comment\n");
+    CHECK(owe_config_load(&config, path) == 0);
+    CHECK(config.blocklist_count == 3);
+    CHECK(!strcmp(config.blocklist[0], "a#b") && !strcmp(config.blocklist[1], "c,d"));
+    CHECK(!strcmp(config.blocklist[2], "quote\"name"));
+    const char *invalid[] = {
+        "[pause]\nblocklist = [\"a\" \"b\"]\n",
+        "[pause]\nblocklist = [\"a\",,\"b\"]\n",
+        "[pause]\nblocklist = [\"unclosed]\n",
+        "[pause]\nblocklist = [a,b,c,d,e,f,g,h,i,j,k,l,m,n,o,p,q]\n",
+        "[pause]\nblocklist = [\"abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijkl\"]\n",
+        "[pause\nfullscreen = false\n",
+        "[pause]\nfullscreen false\n",
+    };
+    for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+        put("config.toml", invalid[i]);
+        CHECK(owe_config_load(&config, path) < 0);
+        CHECK(config.blocklist_count == 3 && !strcmp(config.blocklist[0], "a#b"));
+    }
     groups++;
 }
 

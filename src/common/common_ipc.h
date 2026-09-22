@@ -9,6 +9,7 @@
 #define OWE_IPC_VERSION 1
 #define OWE_IPC_MAX_CLIENTS 16
 #define OWE_IPC_CLIENT_IDLE_MS 120000
+#define OWE_STILL_TIMEOUT_MS 30000
 
 /* Shared, bounded JSON-line transport for the daemon and renderer. */
 struct owe_ipc_client {
@@ -38,6 +39,7 @@ int owe_ipc_set_timeout(int fd, int ms);
 
 int owe_ipc_send_line(int fd, const char *line);
 int owe_ipc_recv_line(int fd, char *buf, size_t len);
+int owe_ipc_recv_line_timeout(int fd, char *buf, size_t len, int timeout_ms);
 
 typedef struct owe_ipc_server owe_ipc_server_t;
 

@@ -1,6 +1,5 @@
 #include <errno.h>
 #include <limits.h>
-#include <poll.h>
 #include <spawn.h>  /* system */
 #include <stdio.h>
 #include <stdlib.h>
@@ -12,11 +11,21 @@
 #include "json.h"
 #include "xdg.h"
 
+static const char *socket_override;
+
+static int socket_path(char *path, size_t len, bool renderer) {
+    if (!socket_override) {
+        return renderer ? owe_socket_path_render(path, len) : owe_socket_path_daemon(path, len);
+    }
+    if (renderer) return owe_socket_path_sibling(socket_override, "render.sock", path, len);
+    return snprintf(path, len, "%s", socket_override) < (int)len ? 0 : -1;
+}
+
 static int daemon_call(const char *line, int print_reply) {
     char path[PATH_MAX];
     char reply[OWE_IPC_MAX_LINE];
     int fd;
-    if (owe_socket_path_daemon(path, sizeof(path)) != 0) {
+    if (socket_path(path, sizeof(path), false) != 0) {
         fprintf(stderr, "owe: cannot resolve daemon socket\n");
         return 1;
     }
@@ -31,9 +40,7 @@ static int daemon_call(const char *line, int print_reply) {
         return 1;
     }
     {
-        struct pollfd pfd = { .fd = fd, .events = POLLIN };
-        int rc = poll(&pfd, 1, 10000);
-        if (rc > 0 && owe_ipc_recv_line(fd, reply, sizeof(reply)) == 0) {
+        if (owe_ipc_recv_line_timeout(fd, reply, sizeof(reply), 10000) == 0) {
             close(fd);
             if (print_reply) {
                 printf("%s\n", reply);
@@ -50,7 +57,7 @@ static int render_call(const char *line) {
     char path[PATH_MAX];
     char reply[OWE_IPC_MAX_LINE];
     int fd;
-    if (owe_socket_path_render(path, sizeof(path)) != 0) {
+    if (socket_path(path, sizeof(path), true) != 0) {
         fprintf(stderr, "owe: cannot resolve render socket\n");
         return 1;
     }
@@ -65,9 +72,7 @@ static int render_call(const char *line) {
         return 1;
     }
     {
-        struct pollfd pfd = { .fd = fd, .events = POLLIN };
-        int rc = poll(&pfd, 1, 10000);
-        if (rc > 0 && owe_ipc_recv_line(fd, reply, sizeof(reply)) == 0) {
+        if (owe_ipc_recv_line_timeout(fd, reply, sizeof(reply), 10000) == 0) {
             close(fd);
             printf("%s\n", reply);
             return owe_json_ok(reply) ? 0 : 1;
@@ -79,33 +84,33 @@ static int render_call(const char *line) {
 }
 
 static int reply_line(int fd, char *reply, size_t len, int timeout_ms) {
-    struct pollfd pfd = { .fd = fd, .events = POLLIN };
-    if (poll(&pfd, 1, timeout_ms) <= 0) {
-        return -1;
-    }
-    return owe_ipc_recv_line(fd, reply, len) == 0 ? 0 : -1;
+    return owe_ipc_recv_line_timeout(fd, reply, len, timeout_ms);
 }
 
 /* Play a one-shot intro video and block until it ends. The shell starts this
  * when a still background has a matching boot intro and reveals the still
  * after the process exits. */
 static int cmd_intro(const char *path) {
-    char socket_path[PATH_MAX];
+    char sock[PATH_MAX];
+    char resolved[PATH_MAX];
     char reply[OWE_IPC_MAX_LINE];
     char line[OWE_IPC_MAX_LINE];
     char *quoted;
     int fd;
-    int i;
-    if (owe_socket_path_daemon(socket_path, sizeof(socket_path)) != 0) {
+    if (!realpath(path, resolved)) {
+        fprintf(stderr, "owe: file not found: %s\n", path);
+        return 1;
+    }
+    if (socket_path(sock, sizeof(sock), false) != 0) {
         fprintf(stderr, "owe: cannot resolve daemon socket\n");
         return 1;
     }
-    fd = owe_ipc_connect(socket_path);
+    fd = owe_ipc_connect(sock);
     if (fd < 0) {
-        fprintf(stderr, "owe: daemon not running (no socket at %s)\n", socket_path);
+        fprintf(stderr, "owe: daemon not running at %s\n", sock);
         return 1;
     }
-    quoted = owe_json_quote(path);
+    quoted = owe_json_quote(resolved);
     if (!quoted || snprintf(line, sizeof(line), "{\"cmd\":\"intro\",\"path\":%s}", quoted) >=
                        (int)sizeof(line)) {
         free(quoted);
@@ -113,7 +118,7 @@ static int cmd_intro(const char *path) {
         return 1;
     }
     free(quoted);
-    if (owe_ipc_send_line(fd, line) != 0 || reply_line(fd, reply, sizeof(reply), 5000) != 0) {
+    if (owe_ipc_send_line(fd, line) != 0 || reply_line(fd, reply, sizeof(reply), 10000) != 0) {
         fprintf(stderr, "owe: no reply from daemon\n");
         close(fd);
         return 1;
@@ -123,15 +128,29 @@ static int cmd_intro(const char *path) {
         close(fd);
         return 1;
     }
-    for (i = 0; i < 240; i++) {
+    int64_t deadline = owe_ipc_now_ms() + 35000;
+    while (owe_ipc_now_ms() < deadline) {
+        int64_t remaining = deadline - owe_ipc_now_ms();
+        int timeout = remaining < 5000 ? (int)remaining : 5000;
         if (owe_ipc_send_line(fd, "{\"cmd\":\"intro-status\"}") != 0 ||
-            reply_line(fd, reply, sizeof(reply), 5000) != 0) {
+            reply_line(fd, reply, sizeof(reply), timeout) != 0) {
             fprintf(stderr, "owe: intro status unavailable\n");
             close(fd);
             return 1;
         }
-        if (strstr(reply, "\"running\":false")) {
-            int ok = strstr(reply, "\"result\":\"ok\"") != NULL;
+        yyjson_doc *doc = yyjson_read(reply, strlen(reply), 0);
+        yyjson_val *root = doc ? yyjson_doc_get_root(doc) : NULL;
+        yyjson_val *running = yyjson_obj_get(root, "running");
+        bool valid = yyjson_equals_str(yyjson_obj_get(root, "status"), "ok") && yyjson_is_bool(running);
+        bool finished = valid && !yyjson_get_bool(running);
+        bool ok = yyjson_equals_str(yyjson_obj_get(root, "result"), "ok");
+        yyjson_doc_free(doc);
+        if (!valid) {
+            fprintf(stderr, "owe: invalid intro status: %s\n", reply);
+            close(fd);
+            return 1;
+        }
+        if (finished) {
             if (!ok) {
                 fprintf(stderr, "owe: intro ended early: %s\n", reply);
             }
@@ -148,7 +167,9 @@ static int cmd_intro(const char *path) {
 
 static void usage(const char *argv0) {
     fprintf(stderr,
-            "Usage: %s <command> [args]\n"
+            "Usage: %s [--socket PATH] <command> [args]\n"
+            "  --socket PATH           Override the daemon socket before the command\n"
+            "  --version               Show the version\n"
             "\n"
             "Background:\n"
             "  set <path>              Update the Omarchy background symlink\n"
@@ -213,11 +234,25 @@ static int cmd_current(void) {
 int main(int argc, char **argv) {
     char line[OWE_IPC_MAX_LINE];
     const char *cmd;
+    const char *program = argv[0];
+    while (argc > 1 && strcmp(argv[1], "--socket") == 0) {
+        if (argc < 4) {
+            usage(program);
+            return 1;
+        }
+        socket_override = argv[2];
+        argv += 2;
+        argc -= 2;
+    }
     if (argc < 2) {
-        usage(argv[0]);
+        usage(program);
         return 1;
     }
     cmd = argv[1];
+    if (strcmp(cmd, "--version") == 0) {
+        printf("owe %s\n", OWE_VERSION);
+        return 0;
+    }
     if (strcmp(cmd, "status") == 0) {
         return daemon_call("{\"cmd\":\"status\"}", 1);
     }
@@ -324,9 +359,9 @@ int main(int argc, char **argv) {
         return daemon_call("{\"cmd\":\"shutdown\"}", 1);
     }
     if (strcmp(cmd, "--help") == 0 || strcmp(cmd, "-h") == 0 || strcmp(cmd, "help") == 0) {
-        usage(argv[0]);
+        usage(program);
         return 0;
     }
-    usage(argv[0]);
+    usage(program);
     return 1;
 }

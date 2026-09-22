@@ -11,6 +11,48 @@ Related documents:
 - [Renderer and daemon architecture](architecture.md)
 - [Omarchy integration contracts](theme-contract.md)
 
+## Review fixes, 2026-09-22
+
+The daemon accepts asynchronous still loads and checks readiness without a deferred load reply.
+A seven-second decoder probe confirms that status and pause remain available beyond the old IPC timeout.
+Expired loads cancel their worker and retain fallback media.
+Renderer status must match the requested path and kind before the daemon accepts readiness.
+
+Output discovery now waits for the initial registry globals.
+Tests cover output-first announcements, output removal, shader failures, and oversized textures.
+The renderer restores the desktop pause state after a lock feed stops.
+The QML client queues partial acknowledgements.
+
+The OpenGL test also verifies one-shot EOF with the final frame still present.
+Each media load reapplies the pause policy because libmpv can pause itself at one-shot EOF.
+Zero-fade checks wait for readiness within a two-second bound instead of assuming a 200-millisecond startup.
+These checks use software OpenGL and do not replace the live GPU and power matrix below.
+
+### Live verification for 0.2.7
+
+The release candidate passes 17 live checks on Intel Arc B390 with Mesa 26.2.3 and Hyprland 0.56.2.
+The physical output uses 2880x1800 at 120 Hz with scale 2.
+Pixel samples from the compositor confirm visible video colors and the still image.
+
+| Check | Result |
+| --- | --- |
+| 1080p and 4K H.264 | Visible frames with VAAPI decode |
+| H.264 with a silent AAC track | Playback advances with audio enabled |
+| GIF with a cold cache | Conversion completes and video appears |
+| Still handoff and still-to-video transition | Correct visible media and renderer ownership |
+| One-shot intro | EOF returns the background to the shell |
+| Fragmented IPC and invalid-image rejection | Replies remain responsive and video continues |
+| Idle and manual pause | Idle resume preserves manual pause |
+| Fullscreen coverage | Pause and resume follow the test window |
+| DPMS off and on | IPC remains responsive and frames resume |
+| Renderer termination and corrupt media | Recovery restores playable media |
+| Headless output hotplug and removal | Playback continues through both changes |
+| QML lock-feed consumer | The current plugin displays video through the live GPU |
+| Software decode and DRM diagnostic override | Visible frames with `hwdec=no` and `drm_dpms=false` |
+| Session restoration | Original wallpaper, workspace, service, and playback flags return |
+
+This run does not verify the reported NVIDIA RTX 3060 failure or suspend and resume.
+
 ## Subsequent correctness and performance fixes
 
 The later project review adds coverage for oversized conversion results,
@@ -305,7 +347,7 @@ The daemon synchronously waits for the load reply with a five-second receive tim
 - [x] Keep OpenGL texture upload on the render thread.
 - [x] Cancel obsolete decode requests after a new selection.
 - [ ] Measure pause and status latency during large-image loads.
-- [ ] Test slow loads that exceed the current IPC timeout.
+- [x] Test slow loads that exceed the current IPC timeout.
 
 References: `src/render/render_ipc.c:127–135`, `src/render/still.c:192–222`, `src/daemon/supervisor.c:189–199`.
 

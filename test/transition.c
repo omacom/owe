@@ -1,4 +1,19 @@
+#include <stdbool.h>
+#include <epoxy/gl.h>
+#include <EGL/egl.h>
+
+static bool fail_next_swap;
+static EGLBoolean test_swap_buffers(EGLDisplay display, EGLSurface surface) {
+    if (fail_next_swap) {
+        fail_next_swap = false;
+        return eglSwapBuffers(display, EGL_NO_SURFACE);
+    }
+    return eglSwapBuffers(display, surface);
+}
+
+#define eglSwapBuffers test_swap_buffers
 #include "../src/render/egl.c"
+#undef eglSwapBuffers
 #include "../src/render/wayland.c"
 #include "render_ipc.h"
 #include "common_ipc.h"
@@ -25,6 +40,7 @@ static bool capture;
 static int capture_stage;
 static bool callbacks_enabled = true;
 static bool poll_transition = true;
+static bool poll_still = true;
 
 owe_app_t *owe_app_get(void) { return &app; }
 void owe_app_request_render(void) { owe_wayland_request_render(&wl); }
@@ -91,7 +107,7 @@ static int init_display(void) {
 
 static void tick(void) {
     owe_render_ipc_poll_clients(app.ipc);
-    owe_render_ipc_poll_still(app.ipc);
+    if (poll_still) owe_render_ipc_poll_still(app.ipc);
     if (poll_transition && owe_still_busy(app.transition)) {
         owe_still_poll(app.transition);
         owe_app_request_render();
@@ -132,6 +148,11 @@ static void tick(void) {
 static void run_ms(int ms) {
     int64_t end = now_ms() + ms;
     do { tick(); } while (now_ms() < end);
+}
+
+static void await_video(void) {
+    int64_t deadline = now_ms() + 2000;
+    while (!owe_mpv_ready(app.mpv) && now_ms() < deadline) tick();
 }
 
 static void command(const char *line) {
@@ -196,6 +217,29 @@ int main(void) {
            samples[1][2] > 240 && samples[1][0] < 10,
            "a cold MP4 load displays video without a transition image");
 
+    uint64_t swaps = outputs[0].swaps;
+    if (outputs[0].frame_callback) frame_done(&outputs[0], outputs[0].frame_callback, 0);
+    owe_app_request_render();
+    fail_next_swap = true;
+    owe_wayland_render_pending(&wl);
+    verify(!fail_next_swap && outputs[0].swap_failures == 1 && outputs[0].swaps == swaps &&
+           outputs[0].frame_ready && outputs[0].frame_pending && !outputs[0].frame_callback,
+           "a failed swap releases its undeliverable frame callback");
+    owe_wayland_render_pending(&wl);
+    verify(outputs[0].swaps == swaps + 1 && outputs[0].frame_callback,
+           "the next frame retries after a failed swap");
+    CHECK(owe_ipc_send_line(client, "{\"cmd\":\"status\"}") == 0);
+    owe_render_ipc_poll_clients(app.ipc);
+    char status[8192];
+    CHECK(owe_ipc_recv_line(client, status, sizeof(status)) == 0);
+    yyjson_doc *doc = yyjson_read(status, strlen(status), 0);
+    CHECK(doc);
+    yyjson_val *state = yyjson_doc_get_root(doc);
+    CHECK(yyjson_get_uint(yyjson_obj_get(state, "swaps")) > 0);
+    CHECK(yyjson_get_uint(yyjson_obj_get(state, "swap_failures")) == 1);
+    CHECK(yyjson_get_bool(yyjson_obj_get(state, "drm_dpms")) == owe_drm_dpms_enabled());
+    yyjson_doc_free(doc);
+
     command("{\"cmd\":\"stop\"}");
     run_ms(50);
     void *unavailable_surface = outputs[0].egl_surface;
@@ -251,7 +295,7 @@ int main(void) {
 
     still();
     video(0);
-    run_ms(200);
+    await_video();
     verify(!owe_still_has_image(app.transition) && !owe_still_busy(app.transition), "zero fade skips the overlay");
     verify(samples[0][2] > 240 && samples[0][0] < 10, "zero fade displays the video");
 
@@ -286,6 +330,47 @@ int main(void) {
     still();
     verify(!owe_still_has_image(app.transition) && !owe_still_busy(app.transition),
            "a still replacement clears the unfinished overlay");
+
+    video(0);
+    await_video();
+    poll_still = false;
+    snprintf(line, sizeof(line), "{\"cmd\":\"load\",\"path\":\"%s/red.png\",\"kind\":\"still\",\"async\":true}", root);
+    command(line);
+    verify(strcmp(app.current_kind, "video") == 0 && owe_still_busy(app.still),
+           "an asynchronous still reply precedes the texture upload");
+    command("{\"cmd\":\"pause\"}");
+    verify(owe_mpv_is_paused(app.mpv), "pause remains available during a pending still load");
+    poll_still = true;
+    run_ms(200);
+    verify(strcmp(app.current_kind, "still") == 0 && samples[0][0] > 240,
+           "the accepted still replaces video after its texture upload");
+
+    snprintf(line, sizeof(line), "{\"cmd\":\"load\",\"path\":\"%s/blue.mp4\",\"kind\":\"video\",\"once\":true,\"mute\":true}", root);
+    command(line);
+    run_ms(300);
+    await_video();
+    verify(owe_mpv_ready(app.mpv) && !owe_mpv_eof(app.mpv),
+           "a one-shot video does not inherit the previous media EOF");
+    run_ms(3100);
+    verify(owe_mpv_eof(app.mpv) && samples[0][2] > 240,
+           "a one-shot video reports EOF while it holds the final frame");
+    video(0);
+    await_video();
+    printf("Loop after intro: ready=%d, paused=%d, eof=%d, position=%.3f\n",
+           owe_mpv_ready(app.mpv), owe_mpv_is_paused(app.mpv), owe_mpv_eof(app.mpv), owe_mpv_time_pos(app.mpv));
+    verify(!owe_mpv_eof(app.mpv) && owe_mpv_ready(app.mpv),
+           "normal playback clears one-shot EOF state");
+    double before = owe_mpv_time_pos(app.mpv);
+    run_ms(300);
+    verify(!owe_mpv_is_paused(app.mpv) && owe_mpv_time_pos(app.mpv) > before + 0.1,
+           "normal playback advances after a one-shot video");
+
+    command("{\"cmd\":\"fade\",\"ms\":250}");
+    snprintf(line, sizeof(line), "{\"cmd\":\"load\",\"path\":\"%s/blue.mp4\",\"kind\":\"video\",\"from\":\"/no-such-owe-image.png\"}", root);
+    command(line);
+    await_video();
+    verify(owe_mpv_ready(app.mpv) && !owe_still_busy(app.transition) && samples[0][2] > 240,
+           "an unavailable optional transition image does not reject a video");
 
     close(client);
     owe_render_ipc_free(app.ipc);

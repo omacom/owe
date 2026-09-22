@@ -16,6 +16,12 @@
 #include "viewporter-client-protocol.h"
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
 
+struct pending_output {
+    uint32_t name;
+    uint32_t version;
+    struct pending_output *next;
+};
+
 struct owe_wayland {
     struct wl_display *display;
     struct wl_registry *registry;
@@ -26,6 +32,8 @@ struct owe_wayland {
     struct owe_egl *egl;
     owe_output_t *outputs;
     int output_count;
+    bool registry_ready;
+    struct pending_output *pending_outputs;
 };
 
 static void output_free(struct owe_wayland *wl, owe_output_t *out);
@@ -222,7 +230,7 @@ static owe_output_t *output_new(struct owe_wayland *wl, struct wl_output *wl_out
     if (wl->viewporter) {
         out->viewport = wp_viewporter_get_viewport(wl->viewporter, out->surface);
     }
-    if (wl->fractional_scale) {
+    if (wl->fractional_scale && out->viewport) {
         out->fractional =
             wp_fractional_scale_manager_v1_get_fractional_scale(wl->fractional_scale, out->surface);
         if (out->fractional) {
@@ -303,7 +311,10 @@ static void registry_global(void *data, struct wl_registry *registry, uint32_t n
                             const char *interface, uint32_t version) {
     struct owe_wayland *wl = data;
     if (strcmp(interface, wl_compositor_interface.name) == 0) {
-        wl->compositor = wl_registry_bind(registry, name, &wl_compositor_interface, 4);
+        if (version >= 3) {
+            wl->compositor = wl_registry_bind(registry, name, &wl_compositor_interface,
+                                               version >= 4 ? 4 : version);
+        }
     } else if (strcmp(interface, zwlr_layer_shell_v1_interface.name) == 0) {
         wl->layer_shell = wl_registry_bind(registry, name, &zwlr_layer_shell_v1_interface, 1);
     } else if (strcmp(interface, wp_viewporter_interface.name) == 0) {
@@ -311,20 +322,44 @@ static void registry_global(void *data, struct wl_registry *registry, uint32_t n
     } else if (strcmp(interface, wp_fractional_scale_manager_v1_interface.name) == 0) {
         wl->fractional_scale = wl_registry_bind(registry, name, &wp_fractional_scale_manager_v1_interface, 1);
     } else if (strcmp(interface, wl_output_interface.name) == 0) {
-        struct wl_output *wo;
         uint32_t v = version >= 4 ? 4 : version;
-        wo = wl_registry_bind(registry, name, &wl_output_interface, v);
-        if (wo && wl->compositor && wl->layer_shell) {
-            output_new(wl, wo, name);
-        } else if (wo) {
-            wl_output_destroy(wo);
+        if (wl->registry_ready && wl->compositor && wl->layer_shell) {
+            struct wl_output *wo = wl_registry_bind(registry, name, &wl_output_interface, v);
+            if (wo) output_new(wl, wo, name);
+        } else {
+            struct pending_output *pending = calloc(1, sizeof(*pending));
+            if (pending) {
+                *pending = (struct pending_output){name, v, wl->pending_outputs};
+                wl->pending_outputs = pending;
+            }
         }
+    }
+}
+
+/* Bind all initial globals before the output surfaces use optional protocols. */
+static void create_pending_outputs(struct owe_wayland *wl) {
+    wl->registry_ready = true;
+    while (wl->pending_outputs) {
+        struct pending_output *pending = wl->pending_outputs;
+        wl->pending_outputs = pending->next;
+        struct wl_output *wo = wl_registry_bind(wl->registry, pending->name,
+                                                &wl_output_interface, pending->version);
+        if (wo) output_new(wl, wo, pending->name);
+        free(pending);
     }
 }
 
 static void registry_global_remove(void *data, struct wl_registry *registry, uint32_t name) {
     struct owe_wayland *wl = data;
     (void)registry;
+    for (struct pending_output **link = &wl->pending_outputs; *link; link = &(*link)->next) {
+        if ((*link)->name == name) {
+            struct pending_output *pending = *link;
+            *link = pending->next;
+            free(pending);
+            return;
+        }
+    }
     for (owe_output_t *out = wl->outputs; out; out = out->next) {
         if (out->registry_name == name) {
             output_free(wl, out);
@@ -351,15 +386,16 @@ struct owe_wayland *owe_wayland_new(void) {
     }
     wl->registry = wl_display_get_registry(wl->display);
     wl_registry_add_listener(wl->registry, &registry_listener, wl);
-    wl_display_roundtrip(wl->display);
-    if (!wl->compositor || !wl->layer_shell) {
+    if (wl_display_roundtrip(wl->display) < 0 || !wl->compositor || !wl->layer_shell) {
         OWE_ERROR("compositor lacks wl_compositor or wlr-layer-shell");
-        wl_registry_destroy(wl->registry);
-        wl_display_disconnect(wl->display);
-        free(wl);
+        owe_wayland_free(wl);
         return NULL;
     }
-    wl_display_roundtrip(wl->display);
+    create_pending_outputs(wl);
+    if (wl_display_roundtrip(wl->display) < 0) {
+        owe_wayland_free(wl);
+        return NULL;
+    }
     OWE_INFO("wayland ready, outputs=%d", wl->output_count);
     return wl;
 }
@@ -369,6 +405,11 @@ void owe_wayland_destroy_outputs(struct owe_wayland *wl) {
     owe_output_t *next;
     if (!wl) {
         return;
+    }
+    while (wl->pending_outputs) {
+        struct pending_output *pending = wl->pending_outputs;
+        wl->pending_outputs = pending->next;
+        free(pending);
     }
     for (out = wl->outputs; out; out = next) {
         next = out->next;
@@ -575,6 +616,7 @@ void owe_wayland_render_pending(struct owe_wayland *wl) {
         for (out = wl->outputs; out; out = out->next) {
             struct wl_callback *cb;
             bool video_drawn = false;
+            bool transition_drawn = false;
             if (!out->configured || !out->frame_pending || !out->egl_surface) {
                 continue;
             }
@@ -585,19 +627,17 @@ void owe_wayland_render_pending(struct owe_wayland *wl) {
             if (want_video) {
                 owe_mpv_render_output(app->mpv, out);
                 video_drawn = true;
-                rendered_video = 1;
             } else if (app->still && owe_still_has_image(app->still)) {
                 owe_still_render_output(app->still, out);
             } else if (app->mpv && owe_mpv_has_video(app->mpv)) {
                 owe_mpv_render_output(app->mpv, out);
                 video_drawn = true;
-                rendered_video = 1;
             } else {
                 owe_egl_clear_output(app->egl, out, 0.0f, 0.0f, 0.0f, 1.0f);
             }
             if (video_drawn && owe_still_has_image(app->transition)) {
                 owe_still_render_overlay(app->transition, out);
-                rendered_transition = true;
+                transition_drawn = true;
             }
             /* Re-read the connector state without the cache. A blank between
              * the check above and this swap would block inside Mesa until the
@@ -620,7 +660,18 @@ void owe_wayland_render_pending(struct owe_wayland *wl) {
                 }
                 out->frame_ready = 0;
             }
-            owe_egl_swap_output(app->egl, out);
+            if (owe_egl_swap_output(app->egl, out) != 0) {
+                out->swap_failures++;
+                /* A failed swap cannot deliver the callback that gates the next frame. */
+                if (out->frame_callback) wl_callback_destroy(out->frame_callback);
+                out->frame_callback = NULL;
+                out->frame_ready = 1;
+                out->frame_pending = 1;
+                continue;
+            }
+            out->swaps++;
+            if (video_drawn) rendered_video = 1;
+            if (transition_drawn) rendered_transition = true;
         }
         if (want_video && rendered_video) owe_mpv_report_swap(app->mpv);
     }

@@ -30,12 +30,15 @@ static int64_t monotonic_ms(void) {
     return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
 }
 
-struct owed_supervisor *owed_supervisor_new(void) {
+struct owed_supervisor *owed_supervisor_new(const char *daemon_socket) {
     struct owed_supervisor *s = calloc(1, sizeof(*s));
     if (!s) {
         return NULL;
     }
-    if (owe_socket_path_render(s->socket_path, sizeof(s->socket_path)) != 0) {
+    int rc = daemon_socket ? owe_socket_path_sibling(daemon_socket, "render.sock", s->socket_path,
+                                                     sizeof(s->socket_path)) :
+                             owe_socket_path_render(s->socket_path, sizeof(s->socket_path));
+    if (rc != 0) {
         free(s);
         return NULL;
     }
@@ -63,10 +66,9 @@ static int spawn_render(struct owed_supervisor *s) {
     char self[PATH_MAX];
     char dir[PATH_MAX * 2];
     char cand[PATH_MAX * 2 + 64];
-    char *argv[] = { "owe-render", NULL };
+    char *argv[] = { "owe-render", "--socket", s->socket_path, NULL };
     ssize_t n;
     char *slash;
-    (void)s;
     n = readlink("/proc/self/exe", self, sizeof(self) - 1);
     if (n > 0) {
         self[n] = '\0';
@@ -76,7 +78,7 @@ static int spawn_render(struct owed_supervisor *s) {
             *slash = '\0';
             snprintf(cand, sizeof(cand), "%s/owe-render", dir);
             if (access(cand, X_OK) == 0) {
-                char *sibling[] = {cand, NULL};
+                char *sibling[] = {cand, "--socket", s->socket_path, NULL};
                 return owe_spawn(cand, sibling, &s->child);
             }
             slash = strrchr(dir, '/');
@@ -84,7 +86,7 @@ static int spawn_render(struct owed_supervisor *s) {
                 *slash = '\0';
                 snprintf(cand, sizeof(cand), "%s/render/owe-render", dir);
                 if (access(cand, X_OK) == 0) {
-                    char *argv2[] = { cand, NULL };
+                    char *argv2[] = { cand, "--socket", s->socket_path, NULL };
                     if (owe_spawn(cand, argv2, &s->child) == 0) {
                         return 0;
                     }
@@ -105,6 +107,7 @@ int owed_supervisor_ensure_running(struct owed_supervisor *s) {
         if (w == 0) {
             return 0;
         }
+        if (w < 0 && errno != ECHILD) return -1;
         s->child = 0;
     }
     if (monotonic_ms() < s->next_restart) return -1;
@@ -127,7 +130,9 @@ int owed_supervisor_ensure_running(struct owed_supervisor *s) {
         waited += 50;
     }
     OWE_ERROR("owe-render socket never appeared");
+    int64_t retry_at = s->next_restart;
     owed_supervisor_stop(s);
+    s->next_restart = retry_at;
     return -1;
 }
 
@@ -146,15 +151,15 @@ void owed_supervisor_reap(struct owed_supervisor *s) {
 }
 
 void owed_supervisor_stop(struct owed_supervisor *s) {
-    if (!s || s->child <= 0) {
-        return;
-    }
+    if (!s) return;
+    s->next_restart = 0;
+    if (s->child <= 0) return;
     kill(s->child, SIGTERM);
     {
         int waited = 0;
         while (waited < 1000) {
             pid_t w = waitpid(s->child, NULL, WNOHANG);
-            if (w == s->child) {
+            if (w == s->child || (w < 0 && errno == ECHILD)) {
                 break;
             }
             usleep(50000);
@@ -162,7 +167,7 @@ void owed_supervisor_stop(struct owed_supervisor *s) {
         }
         if (waited >= 1000) {
             kill(s->child, SIGKILL);
-            waitpid(s->child, NULL, 0);
+            while (waitpid(s->child, NULL, 0) < 0 && errno == EINTR) {}
         }
     }
     s->child = 0;
@@ -174,6 +179,7 @@ int owed_supervisor_send(struct owed_supervisor *s, const char *line, char *repl
     if (!s || !line) {
         return -1;
     }
+    if (reply && reply_len) reply[0] = '\0';
     /* Only the daemon's restart path may spawn: it also resets loaded-media
      * and playback state. A send must never silently create an empty renderer. */
     if (!owed_render_is_alive(s)) {
@@ -212,7 +218,7 @@ int owed_supervisor_load(struct owed_supervisor *s, const char *path, const char
             if (asprintf(&line, "{\"cmd\":\"load\",\"path\":%s,\"kind\":%s,\"from\":%s}",
                          qp, qk, qf) >= 0)
                 rc = owed_supervisor_send(s, line, reply, sizeof(reply));
-        } else if (asprintf(&line, "{\"cmd\":\"load\",\"path\":%s,\"kind\":%s}", qp, qk) >= 0) {
+        } else if (asprintf(&line, "{\"cmd\":\"load\",\"path\":%s,\"kind\":%s,\"async\":true}", qp, qk) >= 0) {
             rc = owed_supervisor_send(s, line, reply, sizeof(reply));
         }
     }
@@ -228,36 +234,35 @@ int owed_supervisor_load(struct owed_supervisor *s, const char *path, const char
     return 0;
 }
 
-int owed_supervisor_pause(struct owed_supervisor *s) {
+static int send_ok(struct owed_supervisor *s, const char *line) {
     char reply[1024];
-    return owed_supervisor_send(s, "{\"cmd\":\"pause\"}", reply, sizeof(reply));
+    return owed_supervisor_send(s, line, reply, sizeof(reply)) == 0 && owe_json_ok(reply) ? 0 : -1;
+}
+
+int owed_supervisor_pause(struct owed_supervisor *s) {
+    return send_ok(s, "{\"cmd\":\"pause\"}");
 }
 
 int owed_supervisor_resume(struct owed_supervisor *s) {
-    char reply[1024];
-    return owed_supervisor_send(s, "{\"cmd\":\"resume\"}", reply, sizeof(reply));
+    return send_ok(s, "{\"cmd\":\"resume\"}");
 }
 
 int owed_supervisor_feed_start(struct owed_supervisor *s) {
-    char reply[1024];
-    return owed_supervisor_send(s, "{\"cmd\":\"feed\"}", reply, sizeof(reply));
+    return send_ok(s, "{\"cmd\":\"feed\"}");
 }
 
 int owed_supervisor_feed_stop(struct owed_supervisor *s) {
-    char reply[1024];
-    return owed_supervisor_send(s, "{\"cmd\":\"feed-stop\"}", reply, sizeof(reply));
+    return send_ok(s, "{\"cmd\":\"feed-stop\"}");
 }
 
 int owed_supervisor_stop_render(struct owed_supervisor *s) {
-    char reply[1024];
-    return owed_supervisor_send(s, "{\"cmd\":\"stop\"}", reply, sizeof(reply));
+    return send_ok(s, "{\"cmd\":\"stop\"}");
 }
 
 int owed_supervisor_fade(struct owed_supervisor *s, int ms) {
     char line[128];
-    char reply[1024];
     snprintf(line, sizeof(line), "{\"cmd\":\"fade\",\"ms\":%d}", ms);
-    return owed_supervisor_send(s, line, reply, sizeof(reply));
+    return send_ok(s, line);
 }
 
 int owed_render_is_alive(struct owed_supervisor *s) {

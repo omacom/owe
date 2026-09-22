@@ -15,6 +15,7 @@
 
 #include "common_ipc.h"
 #include "daemon.h"
+#include "display_state.h"
 #include "hypr.h"
 #include "log.h"
 #include "policy.h"
@@ -67,9 +68,9 @@ static void handle_status(struct owe_ipc_client *c) {
              "\"paused\":%s,\"reason\":\"%s\",\"always_animate\":%s,\"manual_pause\":%s,\"idle_pause\":%s,"
              "\"fullscreen\":%s,\"window_visible\":%s,\"monitors_off\":%s,\"monitor_count\":%d,"
              "\"on_battery\":%s,\"locked\":%s,\"render_alive\":%s,"
-             "\"intro\":%s,\"intro_result\":\"%s\"}",
+             "\"intro\":%s,\"intro_result\":\"%s\",\"drm_dpms\":%s}",
              source, app->source_kind, loaded, app->loaded_kind,
-             app->job ? "true" : "false", failed, app->media_pending ? "false" : "true",
+              app->job ? "true" : "false", failed, app->media_ready ? "true" : "false",
              owed_app_engine(),
              app->policy && owed_policy_should_pause(app->policy) ? "true" : "false",
              app->policy ? owed_policy_reason(app->policy) : "",
@@ -87,7 +88,7 @@ static void handle_status(struct owe_ipc_client *c) {
                  : "false",
              app->supervisor && owed_render_is_alive(app->supervisor) ? "true" : "false",
              owed_app_intro_active() ? "true" : "false",
-             owed_app_intro_result()) >= 0)
+              owed_app_intro_result(), owe_drm_dpms_enabled() ? "true" : "false") >= 0)
         owe_ipc_client_send(c, line);
 done:
     free(line);
@@ -391,9 +392,4 @@ void owed_ipc_poll_clients(struct owed_ipc *ipc) {
     for (int i = 0; i < MAX_CLIENTS; i++) {
         owe_ipc_client_poll(&ipc->clients[i], now, handle_command, ipc);
     }
-}
-
-void owed_ipc_broadcast(struct owed_ipc *ipc, const char *line) {
-    (void)ipc;
-    (void)line;
 }

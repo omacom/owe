@@ -1,6 +1,7 @@
 #include "mpv.h"
 
 #include <fcntl.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -24,7 +25,11 @@ struct owe_mpv {
     char path[4096];
     bool has_video;
     bool paused;
+    bool pause_known;
     bool ready;
+    bool file_loaded;
+    int video_w;
+    int video_h;
     bool eof;
     char error[256];
     int wakeup_pipe[2];
@@ -59,6 +64,26 @@ static int set_opt(mpv_handle *h, const char *k, const char *v) {
         return -1;
     }
     return 0;
+}
+
+static void log_message(const mpv_event_log_message *message) {
+    if (!message || !message->text) return;
+    size_t len = strlen(message->text);
+    while (len && (message->text[len - 1] == '\n' || message->text[len - 1] == '\r')) len--;
+    const char *prefix = message->prefix ? message->prefix : "unknown";
+    if (message->log_level <= MPV_LOG_LEVEL_ERROR) {
+        OWE_ERROR("mpv %s: %.*s", prefix, (int)len, message->text);
+    } else {
+        OWE_WARN("mpv %s: %.*s", prefix, (int)len, message->text);
+    }
+}
+
+static void log_startup_failure(mpv_handle *handle) {
+    for (;;) {
+        mpv_event *event = mpv_wait_event(handle, 0);
+        if (event->event_id == MPV_EVENT_NONE || event->event_id == MPV_EVENT_SHUTDOWN) break;
+        if (event->event_id == MPV_EVENT_LOG_MESSAGE) log_message(event->data);
+    }
 }
 
 static void set_extra_options(mpv_handle *h) {
@@ -115,6 +140,7 @@ struct owe_mpv *owe_mpv_new(struct owe_wayland *wl) {
         free(m);
         return NULL;
     }
+    mpv_request_log_messages(m->handle, "warn");
     set_opt(m->handle, "vo", "libmpv");
     {
         const char *hwdec = getenv("OWE_HWDEC");
@@ -161,14 +187,19 @@ struct owe_mpv *owe_mpv_new(struct owe_wayland *wl) {
     /* Audio and video stay in step. A silent file uses the default clock. */
     set_opt(m->handle, "video-sync", "audio");
     set_extra_options(m->handle);
-    if (mpv_initialize(m->handle) < 0) {
-        OWE_ERROR("mpv_initialize failed");
+    rc = mpv_initialize(m->handle);
+    if (rc < 0) {
+        log_startup_failure(m->handle);
+        OWE_ERROR("mpv_initialize failed: %s", mpv_error_string(rc));
         mpv_destroy(m->handle);
         close(m->wakeup_pipe[0]);
         close(m->wakeup_pipe[1]);
         free(m);
         return NULL;
     }
+    char *hwdec = mpv_get_property_string(m->handle, "hwdec");
+    OWE_INFO("mpv requested hwdec=%s", hwdec ? hwdec : "unknown");
+    mpv_free(hwdec);
     rparams[nparams].type = MPV_RENDER_PARAM_API_TYPE;
     rparams[nparams].data = (void *)MPV_RENDER_API_TYPE_OPENGL;
     nparams++;
@@ -182,6 +213,7 @@ struct owe_mpv *owe_mpv_new(struct owe_wayland *wl) {
     rparams[nparams].data = NULL;
     rc = mpv_render_context_create(&m->ctx, m->handle, rparams);
     if (rc < 0) {
+        log_startup_failure(m->handle);
         OWE_ERROR("mpv_render_context_create failed: %s", mpv_error_string(rc));
         mpv_destroy(m->handle);
         close(m->wakeup_pipe[0]);
@@ -191,6 +223,7 @@ struct owe_mpv *owe_mpv_new(struct owe_wayland *wl) {
     }
     mpv_render_context_set_update_callback(m->ctx, on_render_update, m);
     mpv_set_wakeup_callback(m->handle, on_mpv_wakeup, m);
+    mpv_observe_property(m->handle, 1, "eof-reached", MPV_FORMAT_FLAG);
     OWE_INFO("libmpv ready");
     return m;
 }
@@ -227,7 +260,11 @@ int owe_mpv_load(struct owe_mpv *m, const char *path) {
     snprintf(m->path, sizeof(m->path), "%s", path);
     m->error[0] = '\0';
     m->has_video = true;
+    /* Keep-open can change mpv's pause state at EOF. Reapply policy after each load. */
+    m->pause_known = false;
     m->ready = false;
+    m->file_loaded = false;
+    m->video_w = m->video_h = 0;
     m->eof = false;
     return 0;
 }
@@ -241,16 +278,24 @@ void owe_mpv_stop(struct owe_mpv *m) {
     m->has_video = false;
     m->path[0] = '\0';
     m->ready = false;
+    m->file_loaded = false;
+    m->video_w = m->video_h = 0;
+    m->eof = false;
+    m->error[0] = '\0';
 }
 
 void owe_mpv_set_paused(struct owe_mpv *m, bool paused) {
     int v;
-    if (!m || m->paused == paused) {
+    if (!m || (m->pause_known && m->paused == paused)) {
+        return;
+    }
+    v = paused ? 1 : 0;
+    if (mpv_set_property(m->handle, "pause", MPV_FORMAT_FLAG, &v) < 0) {
+        m->pause_known = false;
         return;
     }
     m->paused = paused;
-    v = paused ? 1 : 0;
-    mpv_set_property(m->handle, "pause", MPV_FORMAT_FLAG, &v);
+    m->pause_known = true;
     OWE_INFO("mpv %s", paused ? "paused" : "resumed");
 }
 
@@ -279,7 +324,8 @@ bool owe_mpv_has_video(struct owe_mpv *m) {
 }
 
 bool owe_mpv_is_paused(struct owe_mpv *m) {
-    return m && m->paused;
+    int paused = 0;
+    return m && mpv_get_property(m->handle, "pause", MPV_FORMAT_FLAG, &paused) >= 0 && paused;
 }
 
 bool owe_mpv_ready(struct owe_mpv *m) {
@@ -290,28 +336,19 @@ const char *owe_mpv_path(struct owe_mpv *m) {
     return m ? m->path : "";
 }
 
-int owe_mpv_video_size(struct owe_mpv *m, int *w, int *h) {
+static void update_video_size(struct owe_mpv *m) {
     int64_t value = 0;
-    if (w) {
-        *w = 0;
-    }
-    if (h) {
-        *h = 0;
-    }
-    if (!m || !m->handle) {
-        return -1;
-    }
-    if (mpv_get_property(m->handle, "dwidth", MPV_FORMAT_INT64, &value) >= 0) {
-        if (w) {
-            *w = (int)value;
-        }
-    }
-    if (mpv_get_property(m->handle, "dheight", MPV_FORMAT_INT64, &value) >= 0) {
-        if (h) {
-            *h = (int)value;
-        }
-    }
-    return (w && h && *w > 0 && *h > 0) ? 0 : -1;
+    m->video_w = m->video_h = 0;
+    if (mpv_get_property(m->handle, "dwidth", MPV_FORMAT_INT64, &value) >= 0 &&
+        value > 0 && value <= INT_MAX) m->video_w = (int)value;
+    if (mpv_get_property(m->handle, "dheight", MPV_FORMAT_INT64, &value) >= 0 &&
+        value > 0 && value <= INT_MAX) m->video_h = (int)value;
+}
+
+int owe_mpv_video_size(struct owe_mpv *m, int *w, int *h) {
+    if (w) *w = m ? m->video_w : 0;
+    if (h) *h = m ? m->video_h : 0;
+    return m && m->video_w > 0 && m->video_h > 0 ? 0 : -1;
 }
 
 int owe_mpv_fd(struct owe_mpv *m) {
@@ -329,14 +366,33 @@ bool owe_mpv_process_updates(struct owe_mpv *m) {
     for (;;) {
         mpv_event *event = mpv_wait_event(m->handle, 0);
         if (event->event_id == MPV_EVENT_NONE) break;
+        if (event->event_id == MPV_EVENT_LOG_MESSAGE) log_message(event->data);
+        if (event->event_id == MPV_EVENT_START_FILE) {
+            m->file_loaded = false;
+            m->video_w = m->video_h = 0;
+            m->ready = false;
+            m->eof = false;
+            m->has_video = true;
+            m->error[0] = '\0';
+        } else if (event->event_id == MPV_EVENT_FILE_LOADED) {
+            m->file_loaded = true;
+            update_video_size(m);
+        } else if (event->event_id == MPV_EVENT_VIDEO_RECONFIG) {
+            update_video_size(m);
+        } else if (event->event_id == MPV_EVENT_PROPERTY_CHANGE) {
+            mpv_event_property *property = event->data;
+            if (property && property->format == MPV_FORMAT_FLAG && property->data &&
+                strcmp(property->name, "eof-reached") == 0) {
+                m->eof = *(int *)property->data != 0;
+            }
+        }
         if (event->event_id == MPV_EVENT_END_FILE) {
             mpv_event_end_file *end = event->data;
             if (end && end->reason == MPV_END_FILE_REASON_ERROR) {
                 snprintf(m->error, sizeof(m->error), "%s", mpv_error_string(end->error));
                 m->has_video = false;
+                m->ready = false;
                 OWE_ERROR("Video playback failed: %s", m->error);
-            } else if (end && end->reason != MPV_END_FILE_REASON_QUIT) {
-                m->eof = true;
             }
         }
     }
@@ -356,6 +412,16 @@ const char *owe_mpv_hwdec(struct owe_mpv *m) {
     snprintf(name, sizeof(name), "%s", value ? value : "no");
     mpv_free(value);
     return name;
+}
+
+static int render_target(struct owe_mpv *m, mpv_render_param *params) {
+    int rc = mpv_render_context_render(m->ctx, params);
+    if (rc < 0) {
+        if (!*m->error) OWE_ERROR("mpv OpenGL render failed: %s", mpv_error_string(rc));
+        snprintf(m->error, sizeof(m->error), "OpenGL render failed: %s", mpv_error_string(rc));
+        m->ready = false;
+    }
+    return rc;
 }
 
 void owe_mpv_render_output(struct owe_mpv *m, struct owe_output *out) {
@@ -392,10 +458,11 @@ void owe_mpv_render_output(struct owe_mpv *m, struct owe_output *out) {
     params[2].data = &block;
     params[3].type = MPV_RENDER_PARAM_INVALID;
     params[3].data = NULL;
-    if (mpv_render_context_render(m->ctx, params) < 0) {
+    if (render_target(m, params) < 0) {
         return;
     }
-    m->ready = true;
+    int video_w, video_h;
+    if (m->file_loaded && owe_mpv_video_size(m, &video_w, &video_h) == 0) m->ready = true;
 }
 
 /* Render one frame into an offscreen framebuffer for the lock feed. The feed
@@ -427,10 +494,10 @@ int owe_mpv_render_fbo(struct owe_mpv *m, int fbo, int w, int h) {
     params[2].data = &block;
     params[3].type = MPV_RENDER_PARAM_INVALID;
     params[3].data = NULL;
-    if (mpv_render_context_render(m->ctx, params) < 0) {
+    if (render_target(m, params) < 0) {
         return -1;
     }
-    m->ready = true;
+    if (m->file_loaded) m->ready = true;
     return 0;
 }
 

@@ -2,7 +2,7 @@
 
 struct owed_supervisor;
 
-struct owed_supervisor *owed_supervisor_new(void);
+struct owed_supervisor *owed_supervisor_new(const char *daemon_socket);
 void owed_supervisor_free(struct owed_supervisor *s);
 
 int owed_supervisor_ensure_running(struct owed_supervisor *s);

@@ -41,23 +41,6 @@ owed_app_t *owed_app_get(void) {
     return &g_app;
 }
 
-void owed_app_emit_event(const char *name, const char *detail) {
-    char *quoted_name = owe_json_quote(name ? name : "");
-    char *quoted_detail = owe_json_quote(detail ? detail : "");
-    char *line = NULL;
-    if (!quoted_name || !quoted_detail) {
-        free(quoted_name);
-        free(quoted_detail);
-        return;
-    }
-    if (asprintf(&line, "{\"event\":%s,\"detail\":%s}", quoted_name, quoted_detail) >= 0) {
-        owed_ipc_broadcast(g_app.ipc, line);
-    }
-    free(line);
-    free(quoted_name);
-    free(quoted_detail);
-}
-
 static bool battery_poster_active(void) {
     owed_app_t *app = &g_app;
     return (app->config.battery_poster ||
@@ -110,14 +93,10 @@ static int load_if_needed(const char *path, const char *kind) {
     app->transition_from[0] = '\0';
     copy_path(app->loaded_path, sizeof(app->loaded_path), path);
     copy_path(app->loaded_kind, sizeof(app->loaded_kind), kind);
-    if (strcmp(kind, "video") == 0) {
-        app->media_pending = true;
-        app->media_deadline_ms = monotonic_ms() + MEDIA_READY_TIMEOUT_MS;
-    } else {
-        app->media_pending = false;
-        copy_path(app->last_good_path, sizeof(app->last_good_path), path);
-        copy_path(app->last_good_kind, sizeof(app->last_good_kind), kind);
-    }
+    app->media_ready = false;
+    app->media_pending = true;
+    app->media_deadline_ms = monotonic_ms() +
+                            (strcmp(kind, "still") == 0 ? OWE_STILL_TIMEOUT_MS : MEDIA_READY_TIMEOUT_MS);
     return 0;
 }
 
@@ -207,6 +186,7 @@ static int switch_to_shell(void) {
     app->shell_enabled = 1;
     app->engine = OWE_ENGINE_SHELL;
     app->media_pending = false;
+    app->media_ready = true;
     app->render_paused = -1;
     app->render_feeding = 0;
     app->loaded_path[0] = '\0';
@@ -228,14 +208,15 @@ static int switch_to_renderer(void) {
         app->renderer_retry_at_ms = now + 30000;
         return -1;
     }
+    /* Release the layer now. An occluded renderer gets no frame callbacks,
+     * so waiting for readiness before the handoff would deadlock. */
+    if (app->shell_enabled != 0 && owed_shell_plugin_set(false) != 0) {
+        app->renderer_retry_at_ms = monotonic_ms() + 30000;
+        return -1;
+    }
     app->renderer_retry_at_ms = 0;
     app->engine = OWE_ENGINE_RENDERER;
     app->shell_stop_at_ms = 0;
-    /* Release the layer now. An occluded renderer gets no frame callbacks,
-     * so waiting for readiness before the handoff would deadlock. */
-    if (app->shell_enabled != 0) {
-        owed_shell_plugin_set(false);
-    }
     app->shell_enabled = 0;
     owed_supervisor_fade(app->supervisor, app->config.fade_ms);
     return 0;
@@ -252,11 +233,12 @@ static void process_shell_handoff(void) {
     }
 }
 
-static bool render_status_flags(const char *reply, bool *ready, bool *error) {
+static bool render_status_flags(const char *reply, bool *ready, bool *error, bool *eof) {
     yyjson_doc *doc = reply ? yyjson_read(reply, strlen(reply), 0) : NULL;
     bool ok = false;
     *ready = false;
     *error = false;
+    if (eof) *eof = false;
     if (doc) {
         yyjson_val *root = yyjson_doc_get_root(doc);
         yyjson_val *status = yyjson_obj_get(root, "status");
@@ -271,6 +253,7 @@ static bool render_status_flags(const char *reply, bool *ready, bool *error) {
         if (yyjson_is_str(error_val) && yyjson_get_len(error_val) > 0) {
             *error = true;
         }
+        if (eof) *eof = yyjson_get_bool(yyjson_obj_get(root, "eof"));
         yyjson_doc_free(doc);
     }
     return ok;
@@ -300,7 +283,7 @@ static void intro_finish(const char *error) {
 
 int owed_app_start_intro(const char *path) {
     owed_app_t *app = &g_app;
-    char reply[8192];
+    char reply[8192] = "";
     char *quoted;
     char *line = NULL;
     int rc;
@@ -348,6 +331,7 @@ void owed_app_poll_intro(void) {
     char reply[8192];
     bool ready = false;
     bool error = false;
+    bool eof = false;
     if (!app->intro_active) {
         return;
     }
@@ -360,6 +344,7 @@ void owed_app_poll_intro(void) {
         return;
     }
     if ((app->power && owed_power_locked(app->power)) ||
+        (app->hypr && owed_hypr_locked(app->hypr)) ||
         (app->power && owed_power_sleeping(app->power)) ||
         (app->hypr && owed_hypr_any_fullscreen(app->hypr))) {
         intro_finish("intro interrupted");
@@ -370,14 +355,14 @@ void owed_app_poll_intro(void) {
         intro_finish("renderer unreachable");
         return;
     }
-    if (!render_status_flags(reply, &ready, &error)) {
+    if (!render_status_flags(reply, &ready, &error, &eof)) {
         return;
     }
     if (error) {
         intro_finish("intro decode failed");
         return;
     }
-    if (strstr(reply, "\"eof\":true")) {
+    if (eof) {
         intro_finish(NULL);
     }
 }
@@ -397,9 +382,16 @@ const char *owed_app_intro_result(void) {
 static void media_failed(void) {
     owed_app_t *app = &g_app;
     app->media_pending = false;
-    copy_path(app->fail_path, sizeof(app->fail_path), app->source_path);
+    app->media_ready = false;
+    bool poster = strcmp(app->loaded_kind, "still") == 0 && battery_poster_active() &&
+                  strcmp(app->loaded_path, app->source_path) != 0;
+    copy_path(poster ? app->poster_fail_path : app->fail_path,
+              sizeof(app->fail_path), app->source_path);
+    if (strcmp(app->loaded_kind, "still") == 0) {
+        owed_supervisor_send(app->supervisor, "{\"cmd\":\"cancel-load\"}", NULL, 0);
+    }
     OWE_WARN("media did not start: %s", app->source_path);
-    if (*app->restore_path && strcmp(app->restore_path, app->source_path) != 0 &&
+    if (*app->restore_path &&
         strcmp(app->restore_path, app->loaded_path) != 0) {
         if (load_if_needed(app->restore_path, app->restore_kind) == 0) {
             OWE_INFO("recovered to %s", app->restore_path);
@@ -408,8 +400,7 @@ static void media_failed(void) {
     }
 }
 
-/* A video load reply only means the renderer accepted the request. Poll until
- * the first frame presents, or recover when decode fails or stalls. */
+/* A load reply confirms acceptance. Poll for decode completion before the deadline. */
 static void check_media_ready(void) {
     owed_app_t *app = &g_app;
     char reply[OWE_IPC_MAX_LINE];
@@ -425,7 +416,7 @@ static void check_media_ready(void) {
     if (owed_supervisor_send(app->supervisor, "{\"cmd\":\"status\"}", reply, sizeof(reply)) != 0) {
         return;
     }
-    if (!render_status_flags(reply, &ready, &error)) {
+    if (!render_status_flags(reply, &ready, &error, NULL)) {
         return;
     }
     if (error) {
@@ -433,7 +424,14 @@ static void check_media_ready(void) {
         return;
     }
     if (ready) {
+        yyjson_doc *doc = yyjson_read(reply, strlen(reply), 0);
+        yyjson_val *root = doc ? yyjson_doc_get_root(doc) : NULL;
+        bool matches = yyjson_equals_str(yyjson_obj_get(root, "path"), app->loaded_path) &&
+                       yyjson_equals_str(yyjson_obj_get(root, "kind"), app->loaded_kind);
+        yyjson_doc_free(doc);
+        if (!matches) return;
         app->media_pending = false;
+        app->media_ready = true;
         copy_path(app->last_good_path, sizeof(app->last_good_path), app->loaded_path);
         copy_path(app->last_good_kind, sizeof(app->last_good_kind), app->loaded_kind);
         OWE_INFO("media ready: %s", app->loaded_path);
@@ -638,6 +636,7 @@ void owed_app_on_renderer_restarted(void) {
     g_app.fail_path[0] = '\0';
     g_app.poster_fail_path[0] = '\0';
     g_app.media_pending = false;
+    g_app.media_ready = false;
     g_app.transition_from[0] = '\0';
     g_last_skip[0] = '\0';
     owed_supervisor_fade(g_app.supervisor, g_app.config.fade_ms);
@@ -657,7 +656,6 @@ void owed_app_on_background_changed(const char *resolved_path) {
     kind = owe_kind_from_path(resolved_path);
     if (kind == OWE_KIND_UNKNOWN) {
         OWE_WARN("unknown media kind: %s", resolved_path);
-        owed_app_emit_event("error", "unknown media kind");
         return;
     }
     if (strcmp(app->source_path, resolved_path) == 0) {
@@ -676,13 +674,14 @@ void owed_app_on_background_changed(const char *resolved_path) {
         app->transition_from[0] = '\0';
     }
     app->source_generation++;
+    app->shell_retry_at_ms = 0;
+    app->renderer_retry_at_ms = 0;
     snprintf(app->source_path, sizeof(app->source_path), "%s", resolved_path);
     snprintf(app->source_kind, sizeof(app->source_kind), "%s", owe_kind_to_string(kind));
     app->fail_path[0] = '\0';
     app->poster_fail_path[0] = '\0';
     owed_policy_recompute(app->policy);
     owed_app_apply_policy();
-    owed_app_emit_event("background", resolved_path);
 }
 
 void owed_app_on_policy_changed(void) {
@@ -749,7 +748,7 @@ static bool blocklist_active(void) {
         comm[strcspn(comm, "\n")] = '\0';
         for (i = 0; i < app->config.blocklist_count; i++) {
             if (strcmp(comm, app->config.blocklist[i]) == 0) {
-                OWE_INFO("blocklist match: %s", comm);
+                OWE_DEBUG("blocklist match: %s", comm);
                 found = true;
                 break;
             }
@@ -843,14 +842,16 @@ int main(int argc, char **argv) {
     if (owe_config_path(config_path, sizeof(config_path)) == 0) {
         if (owe_config_load(&g_app.config, config_path) == 0) {
             OWE_INFO("config loaded from %s", config_path);
-        } else {
+        } else if (errno == ENOENT) {
             OWE_INFO("no config at %s, using defaults", config_path);
+        } else {
+            OWE_WARN("Cannot load config at %s, using defaults", config_path);
         }
     }
     owed_transcode_set_cache_limit(g_app.config.cache_max_mb);
     owed_transcode_cleanup_cache();
 
-    g_app.supervisor = owed_supervisor_new();
+    g_app.supervisor = owed_supervisor_new(socket_path);
     g_app.policy = owed_policy_new();
     g_app.watch = owed_watch_new();
     g_app.hypr = owed_hypr_new();

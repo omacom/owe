@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <inttypes.h>
 #include <poll.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -14,6 +15,7 @@
 #include "yyjson.h"
 
 #include "common_ipc.h"
+#include "display_state.h"
 #include "feed.h"
 #include "json.h"
 #include <sys/stat.h>
@@ -33,6 +35,8 @@ struct owe_render_ipc {
     int pending_client;
     uint64_t pending_generation;
     char pending_path[4096];
+    int64_t pending_deadline_ms;
+    char load_error[128];
 };
 
 static void client_remove(struct owe_render_ipc *ipc, int idx) {
@@ -61,52 +65,64 @@ static void send_err(struct owe_ipc_client *c, const char *msg) {
     client_send(c, line);
 }
 
-static void handle_status(struct owe_ipc_client *c) {
+static void handle_status(struct owe_render_ipc *ipc, struct owe_ipc_client *c) {
     owe_app_t *app = owe_app_get();
     char *line = NULL;
     char *path = owe_json_quote(app ? app->current_path : "");
-    char *error = owe_json_quote(app ? owe_mpv_error(app->mpv) : "");
+    char *error = owe_json_quote(*ipc->load_error ? ipc->load_error :
+                                app && !*ipc->pending_path && strcmp(app->current_kind, "video") == 0
+                                    ? owe_mpv_error(app->mpv) : "");
+    char *hwdec = owe_json_quote(owe_mpv_hwdec(app ? app->mpv : NULL));
+    bool ready = app && !*ipc->pending_path && !*ipc->load_error &&
+                 (strcmp(app->current_kind, "still") == 0 ? owe_still_has_image(app->still) :
+                                                          owe_mpv_ready(app->mpv));
     char skipped[1024] = "";
     char *skipped_json = NULL;
-    if (!path || !error) { free(path); free(error); return; }
+    if (!path || !error || !hwdec) { free(path); free(error); free(hwdec); return; }
     int mw = 0;
     int mh = 0;
+    uint64_t swaps = 0;
+    uint64_t swap_failures = 0;
     if (app && app->wl) {
         owe_wayland_outputs_max_size(app->wl, &mw, &mh);
         owe_wayland_skipped_list(app->wl, skipped, sizeof(skipped));
+        for (owe_output_t *out = owe_wayland_outputs(app->wl); out; out = out->next) {
+            swaps += out->swaps;
+            swap_failures += out->swap_failures;
+        }
     }
     skipped_json = owe_json_quote(skipped);
     if (!skipped_json) {
         free(path);
         free(error);
+        free(hwdec);
         return;
     }
     if (asprintf(&line,
              "{\"status\":\"ok\",\"path\":%s,\"kind\":\"%s\",\"paused\":%s,\"ready\":%s,\"outputs\":%d,"
-             "\"max_width\":%d,\"max_height\":%d,\"has_video\":%s,\"has_still\":%s,\"time_pos\":%.3f,\"hwdec\":\"%s\",\"error\":%s,\"skipped\":%s,"
-             "\"intro\":%s,\"eof\":%s}",
+             "\"max_width\":%d,\"max_height\":%d,\"has_video\":%s,\"has_still\":%s,\"time_pos\":%.3f,\"hwdec\":%s,\"error\":%s,\"skipped\":%s,"
+             "\"intro\":%s,\"eof\":%s,\"drm_dpms\":%s,\"swaps\":%" PRIu64 ",\"swap_failures\":%" PRIu64 "}",
              path, app ? app->current_kind : "",
              app && app->paused ? "true" : "false",
-             app && app->mpv && owe_mpv_ready(app->mpv) ? "true" : "false",
+             ready ? "true" : "false",
              app && app->wl ? owe_wayland_output_count(app->wl) : 0,
              mw, mh, app && app->mpv && owe_mpv_has_video(app->mpv) ? "true" : "false",
              app && app->still && owe_still_has_image(app->still) ? "true" : "false",
              app && app->mpv ? owe_mpv_time_pos(app->mpv) : -1.0,
-             owe_mpv_hwdec(app ? app->mpv : NULL), error, skipped_json,
+             hwdec, error, skipped_json,
              app && app->intro ? "true" : "false",
-             app && app->mpv && owe_mpv_eof(app->mpv) ? "true" : "false") >= 0)
+              app && app->mpv && owe_mpv_eof(app->mpv) ? "true" : "false",
+              owe_drm_dpms_enabled() ? "true" : "false", swaps, swap_failures) >= 0)
         client_send(c, line);
     free(line);
     free(path);
     free(error);
+    free(hwdec);
     free(skipped_json);
 }
 
 static void pending_reply(struct owe_render_ipc *ipc, int ok, const char *message) {
-    if (ipc->pending_client < 0) {
-        return;
-    }
-    if (ipc->clients[ipc->pending_client].fd >= 0 &&
+    if (ipc->pending_client >= 0 && ipc->clients[ipc->pending_client].fd >= 0 &&
         ipc->clients[ipc->pending_client].generation == ipc->pending_generation) {
         if (ok) {
             send_ok(&ipc->clients[ipc->pending_client], NULL);
@@ -116,12 +132,14 @@ static void pending_reply(struct owe_render_ipc *ipc, int ok, const char *messag
     }
     ipc->pending_client = -1;
     ipc->pending_path[0] = '\0';
+    ipc->pending_deadline_ms = 0;
 }
 
 static void stop_feed(owe_app_t *app) {
     if (app && app->feeding) {
         owe_feed_stop(app->feed);
         app->feeding = false;
+        owe_mpv_set_paused(app->mpv, app->paused);
         owe_mpv_set_muted(app->mpv, false);
         owe_app_request_render();
     }
@@ -154,12 +172,18 @@ static void handle_load(struct owe_render_ipc *ipc, struct owe_ipc_client *c, yy
         const char *from = vfrom && yyjson_is_str(vfrom) ? yyjson_get_str(vfrom) : "";
         bool once = yyjson_is_bool(vonce) && yyjson_get_bool(vonce);
         bool mute = yyjson_is_bool(vmute) && yyjson_get_bool(vmute);
+        if (vfrom && (!owe_json_path(vfrom) || from[0] != '/' || stat(from, &st) != 0 ||
+                      !S_ISREG(st.st_mode) || access(from, R_OK) != 0)) {
+            OWE_WARN("Transition image is not a readable local file");
+            from = "";
+        }
         if (owe_mpv_load(app->mpv, path) != 0) {
             send_err(c, "video load failed");
             return;
         }
         owe_mpv_set_loop(app->mpv, !once);
-        owe_mpv_set_muted(app->mpv, mute);
+        ipc->load_error[0] = '\0';
+        owe_mpv_set_muted(app->mpv, mute || app->feeding);
         if (once) {
             app->paused = false;
             owe_mpv_set_paused(app->mpv, false);
@@ -200,9 +224,13 @@ static void handle_load(struct owe_render_ipc *ipc, struct owe_ipc_client *c, yy
             return;
         }
         pending_reply(ipc, 0, "load superseded");
-        ipc->pending_client = (int)(c - ipc->clients);
+        ipc->load_error[0] = '\0';
+        bool async = yyjson_get_bool(yyjson_obj_get(root, "async"));
+        ipc->pending_client = async ? -1 : (int)(c - ipc->clients);
         ipc->pending_generation = c->generation;
         snprintf(ipc->pending_path, sizeof(ipc->pending_path), "%s", path);
+        ipc->pending_deadline_ms = owe_ipc_now_ms() + (async ? OWE_STILL_TIMEOUT_MS : 4000);
+        if (async) send_ok(c, NULL);
         return;
     }
     send_err(c, "unknown kind");
@@ -264,12 +292,20 @@ static void handle_command(void *context, struct owe_ipc_client *c, const char *
             owe_still_unload(app->still);
             app->current_path[0] = '\0';
             app->current_kind[0] = '\0';
+            app->intro = false;
             owe_app_request_render();
         }
         pending_reply(ipc, 0, "load cancelled");
+        ipc->load_error[0] = '\0';
+        send_ok(c, NULL);
+    } else if (strcmp(cmd, "cancel-load") == 0) {
+        if (app && *ipc->pending_path) {
+            owe_still_cancel(app->still);
+            pending_reply(ipc, 0, "load cancelled");
+        }
         send_ok(c, NULL);
     } else if (strcmp(cmd, "status") == 0) {
-        handle_status(c);
+        handle_status(ipc, c);
     } else if (strcmp(cmd, "skip") == 0) {
         yyjson_val *outputs = yyjson_obj_get(root, "outputs");
         char names[1024] = "";
@@ -401,8 +437,13 @@ void owe_render_ipc_poll_still(struct owe_render_ipc *ipc) {
     if (!ipc || !app || !app->still) {
         return;
     }
-    if (!owe_still_busy(app->still) && ipc->pending_client < 0) {
+    if (!owe_still_busy(app->still) && !*ipc->pending_path) {
         return;
+    }
+    if (ipc->pending_deadline_ms && owe_ipc_now_ms() >= ipc->pending_deadline_ms) {
+        owe_still_cancel(app->still);
+        snprintf(ipc->load_error, sizeof(ipc->load_error), "Still decode timed out");
+        pending_reply(ipc, 0, ipc->load_error);
     }
     rc = owe_still_poll(app->still);
     if (rc == 0) {
@@ -414,8 +455,10 @@ void owe_render_ipc_poll_still(struct owe_render_ipc *ipc) {
         owe_still_unload(app->transition);
         snprintf(app->current_path, sizeof(app->current_path), "%s", ipc->pending_path);
         snprintf(app->current_kind, sizeof(app->current_kind), "still");
+        app->intro = false;
         pending_reply(ipc, 1, NULL);
     } else {
+        snprintf(ipc->load_error, sizeof(ipc->load_error), "Still decode failed");
         pending_reply(ipc, 0, "still load failed");
     }
 }
@@ -443,5 +486,6 @@ bool owe_render_ipc_reload_still(struct owe_render_ipc *ipc) {
     }
     ipc->pending_client = -1;
     snprintf(ipc->pending_path, sizeof(ipc->pending_path), "%s", owe_still_path(app->still));
+    ipc->pending_deadline_ms = owe_ipc_now_ms() + OWE_STILL_TIMEOUT_MS;
     return true;
 }

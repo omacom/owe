@@ -239,6 +239,36 @@ private slots:
         verifyAck(2);
     }
 
+    void acknowledgementsSurviveBackpressure() {
+        LockFeed item;
+        item.setSocketPath(socketPath());
+        acceptClient();
+        QTemporaryFile backing;
+        QVERIFY(backing.open() && backing.resize(4));
+        QVERIFY(sendHello(m_peer, backing.handle(), Message{}));
+        const int client = item.m_fd;
+        int capacity = 1024;
+        QVERIFY(setsockopt(client, SOL_SOCKET, SO_SNDBUF, &capacity, sizeof(capacity)) == 0);
+        QByteArray padding(512, 'x');
+        size_t queued = 0;
+        ssize_t bytes;
+        while ((bytes = send(client, padding.constData(), padding.size(), MSG_NOSIGNAL)) > 0) {
+            queued += size_t(bytes);
+        }
+        QVERIFY(errno == EAGAIN || errno == EWOULDBLOCK);
+        QVERIFY(sendFrame(m_peer, 1));
+        QTRY_VERIFY(!item.m_acks.isEmpty());
+        QCOMPARE(item.m_fd, client);
+        while (queued > 0) {
+            bytes = recv(m_peer, padding.data(), qMin(queued, size_t(padding.size())), 0);
+            QVERIFY(bytes > 0);
+            queued -= size_t(bytes);
+        }
+        verifyAck(1);
+        QVERIFY(item.m_acks.isEmpty());
+        QCOMPARE(item.m_fd, client);
+    }
+
     void inactiveCancelsRetry() {
         LockFeed item;
         item.setSocketPath(socketPath());

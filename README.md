@@ -26,7 +26,17 @@ From the AUR:
 
 ```bash
 omarchy pkg add owe
+systemctl --user enable --now owed.service
 ```
+
+To install the optional theme hook, run:
+
+```bash
+omarchy hook install theme-set /usr/share/owe/10-owe-sync
+```
+
+The daemon also watches the background symlink directly.
+The hook requests a refresh after the theme changes.
 
 Or build from source, as below.
 
@@ -37,7 +47,7 @@ installed are skipped:
 
 ```bash
 omarchy pkg add meson ninja gcc pkgconf wayland wayland-protocols libglvnd \
-  libepoxy mpv ffmpeg systemd-libs socat python
+  libepoxy mpv ffmpeg systemd-libs socat python cmake qt6-declarative
 ```
 
 Then build and install `owe`:
@@ -70,7 +80,22 @@ owe raw <json>            # Send raw JSON to the daemon
 owe reload-config         # Reload config.toml
 owe render-restart        # Restart the renderer process
 owe shutdown              # Stop the daemon
+owe --version             # Show the build version
 ```
+
+The daemon accepts `--socket PATH` and `--verbose`.
+The renderer accepts the same options.
+The CLI accepts `--socket PATH` before the command.
+The renderer socket and lock feed socket use the daemon socket directory.
+
+```bash
+owed --socket "$XDG_RUNTIME_DIR/owe-test/owed.sock" --verbose
+owe --socket "$XDG_RUNTIME_DIR/owe-test/owed.sock" status
+```
+
+One daemon can run in each runtime directory.
+An intro requires a still background and ends after 30 seconds at most.
+The CLI accepts an absolute or relative intro path.
 
 ## IPC reference
 
@@ -107,6 +132,11 @@ Commands:
 
 - `{"cmd":"hello"}` — reply `{"status":"ok","version":1}`.
 - `{"cmd":"load","path":"/abs/file","kind":"video|still"}` — load media. `"once":true` and `"mute":true` load a one-shot intro.
+- Add `"async":true` to a still load for an immediate acknowledgement.
+  Poll `status` until `ready` is true and `path` matches the request.
+  An asynchronous still load has a 30-second deadline.
+  A synchronous still load has a four-second deadline.
+- `{"cmd":"cancel-load"}` cancels a pending still load and retains the current media.
 - `{"cmd":"pause"}` — pause decode. The last frame stays presented.
 - `{"cmd":"resume"}` — resume decode.
 - `{"cmd":"stop"}` — unload all media.
@@ -115,6 +145,12 @@ Commands:
 - `{"cmd":"feed"}` — start muted video output to the lock feed.
 - `{"cmd":"feed-stop"}` — stop the lock feed and release its buffers.
 - `{"cmd":"skip","outputs":["DP-1"]}` — stop desktop swaps on the named outputs.
+
+The daemon uses asynchronous still loads for posters and shell fallback.
+Its `media_ready` field confirms readiness for `loaded_path`.
+The renderer ignores transition paths that do not name readable local files.
+Malformed replies terminate their connection.
+Reply deadlines include all fragments of a reply.
 
 ## Examples
 
@@ -222,6 +258,10 @@ media is silent. Source files remain intact.
 
 ## Recovery
 
+For a black background, follow [the diagnostic steps](docs/troubleshooting.md).
+Software decode still uses the GPU display path.
+The guide covers GPU logs, swap failures, and an optional DRM DPMS diagnostic override.
+
 `owed` supervises `owe-render`. A killed or crashed renderer is restarted
 and the current media reloads. The daemon holds a `flock` on
 `$XDG_RUNTIME_DIR/owe/owed.lock`, so a second instance refuses to start.
@@ -231,6 +271,51 @@ and the current media reloads. The daemon holds a `flock` on
 Copy `config/config.toml` to `~/.config/owe/config.toml` and run
 `owe reload-config`. The installer does this once and never overwrites
 an existing file.
+
+The daemon uses `$XDG_CONFIG_HOME/owe/config.toml` when `XDG_CONFIG_HOME` is set.
+An invalid reload preserves the current configuration.
+The journal identifies the file and line of a syntax error.
+Unknown keys produce a warning.
+
+| Section | Key | Default | Accepted values |
+| --- | --- | --- | --- |
+| `pause` | `fullscreen` | `true` | Boolean |
+| `pause` | `occupied_workspace` | `false` | Boolean |
+| `pause` | `battery_poster` | `false` | Boolean |
+| `pause` | `battery_mode` | `"play"` | `"play"`, `"pause"`, `"poster"` |
+| `pause` | `blocklist` | `[]` | At most 16 process names, at most 63 bytes per name |
+| `transcode` | `gif_fps` | `20` | 5 to 50 |
+| `transcode` | `gif_crf` | `20` | 0 to 51 |
+| `transcode` | `max_width` | `2560` | 320 to 16384 |
+| `transcode` | `max_height` | `1440` | 200 to 16384 |
+| `transcode` | `cache_max_mb` | `512` | 0 to 65536 MiB |
+| `render` | `fade_ms` | `250` | 0 to 2000 milliseconds |
+
+Numeric values outside these limits use the nearest limit.
+`battery_poster = true` takes precedence over `battery_mode`.
+Set `battery_poster = false` to control battery behavior through `battery_mode` alone.
+The blocklist accepts single-line and multiline arrays.
+Quoted names can contain `#` and commas.
+Oversized arrays and names cause a load error.
+Each configuration line has a limit of 510 bytes before its newline.
+
+To inspect the effective configuration and recent errors, run:
+
+```bash
+owe config
+journalctl --user -u owed.service -n 100 --no-pager
+```
+
+## Local uninstall
+
+To remove a source installation, run:
+
+```bash
+./packaging/uninstall.sh
+```
+
+The script restores the shell background plugin.
+It retains the configuration and media cache.
 
 ## Build
 
@@ -278,6 +363,6 @@ To check live playback and IPC, run `build/test/owe-live-test`.
 Build and install deps: `meson`, `ninja`, `gcc`, `pkgconf`, `wayland`,
 `wayland-protocols`, `libglvnd`, `libepoxy`, `mpv`, `ffmpeg`, `systemd-libs`,
 `socat`, `python`, `cmake`, `qt6-declarative`.
-Runtime deps: `mpv`, `ffmpeg`, `socat`, `qt6-declarative`.
+Runtime deps: `mpv`, `ffmpeg`, `wayland`, `libglvnd`, `libepoxy`, `systemd-libs`, `socat`, `qt6-declarative`.
 
 Docs: `docs/architecture.md`, `docs/theme-contract.md`, `docs/benchmarks.md`.

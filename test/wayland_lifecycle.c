@@ -74,4 +74,30 @@ int main(void) {
         for (int i = 0; i < proxy_count; i++) CHECK(!proxies[i].alive);
     }
     puts("Wayland creation failures release every owned proxy");
+    failure = 0;
+    proxy_count = 0;
+    struct owe_wayland wl = {0};
+    registry_global(&wl, NULL, 1, "wl_output", 4);
+    CHECK(wl.pending_outputs && !wl.output_count);
+    registry_global(&wl, NULL, 2, "wl_output", 4);
+    registry_global_remove(&wl, NULL, 2);
+    registry_global(&wl, NULL, 3, "wl_compositor", 4);
+    registry_global(&wl, NULL, 4, "zwlr_layer_shell_v1", 1);
+    registry_global(&wl, NULL, 5, "wp_fractional_scale_manager_v1", 1);
+    registry_global(&wl, NULL, 6, "wp_viewporter", 1);
+    create_pending_outputs(&wl);
+    CHECK(wl.output_count == 1 && !wl.pending_outputs);
+    CHECK(wl.outputs->fractional && wl.outputs->viewport);
+    registry_global(&wl, NULL, 7, "wl_output", 4);
+    CHECK(wl.output_count == 2);
+    registry_global_remove(&wl, NULL, 1);
+    CHECK(wl.output_count == 1 && wl.outputs->registry_name == 7);
+    owe_wayland_destroy_outputs(&wl);
+    wl_compositor_destroy(wl.compositor);
+    zwlr_layer_shell_v1_destroy(wl.layer_shell);
+    wp_fractional_scale_manager_v1_destroy(wl.fractional_scale);
+    wp_viewporter_destroy(wl.viewporter);
+    CHECK(windows == 0 && surfaces == 0);
+    for (int i = 0; i < proxy_count; i++) CHECK(!proxies[i].alive);
+    puts("Output discovery tolerates registry order and output removal");
 }

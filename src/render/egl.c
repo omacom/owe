@@ -58,6 +58,7 @@ static const char *fs_src = "#version 150\n"
 static GLuint compile_shader(GLenum type, const char *src) {
     GLuint sh = glCreateShader(type);
     GLint ok = 0;
+    if (!sh) return 0;
     glShaderSource(sh, 1, &src, NULL);
     glCompileShader(sh);
     glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
@@ -67,6 +68,8 @@ static GLuint compile_shader(GLenum type, const char *src) {
         glGetShaderInfoLog(sh, sizeof(log) - 1, &n, log);
         log[n] = '\0';
         OWE_ERROR("shader compile failed: %s", log);
+        glDeleteShader(sh);
+        return 0;
     }
     return sh;
 }
@@ -82,7 +85,17 @@ static int blit_init(struct owe_gl_prog *b) {
     GLuint fs;
     vs = compile_shader(GL_VERTEX_SHADER, vs_src);
     fs = compile_shader(GL_FRAGMENT_SHADER, fs_src);
+    if (!vs || !fs) {
+        if (vs) glDeleteShader(vs);
+        if (fs) glDeleteShader(fs);
+        return -1;
+    }
     b->prog = glCreateProgram();
+    if (!b->prog) {
+        glDeleteShader(vs);
+        glDeleteShader(fs);
+        return -1;
+    }
     glAttachShader(b->prog, vs);
     glAttachShader(b->prog, fs);
     glBindAttribLocation(b->prog, 0, "pos");
@@ -97,6 +110,11 @@ static int blit_init(struct owe_gl_prog *b) {
             glGetProgramInfoLog(b->prog, sizeof(log) - 1, &n, log);
             log[n] = '\0';
             OWE_ERROR("program link failed: %s", log);
+            glDeleteShader(vs);
+            glDeleteShader(fs);
+            glDeleteProgram(b->prog);
+            b->prog = 0;
+            return -1;
         }
     }
     glDeleteShader(vs);
@@ -133,7 +151,7 @@ struct owe_egl *owe_egl_new(struct owe_wayland *wl) {
     };
     static const struct { int major, minor; } gl_versions[] = {
         { 4, 6 }, { 4, 5 }, { 4, 4 }, { 4, 3 }, { 4, 2 }, { 4, 1 }, { 4, 0 },
-        { 3, 3 }, { 3, 2 }, { 3, 1 }, { 3, 0 }, { 0, 0 },
+        { 3, 3 }, { 3, 2 }, { 0, 0 },
     };
     size_t vi;
     if (!wl) {
@@ -149,18 +167,25 @@ struct owe_egl *owe_egl_new(struct owe_wayland *wl) {
     }
     e->display = eglGetPlatformDisplay(EGL_PLATFORM_WAYLAND_KHR, dpy, NULL);
     if (e->display == EGL_NO_DISPLAY) {
-        OWE_ERROR("eglGetDisplay failed");
+        OWE_ERROR("eglGetPlatformDisplay failed: 0x%x", eglGetError());
         free(e);
         return NULL;
     }
     if (!eglInitialize(e->display, &major, &minor)) {
-        OWE_ERROR("eglInitialize failed");
+        OWE_ERROR("eglInitialize failed: 0x%x", eglGetError());
         free(e);
         return NULL;
     }
-    eglBindAPI(EGL_OPENGL_API);
+    const char *vendor = eglQueryString(e->display, EGL_VENDOR);
+    OWE_INFO("EGL vendor=%s version=%d.%d", vendor ? vendor : "unknown", major, minor);
+    if (!eglBindAPI(EGL_OPENGL_API)) {
+        OWE_ERROR("eglBindAPI OpenGL failed: 0x%x", eglGetError());
+        eglTerminate(e->display);
+        free(e);
+        return NULL;
+    }
     if (!eglChooseConfig(e->display, cfg_attribs, &e->config, 1, &ncfg) || ncfg < 1) {
-        OWE_ERROR("eglChooseConfig failed");
+        OWE_ERROR("eglChooseConfig failed: 0x%x, matches=%d", eglGetError(), ncfg);
         eglTerminate(e->display);
         free(e);
         return NULL;
@@ -178,19 +203,23 @@ struct owe_egl *owe_egl_new(struct owe_wayland *wl) {
         }
     }
     if (e->context == EGL_NO_CONTEXT) {
-        OWE_ERROR("eglCreateContext failed");
+        OWE_ERROR("eglCreateContext failed: 0x%x", eglGetError());
         eglTerminate(e->display);
         free(e);
         return NULL;
     }
     if (!eglMakeCurrent(e->display, EGL_NO_SURFACE, EGL_NO_SURFACE, e->context)) {
-        OWE_ERROR("eglMakeCurrent failed");
+        OWE_ERROR("eglMakeCurrent without a surface failed: 0x%x", eglGetError());
         eglDestroyContext(e->display, e->context);
         eglTerminate(e->display);
         free(e);
         return NULL;
     }
-    OWE_INFO("egl ready version %d.%d", (int)major, (int)minor);
+    const char *gl_vendor = (const char *)glGetString(GL_VENDOR);
+    const char *gl_renderer = (const char *)glGetString(GL_RENDERER);
+    const char *gl_version = (const char *)glGetString(GL_VERSION);
+    OWE_INFO("OpenGL vendor=%s renderer=%s version=%s", gl_vendor ? gl_vendor : "unknown",
+             gl_renderer ? gl_renderer : "unknown", gl_version ? gl_version : "unknown");
     return e;
 }
 
@@ -283,9 +312,7 @@ int owe_egl_prepare_output(struct owe_egl *egl, struct owe_output *out) {
         }
         egl->current = (EGLSurface)out->egl_surface;
     }
-    if (!egl->blit.ready) {
-        blit_init(&egl->blit);
-    }
+    if (!egl->blit.ready && blit_init(&egl->blit) != 0) return -1;
     owe_output_buffer_size(out, &w, &h);
     if (out->egl_window && (out->egl_w != w || out->egl_h != h)) {
         wl_egl_window_resize((struct wl_egl_window *)out->egl_window, w, h, 0, 0);
@@ -297,13 +324,15 @@ int owe_egl_prepare_output(struct owe_egl *egl, struct owe_output *out) {
     return 0;
 }
 
-void owe_egl_swap_output(struct owe_egl *egl, struct owe_output *out) {
+int owe_egl_swap_output(struct owe_egl *egl, struct owe_output *out) {
     if (!egl || !out || !out->egl_surface) {
-        return;
+        return -1;
     }
     if (!eglSwapBuffers(egl->display, (EGLSurface)out->egl_surface)) {
-        OWE_ERROR("eglSwapBuffers failed: 0x%x", eglGetError());
+        OWE_ERROR("eglSwapBuffers failed for %s: 0x%x", out->name, eglGetError());
+        return -1;
     }
+    return 0;
 }
 
 void owe_egl_clear_output(struct owe_egl *egl, struct owe_output *out, float r, float g, float b,
@@ -320,6 +349,14 @@ unsigned int owe_egl_tex_from_rgba(struct owe_egl *egl, const uint8_t *rgba, int
     if (!egl || !rgba || w <= 0 || h <= 0) {
         return 0;
     }
+    GLint max_size = 0;
+    glGetIntegerv(GL_MAX_TEXTURE_SIZE, &max_size);
+    if (w > max_size || h > max_size) {
+        OWE_ERROR("Image exceeds the texture size limit: %dx%d, limit %d", w, h, max_size);
+        return 0;
+    }
+    /* Clear prior errors so this upload reports its own failure. */
+    while (glGetError() != GL_NO_ERROR) {}
     glGenTextures(1, &tex);
     glBindTexture(GL_TEXTURE_2D, tex);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
@@ -327,6 +364,12 @@ unsigned int owe_egl_tex_from_rgba(struct owe_egl *egl, const uint8_t *rgba, int
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    GLenum error = glGetError();
+    if (error != GL_NO_ERROR) {
+        OWE_ERROR("Texture upload failed: 0x%x", error);
+        glDeleteTextures(1, &tex);
+        return 0;
+    }
     return tex;
 }
 

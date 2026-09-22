@@ -26,6 +26,8 @@ typedef struct owe_output {
     int skip_render;
     int drm_off;
     int64_t drm_checked_ms;
+    uint64_t swaps;
+    uint64_t swap_failures;
     struct wl_surface *surface;
     struct zwlr_layer_surface_v1 *layer;
     struct wl_egl_window *egl_window;

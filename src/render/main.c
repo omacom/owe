@@ -80,17 +80,6 @@ static void cleanup(void) {
     owe_wayland_free(g_app.wl);
 }
 
-/* The feed socket sits next to the render socket, so a test renderer with a
- * private socket gets its own feed socket too. */
-static void feed_socket_path(const char *render_socket, char *buf, size_t len) {
-    char *slash;
-    snprintf(buf, len, "%s", render_socket);
-    slash = strrchr(buf, '/');
-    if (slash) {
-        snprintf(slash + 1, len - (size_t)(slash - buf + 1), "lock-feed.sock");
-    }
-}
-
 static void usage(const char *argv0) {
     fprintf(stderr,
             "Usage: %s [options]\n"
@@ -177,7 +166,11 @@ int main(int argc, char **argv) {
         cleanup();
         return fail_init();
     }
-    feed_socket_path(socket_path, feed_path, sizeof(feed_path));
+    if (owe_socket_path_sibling(socket_path, "lock-feed.sock", feed_path, sizeof(feed_path)) != 0) {
+        OWE_ERROR("cannot resolve feed socket path");
+        cleanup();
+        return fail_init();
+    }
     g_app.feed = owe_feed_new(feed_path, g_app.egl);
     if (!g_app.feed) {
         OWE_ERROR("feed init failed");

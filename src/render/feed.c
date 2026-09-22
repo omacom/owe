@@ -80,6 +80,7 @@ struct owe_feed {
 };
 
 _Static_assert(OWE_FEED_MAX_CLIENTS <= 32, "feed client mask size");
+_Static_assert(sizeof(struct feed_msg) == 40, "feed message size");
 
 static void slot_reset(struct feed_slot *s) {
     if (s->tex) {
@@ -147,7 +148,10 @@ static int slot_alloc(struct feed_slot *s, int w, int h) {
 static int send_msg(int fd, const struct feed_msg *msg, const int *fds, int nfds) {
     struct iovec iov;
     struct msghdr hdr;
-    char control[CMSG_SPACE(sizeof(int) * OWE_FEED_SLOTS)];
+    union {
+        struct cmsghdr align;
+        char bytes[CMSG_SPACE(sizeof(int) * OWE_FEED_SLOTS)];
+    } control = {0};
     ssize_t n;
     iov.iov_base = (void *)msg;
     iov.iov_len = sizeof(*msg);
@@ -156,7 +160,7 @@ static int send_msg(int fd, const struct feed_msg *msg, const int *fds, int nfds
     hdr.msg_iovlen = 1;
     if (nfds > 0) {
         struct cmsghdr *cmsg;
-        hdr.msg_control = control;
+        hdr.msg_control = control.bytes;
         hdr.msg_controllen = CMSG_SPACE(sizeof(int) * (size_t)nfds);
         cmsg = CMSG_FIRSTHDR(&hdr);
         cmsg->cmsg_level = SOL_SOCKET;
@@ -164,7 +168,7 @@ static int send_msg(int fd, const struct feed_msg *msg, const int *fds, int nfds
         cmsg->cmsg_len = CMSG_LEN(sizeof(int) * (size_t)nfds);
         memcpy(CMSG_DATA(cmsg), fds, sizeof(int) * (size_t)nfds);
     }
-    n = sendmsg(fd, &hdr, MSG_NOSIGNAL);
+    do { n = sendmsg(fd, &hdr, MSG_NOSIGNAL); } while (n < 0 && errno == EINTR);
     return n == (ssize_t)sizeof(*msg) ? 0 : -1;
 }
 

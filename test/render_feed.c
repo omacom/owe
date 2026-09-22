@@ -2,7 +2,7 @@
 
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #x); exit(1); } } while (0)
 
-struct owe_mpv { bool muted; bool stopped; };
+struct owe_mpv { bool muted; bool stopped; bool paused; };
 struct owe_still { int result; };
 struct owe_feed { bool active; };
 static owe_app_t app;
@@ -10,13 +10,16 @@ static int render_requests;
 static bool still_busy = true;
 static int reload_width;
 static int reload_height;
+static bool cancelled;
 
 owe_app_t *owe_app_get(void) { return &app; }
 void owe_app_request_render(void) { render_requests++; }
 void owe_feed_stop(struct owe_feed *feed) { feed->active = false; }
 void owe_mpv_set_muted(struct owe_mpv *mpv, bool muted) { mpv->muted = muted; }
+void owe_mpv_set_paused(struct owe_mpv *mpv, bool paused) { mpv->paused = paused; }
 void owe_mpv_stop(struct owe_mpv *mpv) { mpv->stopped = true; }
 void owe_still_unload(struct owe_still *still) { (void)still; }
+void owe_still_cancel(struct owe_still *still) { cancelled = true; still->result = 0; }
 bool owe_still_busy(struct owe_still *still) { (void)still; return still_busy; }
 int owe_still_poll(struct owe_still *still) { return still->result; }
 bool owe_still_has_image(struct owe_still *still) { (void)still; return true; }
@@ -48,12 +51,31 @@ int main(void) {
     owe_render_ipc_poll_still(&ipc);
     CHECK(app.feeding && feed.active && mpv.muted && !mpv.stopped && render_requests == 0);
     still.result = 1;
+    strcpy(ipc.pending_path, "/still.png");
     owe_render_ipc_poll_still(&ipc);
     CHECK(!app.feeding && !feed.active && !mpv.muted && mpv.stopped && render_requests == 1);
     CHECK(strcmp(app.current_path, "/still.png") == 0 && strcmp(app.current_kind, "still") == 0);
     stop_feed(&app);
     CHECK(render_requests == 1);
     puts("renderer feed-to-still transition checks passed");
+
+    /* No feed clients can pause mpv without a desktop pause request. */
+    app.feeding = feed.active = true;
+    mpv.paused = true;
+    stop_feed(&app);
+    CHECK(!mpv.paused && !app.feeding && !feed.active);
+    app.feeding = feed.active = true;
+    app.paused = true;
+    stop_feed(&app);
+    CHECK(mpv.paused);
+
+    /* Expired asynchronous loads cannot replace the previous image. */
+    still.result = 1;
+    strcpy(ipc.pending_path, "/late.png");
+    ipc.pending_deadline_ms = owe_ipc_now_ms() - 1;
+    owe_render_ipc_poll_still(&ipc);
+    CHECK(cancelled && !*ipc.pending_path && *ipc.load_error);
+    CHECK(strcmp(app.current_path, "/still.png") == 0);
 
     /* A late decode reply belongs to the original connection only. */
     int first[2], replacement[2];

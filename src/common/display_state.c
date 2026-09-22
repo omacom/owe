@@ -17,7 +17,13 @@ static int attribute(const char *root, const char *name, const char *key, char *
     return ok ? 0 : -1;
 }
 
+bool owe_drm_dpms_enabled(void) {
+    const char *value = getenv("OWE_DRM_DPMS");
+    return !value || strcmp(value, "0") != 0;
+}
+
 int owe_drm_all_off(const char *root) {
+    if (!owe_drm_dpms_enabled()) return -1;
     DIR *dir = opendir(root);
     if (!dir) return -1;
     struct dirent *entry;
@@ -51,6 +57,8 @@ int owe_drm_connector_state(const char *root, const char *name) {
     struct dirent *entry;
     char suffix[300];
     int result = -1;
+    bool matched = false;
+    if (!owe_drm_dpms_enabled()) return -1;
     if (!root || !name || !*name) return -1;
     snprintf(suffix, sizeof(suffix), "-%s", name);
     dir = opendir(root);
@@ -63,9 +71,15 @@ int owe_drm_connector_state(const char *root, const char *name) {
         if (len < slen || strcmp(entry->d_name + len - slen, suffix) != 0) continue;
         if (attribute(root, entry->d_name, "status", status, sizeof(status)) < 0) continue;
         if (strcmp(status, "connected") != 0) continue;
-        if (attribute(root, entry->d_name, "dpms", dpms, sizeof(dpms)) < 0) {
+        /* Connector names can repeat across GPUs. A name alone cannot select the GPU. */
+        if (matched) {
             result = -1;
             break;
+        }
+        matched = true;
+        if (attribute(root, entry->d_name, "dpms", dpms, sizeof(dpms)) < 0) {
+            result = -1;
+            continue;
         }
         if (strcmp(dpms, "On") == 0) {
             result = 0;
@@ -75,7 +89,6 @@ int owe_drm_connector_state(const char *root, const char *name) {
         } else {
             result = -1;
         }
-        break;
     }
     closedir(dir);
     return result;

@@ -18,7 +18,7 @@ void *owe_egl_create_window_surface(struct owe_egl *egl, void *egl_window);
 void owe_egl_destroy_output(struct owe_egl *egl, struct owe_output *out);
 
 int owe_egl_prepare_output(struct owe_egl *egl, struct owe_output *out);
-void owe_egl_swap_output(struct owe_egl *egl, struct owe_output *out);
+int owe_egl_swap_output(struct owe_egl *egl, struct owe_output *out);
 void owe_egl_clear_output(struct owe_egl *egl, struct owe_output *out, float r, float g, float b,
                           float a);
 

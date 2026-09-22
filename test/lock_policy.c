@@ -38,7 +38,6 @@ bool owed_hypr_locked(struct owed_hypr *h) { return h && h->locked; }
 bool owed_hypr_all_monitors_off(struct owed_hypr *h) { return h && h->off; }
 bool owed_hypr_any_fullscreen(struct owed_hypr *h) { return h && h->fullscreen; }
 bool owed_hypr_any_window_visible(struct owed_hypr *h) { (void)h; return false; }
-void owed_ipc_broadcast(struct owed_ipc *ipc, const char *line) { (void)ipc; (void)line; }
 int owed_render_is_alive(struct owed_supervisor *s) { return s != NULL; }
 int owed_supervisor_feed_start(struct owed_supervisor *s) {
     s->starts++;
@@ -214,6 +213,19 @@ int main(void) {
     owed_app_apply_policy();
     CHECK(renderer.starts == 2 && !strcmp(g_app.loaded_path, "/retry.mp4"));
 
+    /* A failed shell disable keeps the shell state and retries the handoff. */
+    g_app.engine = OWE_ENGINE_SHELL;
+    g_app.shell_enabled = 1;
+    shell_plugin_fail = true;
+    int loads_before_handoff = renderer.loads;
+    owed_app_apply_policy();
+    CHECK(g_app.engine == OWE_ENGINE_SHELL && g_app.shell_enabled == 1);
+    CHECK(renderer.loads == loads_before_handoff && g_app.renderer_retry_at_ms > 0);
+    shell_plugin_fail = false;
+    g_app.renderer_retry_at_ms = 0;
+    owed_app_apply_policy();
+    CHECK(g_app.engine == OWE_ENGINE_RENDERER && g_app.shell_enabled == 0);
+
     /* A failed shell command is also rate limited while the still falls back. */
     strcpy(g_app.source_path, "/still.png");
     strcpy(g_app.source_kind, "still");
@@ -353,6 +365,39 @@ int main(void) {
     CHECK(!owed_app_intro_active());
     CHECK(g_app.engine == OWE_ENGINE_SHELL);
     strcpy(supervisor_reply, "{\"status\":\"ok\"}");
+    CHECK(owed_app_start_intro("/intro.mp4") == 0);
+    hypr.locked = true;
+    owed_app_poll_intro();
+    CHECK(!owed_app_intro_active() && g_app.engine == OWE_ENGINE_SHELL);
+    hypr.locked = false;
+    /* An expired poster cancels its load and restores the playable video. */
+    g_app.engine = OWE_ENGINE_RENDERER;
+    power.battery = true;
+    strcpy(g_app.config.battery_mode, "poster");
+    strcpy(g_app.source_path, "/video.mp4");
+    strcpy(g_app.source_kind, "video");
+    strcpy(g_app.loaded_path, "/poster.png");
+    strcpy(g_app.loaded_kind, "still");
+    strcpy(g_app.last_good_path, "/video.mp4");
+    strcpy(g_app.last_good_kind, "video");
+    strcpy(g_app.restore_path, "/video.mp4");
+    strcpy(g_app.restore_kind, "video");
+    g_app.fail_path[0] = g_app.poster_fail_path[0] = '\0';
+    g_app.media_pending = true;
+    g_app.media_ready = false;
+    g_app.media_deadline_ms = monotonic_ms() - 1;
+    loads = renderer.loads;
+    check_media_ready();
+    CHECK(strstr(supervisor_last, "cancel-load") != NULL);
+    CHECK(!*g_app.fail_path && !strcmp(g_app.poster_fail_path, "/video.mp4"));
+    CHECK(renderer.loads == loads + 1 && !strcmp(g_app.loaded_path, "/video.mp4"));
+    CHECK(!g_app.media_ready && g_app.media_pending);
+    strcpy(supervisor_reply, "{\"status\":\"ok\",\"path\":\"/wrong.mp4\",\"kind\":\"video\",\"ready\":true}");
+    check_media_ready();
+    CHECK(!g_app.media_ready && g_app.media_pending);
+    strcpy(supervisor_reply, "{\"status\":\"ok\",\"path\":\"/video.mp4\",\"kind\":\"video\",\"ready\":true}");
+    check_media_ready();
+    CHECK(g_app.media_ready && !g_app.media_pending);
     owed_policy_free(g_app.policy);
     puts("lock policy and still transition checks passed");
     return 0;

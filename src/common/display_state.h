@@ -4,6 +4,7 @@
 
 #include "yyjson.h"
 
+bool owe_drm_dpms_enabled(void);
 /* Return -1 when connector data cannot establish the power state. */
 int owe_drm_all_off(const char *root);
 int owe_drm_connector_state(const char *root, const char *name);

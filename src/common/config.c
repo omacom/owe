@@ -3,6 +3,7 @@
 #include "log.h"
 
 #include <stdio.h>
+#include <ctype.h>
 #include <errno.h>
 #include <limits.h>
 #include <stdlib.h>
@@ -42,19 +43,54 @@ static void strip_quotes(char *v) {
     }
 }
 
-static void parse_blocklist(owe_config_t *cfg, char *v) {
-    owe_trim(v);
-    if (*v == '[') {
-        v++;
-    }
-    for (char *tok = strtok(v, ",]"); tok; tok = strtok(NULL, ",]")) {
-        owe_trim(tok);
-        strip_quotes(tok);
-        if (!*tok || cfg->blocklist_count >= 16) {
-            continue;
+static char *unquoted(char *text, char needle) {
+    char quote = 0;
+    for (char *p = text; *p; p++) {
+        if (quote) {
+            if (*p == '\\' && quote == '"' && p[1]) p++;
+            else if (*p == quote) quote = 0;
+        } else if (*p == needle) {
+            return p;
+        } else if (*p == '"' || *p == '\'') {
+            quote = *p;
         }
-        snprintf(cfg->blocklist[cfg->blocklist_count], sizeof(cfg->blocklist[0]), "%s", tok);
+    }
+    return NULL;
+}
+
+static bool parse_blocklist(owe_config_t *cfg, char *v) {
+    owe_trim(v);
+    size_t len = strlen(v);
+    if (len < 2 || *v != '[' || v[len - 1] != ']') return false;
+    v[len - 1] = '\0';
+    v++;
+    cfg->blocklist_count = 0;
+    for (;;) {
+        while (isspace((unsigned char)*v)) v++;
+        if (!*v) return true;
+        char name[sizeof(cfg->blocklist[0])];
+        size_t used = 0;
+        char quote = (*v == '"' || *v == '\'') ? *v++ : 0;
+        while (*v && (quote ? *v != quote : *v != ',')) {
+            char c = *v++;
+            if (quote == '"' && c == '\\') {
+                c = *v++;
+                if (c != '\\' && c != '"') return false;
+            } else if (!quote && (c == '[' || c == ']' || c == '"' || c == '\'')) {
+                return false;
+            }
+            if (used + 1 >= sizeof(name)) return false;
+            name[used++] = c;
+        }
+        if (quote && *v++ != quote) return false;
+        name[used] = '\0';
+        if (!quote) owe_trim(name);
+        if (!*name || cfg->blocklist_count >= 16) return false;
+        snprintf(cfg->blocklist[cfg->blocklist_count], sizeof(cfg->blocklist[0]), "%s", name);
         cfg->blocklist_count++;
+        while (isspace((unsigned char)*v)) v++;
+        if (!*v) return true;
+        if (*v++ != ',') return false;
     }
 }
 
@@ -87,9 +123,7 @@ static bool apply_value(owe_config_t *cfg, const char *section, const char *key,
             return true;
         }
         if (strcmp(key, "blocklist") == 0) {
-            cfg->blocklist_count = 0;
-            parse_blocklist(cfg, value);
-            return true;
+            return parse_blocklist(cfg, value);
         }
     } else if (strcmp(section, "transcode") == 0) {
         if (strcmp(key, "gif_fps") == 0) {
@@ -124,6 +158,7 @@ int owe_config_load(owe_config_t *cfg, const char *path) {
     char section[512] = "";
     char pending_key[512] = "";
     char pending_value[4096] = "";
+    unsigned int line_number = 0;
     cfg = &parsed;
     if (!path) {
         return -1;
@@ -133,7 +168,9 @@ int owe_config_load(owe_config_t *cfg, const char *path) {
         return -1;
     }
     while (fgets(line, sizeof(line), f)) {
-        char *hash = strchr(line, '#');
+        line_number++;
+        if (strlen(line) == sizeof(line) - 1 && !strchr(line, '\n')) goto invalid;
+        char *hash = unquoted(line, '#');
         char *eq;
         if (hash) {
             *hash = '\0';
@@ -141,10 +178,9 @@ int owe_config_load(owe_config_t *cfg, const char *path) {
         owe_trim(line);
         if (pending_key[0]) {
             size_t used = strlen(pending_value);
-            if (used < sizeof(pending_value) - 2) {
-                snprintf(pending_value + used, sizeof(pending_value) - used, " %s", line);
-            }
-            if (strchr(line, ']')) {
+            if (snprintf(pending_value + used, sizeof(pending_value) - used, " %s", line) >=
+                (int)(sizeof(pending_value) - used)) goto invalid;
+            if (unquoted(line, ']')) {
                 char key[sizeof(pending_key)];
                 char value[sizeof(pending_value)];
                 snprintf(key, sizeof(key), "%s", pending_key);
@@ -163,14 +199,15 @@ int owe_config_load(owe_config_t *cfg, const char *path) {
         if (line[0] == '[') {
             char *end = strchr(line, ']');
             if (end) {
+                if (end[1]) goto invalid;
                 *end = '\0';
                 snprintf(section, sizeof(section), "%s", line + 1);
-            }
+            } else goto invalid;
             continue;
         }
         eq = strchr(line, '=');
         if (!eq) {
-            continue;
+            goto invalid;
         }
         *eq = '\0';
         {
@@ -179,7 +216,7 @@ int owe_config_load(owe_config_t *cfg, const char *path) {
             owe_trim(key);
             owe_trim(value);
             strip_quotes(value);
-            if (value[0] == '[' && !strchr(value, ']')) {
+            if (value[0] == '[' && !unquoted(value, ']')) {
                 snprintf(pending_key, sizeof(pending_key), "%s", key);
                 snprintf(pending_value, sizeof(pending_value), "%s", value);
                 continue;
@@ -189,10 +226,7 @@ int owe_config_load(owe_config_t *cfg, const char *path) {
             }
         }
     }
-    if (pending_key[0]) {
-        fclose(f);
-        return -1;
-    }
+    if (pending_key[0] || ferror(f)) goto invalid;
     fclose(f);
     if (cfg->gif_fps < 5) {
         cfg->gif_fps = 5;
@@ -221,6 +255,8 @@ int owe_config_load(owe_config_t *cfg, const char *path) {
     *destination = *cfg;
     return 0;
 invalid:
+    OWE_ERROR("Invalid config at %s:%u", path, line_number);
     fclose(f);
+    errno = EINVAL;
     return -1;
 }

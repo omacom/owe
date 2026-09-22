@@ -123,6 +123,7 @@ int owe_ipc_listen(const char *path) {
     struct sockaddr_un addr;
     int fd;
     if (!path || strlen(path) >= sizeof(addr.sun_path)) {
+        errno = path ? ENAMETOOLONG : EINVAL;
         return -1;
     }
     fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
@@ -149,6 +150,7 @@ int owe_ipc_connect(const char *path) {
     struct sockaddr_un addr;
     int fd;
     if (!path || strlen(path) >= sizeof(addr.sun_path)) {
+        errno = path ? ENAMETOOLONG : EINVAL;
         return -1;
     }
     fd = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
@@ -207,13 +209,32 @@ int owe_ipc_send_line(int fd, const char *line) {
 }
 
 int owe_ipc_recv_line(int fd, char *buf, size_t len) {
+    return owe_ipc_recv_line_timeout(fd, buf, len, 5000);
+}
+
+int owe_ipc_recv_line_timeout(int fd, char *buf, size_t len, int timeout_ms) {
     size_t off = 0;
-    if (!buf || len < 2) {
+    if (!buf || len < 2 || timeout_ms <= 0) {
+        errno = EINVAL;
         return -1;
     }
+    buf[0] = '\0';
+    int64_t deadline = owe_ipc_now_ms() + timeout_ms;
     for (;;) {
         char chunk[512];
-        ssize_t peek = recv(fd, chunk, sizeof(chunk), MSG_PEEK);
+        int64_t remaining = deadline - owe_ipc_now_ms();
+        if (remaining <= 0) {
+            errno = ETIMEDOUT;
+            return -1;
+        }
+        struct pollfd pfd = {.fd = fd, .events = POLLIN};
+        int rc = poll(&pfd, 1, (int)remaining);
+        if (rc < 0 && errno == EINTR) continue;
+        if (rc <= 0) {
+            if (!rc) errno = ETIMEDOUT;
+            return -1;
+        }
+        ssize_t peek = recv(fd, chunk, sizeof(chunk), MSG_PEEK | MSG_DONTWAIT);
         char *nl;
         size_t take;
         ssize_t got;
@@ -222,7 +243,7 @@ int owe_ipc_recv_line(int fd, char *buf, size_t len) {
             return -1;
         }
         if (peek < 0) {
-            if (errno == EINTR) {
+            if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
                 continue;
             }
             return -1;
@@ -231,9 +252,9 @@ int owe_ipc_recv_line(int fd, char *buf, size_t len) {
          * that belong to a later line on the same connection. */
         nl = memchr(chunk, '\n', (size_t)peek);
         take = nl ? (size_t)(nl - chunk) + 1 : (size_t)peek;
-        got = recv(fd, chunk, take, 0);
+        got = recv(fd, chunk, take, MSG_DONTWAIT);
         if (got <= 0) {
-            if (got < 0 && errno == EINTR) {
+            if (got < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK)) {
                 continue;
             }
             return -1;
@@ -245,11 +266,15 @@ int owe_ipc_recv_line(int fd, char *buf, size_t len) {
                 return off ? 0 : -1;
             }
             if (c == '\0') {
+                shutdown(fd, SHUT_RDWR);
+                errno = EPROTO;
                 return -1;
             }
             if (c != '\r') {
                 if (off + 1 >= len) {
                     buf[off] = '\0';
+                    /* A malformed reply invalidates the rest of this connection. */
+                    shutdown(fd, SHUT_RDWR);
                     errno = EMSGSIZE;
                     return -1;
                 }

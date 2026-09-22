@@ -52,6 +52,11 @@ Replacement requests cancel the worker's I/O and keep only the newest queued
 request. The event loop reaps the old decoder when it completes; it never
 joins an unfinished decoder during media changes. Shutdown joins the worker
 before freeing its state.
+The daemon requests asynchronous still loads, so its policy loop does not wait for the decoder.
+These loads have a 30-second deadline.
+Synchronous renderer clients retain deferred replies with a four-second decode deadline.
+An expired load cancels its worker and preserves the previous media.
+Readiness requires the reported path and kind to match the accepted request.
 The renderer uploads one texture, presents the fade, and stops frame requests after the fully opaque final frame.
 
 The outgoing transition image can upload through any available output surface.
@@ -74,6 +79,7 @@ daemon ends an intro early when the screen locks, the session sleeps, a
 fullscreen window appears, the background changes, or the renderer dies.
 After an intro the daemon returns the engine to the shell. `intro-status`
 reports `running` and the last result, and `intro-stop` cancels.
+The renderer observes `eof-reached` because `keep-open` can retain playback without an `END_FILE` event.
 
 ## Lock feed
 
@@ -100,6 +106,8 @@ at the source resolution and the protocol's 3840×2160 limit. QML items in the
 same process share one CPU copy of a frame. Geometry-only updates reuse the
 existing texture. The feed still uses GPU readback and texture uploads;
 these changes reduce their cost without claiming zero-copy GPU transport.
+The QML client queues acknowledgements when its socket cannot accept a complete reply.
+The queue holds at most eight protocol messages.
 
 The QML client reads one protocol message at a time, so descriptors stay with their `HELLO` message.
 It retries the connection after a disconnect while `active` remains true.
@@ -149,6 +157,8 @@ The renderer child is reaped on `SIGCHLD` and restarted with the current
 media when it dies. Only the daemon restart path spawns a replacement;
 individual IPC sends fail if the child has exited, preserving state recovery.
 Retry delays prevent a renderer failure from causing a rapid restart loop.
+The daemon retries a failed shell disable without recording a successful handoff.
+An explicit media selection clears the handoff retry delay.
 
 ## IPC
 
@@ -159,6 +169,8 @@ goes to its own requester, including asynchronous replies after a client slot
 is reused. Both servers use the same bounded transport: idle connections and
 incomplete requests expire after two minutes, and partial writes are queued
 with a four-message-size limit. Slow readers cannot grow the queue indefinitely.
+Client reply deadlines cover the complete reply, including fragmented data.
+An invalid or oversized reply terminates its connection.
 
 ## Shutdown
 

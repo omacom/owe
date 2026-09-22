@@ -17,13 +17,22 @@ if ((${#missing[@]})); then
   exit 1
 fi
 
+if ! pkg-config --print-errors --exists wayland-client wayland-egl egl glesv2 gl epoxy \
+    'mpv >= 0.35' libavformat libavcodec libavutil libswscale libsystemd Qt6Quick Qt6Test; then
+  printf '%s\n' \
+    'Install the required libraries:' \
+    '  omarchy pkg add wayland libglvnd libepoxy mpv ffmpeg systemd-libs qt6-declarative' >&2
+  exit 1
+fi
+
 echo "==> build"
 meson setup --reconfigure -Dbuildtype=release "${ROOT}/build" "${ROOT}" >/dev/null 2>&1 || \
   meson setup -Dbuildtype=release "${ROOT}/build" "${ROOT}"
 ninja -C "${ROOT}/build"
 meson test -C "${ROOT}/build"
 cmake -S "${ROOT}/qml-plugin" -B "${ROOT}/build-qml" \
-  -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="${PREFIX}" -DCMAKE_INSTALL_LIBDIR=lib
+  -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="${PREFIX}" -DCMAKE_INSTALL_LIBDIR=lib \
+  -DBUILD_TESTING=ON
 cmake --build "${ROOT}/build-qml"
 ctest --test-dir "${ROOT}/build-qml" --output-on-failure
 cmake --install "${ROOT}/build-qml"

@@ -12,19 +12,23 @@ One tag push builds, tests, publishes the GitHub release, and updates the AUR pa
 
 ## Release steps
 
-1. Bump `version` in `meson.build` and commit it to `main`.
-2. Tag the commit and push the tag:
+1. Update the version in `meson.build` and `qml-plugin/CMakeLists.txt`.
+2. Commit and push the verified changes to `main`.
+3. Tag the commit and push the tag:
 
    ```bash
    git tag -a vX.Y.Z -m vX.Y.Z
    git push origin vX.Y.Z
    ```
 
-3. The release workflow runs:
+4. The release workflow runs:
    - builds and tests on Arch,
    - checks that the tag matches `meson.build`,
    - runs `meson dist` and attaches the archive and `SHA256SUMS` to the GitHub release,
-   - rewrites the AUR `PKGBUILD` for the version and the tag archive checksum, then pushes it.
+    - rewrites the AUR `PKGBUILD` for the version and the tag archive checksum, then pushes it.
+
+The tag archive checksum becomes available after the tag exists.
+After publication, update `packaging/PKGBUILD` with that version and checksum in a separate commit.
 
 To run the flow without a tag, dispatch it with the version:
 
@@ -38,8 +42,9 @@ The workflow creates the tag at the current `main` commit. Both paths require th
 
 The AUR package declares three dependency groups:
 
-- `depends` is the direct runtime set: `mpv`, `ffmpeg`, `wayland`, `libglvnd`, `libepoxy`, `systemd-libs`, and `socat`. Transitive libraries come with those packages. `mpv` pulls `mesa` and the VAAPI libraries.
-- `makedepends` is build-only: `meson`, `ninja`, `gcc`, `pkgconf`, and `wayland-protocols`. An AUR helper installs these for the build, then they are not runtime dependencies.
+- `depends` contains `mpv`, `ffmpeg`, `wayland`, `libglvnd`, `libepoxy`, `systemd-libs`, `socat`, and `qt6-declarative`.
+  `mpv` supplies Mesa and the VAAPI libraries as dependencies.
+- `makedepends` contains `meson`, `ninja`, `gcc`, `pkgconf`, `wayland-protocols`, and `cmake`.
 - `checkdepends` is `python`, used by the daemon test.
 - `optdepends` names the VAAPI drivers for hardware decode: `intel-media-driver` on Intel and `libva-mesa-driver` on AMD.
 

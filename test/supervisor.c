@@ -21,5 +21,8 @@ int main(void) {
     supervisor.child = child;
     CHECK(owed_supervisor_send(&supervisor, "{}", NULL, 0) < 0);
     CHECK(supervisor.child == 0 && spawns == 0);
+    supervisor.next_restart = monotonic_ms() + 2000;
+    owed_supervisor_stop(&supervisor);
+    CHECK(supervisor.next_restart == 0);
     puts("only explicit supervisor restarts spawn renderers");
 }

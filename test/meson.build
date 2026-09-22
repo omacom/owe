@@ -63,7 +63,8 @@ test('uninstall', find_program('bash'),
   args : [files('uninstall.sh'), meson.project_source_root() / 'packaging/uninstall.sh'])
 
 test('daemon', find_program('python3'),
-  args : [files('daemon.py'), owed.full_path()], timeout : 30)
+  args : [files('daemon.py'), owed.full_path(), owe_cli.full_path()],
+  depends : [owed, owe_cli], timeout : 45)
 
 feed_test = executable('owe-feed-test',
   files('feed.c', '../src/common/common_ipc.c', '../src/common/xdg.c', '../src/common/log.c'),

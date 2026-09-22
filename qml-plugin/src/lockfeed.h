@@ -53,6 +53,7 @@ private:
     void disconnectSocket();
     void retrySocket();
     void readSocket();
+    bool flushAcks();
     bool handleMessage(const QByteArray &message, const QVector<int> &fds);
     void resetMaps();
 
@@ -62,8 +63,10 @@ private:
 
     int m_fd = -1;
     QSocketNotifier *m_notifier = nullptr;
+    QSocketNotifier *m_writeNotifier = nullptr;
     QTimer m_retry;
     QByteArray m_buffer;
+    QByteArray m_acks;
     QVector<int> m_pendingFds;
 
     struct FrameSlot {

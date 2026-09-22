@@ -105,7 +105,6 @@ void owed_policy_recompute(struct owed_policy *p) {
 done:
     if (pause != p->paused || poster != p->poster || strcmp(reason, p->reason) != 0) {
         OWE_INFO("policy pause=%d poster=%d reason=%s", pause, poster, reason);
-        owed_app_emit_event(pause ? "paused" : "resumed", reason);
     }
     p->paused = pause;
     p->poster = poster;
