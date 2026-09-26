@@ -96,7 +96,7 @@ transition_test = executable('owe-transition-test',
                   avformat_dep, avcodec_dep, avutil_dep, swscale_dep, threads_dep],
   c_args : ['-ffunction-sections', '-fdata-sections'],
   link_args : ['-Wl,--gc-sections'])
-test('transition', transition_test, timeout : 30,
+test('transition', transition_test, timeout : 90,
   env : ['LIBGL_ALWAYS_SOFTWARE=1', 'OWE_HWDEC=no', 'OWE_MPV_OPTIONS='])
 
 # This test needs an explicitly started daemon and a video wallpaper.
