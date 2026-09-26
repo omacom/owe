@@ -345,15 +345,34 @@ int main(void) {
     verify(strcmp(app.current_kind, "still") == 0 && samples[0][0] > 240,
            "the accepted still replaces video after its texture upload");
 
-    snprintf(line, sizeof(line), "{\"cmd\":\"load\",\"path\":\"%s/blue.mp4\",\"kind\":\"video\",\"once\":true,\"mute\":true}", root);
+    command("{\"cmd\":\"fade\",\"ms\":250}");
+    snprintf(line, sizeof(line), "{\"cmd\":\"load\",\"path\":\"%s/blue.mp4\",\"kind\":\"video\",\"once\":true,\"mute\":true,\"from\":\"%s/red.png\"}", root, root);
     command(line);
     run_ms(300);
     await_video();
+    verify(app.intro_waiting && owe_still_has_image(app.transition) &&
+           samples[0][0] > 240 && samples[0][2] < 10,
+           "a prepared intro holds the outgoing still before handoff");
+    memset(blended, 0, sizeof(blended));
+    memset(dark_frames, 0, sizeof(dark_frames));
+    command("{\"cmd\":\"intro-show\"}");
+    run_ms(550);
     verify(owe_mpv_ready(app.mpv) && !owe_mpv_eof(app.mpv),
            "a one-shot video does not inherit the previous media EOF");
-    run_ms(3100);
+    verify(blended[0] >= 3 && dark_frames[0] == 0 && samples[0][2] > 240,
+           "the prepared still fades into the intro without a dark frame");
+    run_ms(2600);
     verify(owe_mpv_eof(app.mpv) && samples[0][2] > 240,
            "a one-shot video reports EOF while it holds the final frame");
+    memset(blended, 0, sizeof(blended));
+    memset(dark_frames, 0, sizeof(dark_frames));
+    snprintf(line, sizeof(line), "{\"cmd\":\"intro-finish\",\"path\":\"%s/red.png\",\"ms\":250}", root);
+    command(line);
+    run_ms(550);
+    verify(blended[0] >= 3 && dark_frames[0] == 0 && samples[0][0] > 240 &&
+           samples[0][2] < 10 && owe_still_has_image(app.transition) &&
+           owe_still_fade_done(app.transition),
+           "the intro final frame fades into a held matching still");
     video(0);
     await_video();
     printf("Loop after intro: ready=%d, paused=%d, eof=%d, position=%.3f\n",

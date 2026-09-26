@@ -19,6 +19,13 @@ enum owed_engine {
     OWE_ENGINE_RENDERER = 2,
 };
 
+enum owed_intro_phase {
+    OWE_INTRO_IDLE = 0,
+    OWE_INTRO_PREPARING = 1,
+    OWE_INTRO_PLAYING = 2,
+    OWE_INTRO_FINISHING = 3,
+};
+
 typedef struct owed_app {
     owe_config_t config;
     struct owed_watch *watch;
@@ -62,9 +69,11 @@ typedef struct owed_app {
     int render_paused; /* -1 unknown, 0 playing, 1 paused */
     int render_feeding; /* 1 while the lock feed owns the renderer */
     int intro_active; /* 1 while a one-shot intro video owns the renderer */
+    int intro_phase;
     char intro_path[4096];
     char intro_result[16];
     int64_t intro_deadline_ms;
+    int64_t intro_phase_deadline_ms;
     unsigned long source_generation;
 } owed_app_t;
 
