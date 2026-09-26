@@ -58,6 +58,8 @@ int owed_supervisor_load(struct owed_supervisor *s, const char *path, const char
     return s->fail_load ? -1 : 0;
 }
 int owed_supervisor_ensure_running(struct owed_supervisor *s) { s->starts++; return s->fail_start ? -1 : 0; }
+void owed_supervisor_stop(struct owed_supervisor *s) { s->stops++; }
+int owed_supervisor_intro_show(struct owed_supervisor *s) { (void)s; return 0; }
 int owed_supervisor_fade(struct owed_supervisor *s, int ms) { (void)s; (void)ms; return 0; }
 
 static int shell_plugin_calls;
@@ -317,15 +319,22 @@ int main(void) {
     CHECK(owed_app_intro_active());
     CHECK(strstr(supervisor_last, "\"once\":true") != NULL);
     CHECK(strstr(supervisor_last, "\"mute\":true") != NULL);
-    CHECK(g_app.engine == OWE_ENGINE_RENDERER);
+    CHECK(strstr(supervisor_last, "\"from\":\"/corrupt.png\"") != NULL);
+    CHECK(g_app.engine == OWE_ENGINE_SHELL);
     CHECK(renderer.starts == 1);
-    CHECK(shell_plugin_calls == 1 && !shell_plugin_enabled);
+    CHECK(shell_plugin_calls == 0 && shell_plugin_enabled);
 
-    strcpy(supervisor_reply, "{\"status\":\"ok\",\"ready\":true,\"error\":\"\",\"eof\":false}");
+    strcpy(supervisor_reply, "{\"status\":\"ok\",\"ready\":false,\"error\":\"\",\"eof\":false,\"has_transition\":true,\"transition_busy\":false,\"transition_done\":false}");
     owed_app_poll_intro();
     CHECK(owed_app_intro_active());
+    CHECK(g_app.engine == OWE_ENGINE_RENDERER);
+    CHECK(shell_plugin_calls == 1 && !shell_plugin_enabled);
     CHECK(owed_app_start_intro("/other.mp4") != 0);
-    strcpy(supervisor_reply, "{\"status\":\"ok\",\"ready\":true,\"error\":\"\",\"eof\":true}");
+    strcpy(supervisor_reply, "{\"status\":\"ok\",\"ready\":true,\"error\":\"\",\"eof\":true,\"has_transition\":false,\"transition_busy\":false,\"transition_done\":false}");
+    owed_app_poll_intro();
+    CHECK(owed_app_intro_active() && g_app.intro_phase == OWE_INTRO_FINISHING);
+    CHECK(strstr(supervisor_last, "\"cmd\":\"intro-finish\"") != NULL);
+    strcpy(supervisor_reply, "{\"status\":\"ok\",\"ready\":true,\"error\":\"\",\"eof\":true,\"has_transition\":true,\"transition_busy\":false,\"transition_done\":true}");
     owed_app_poll_intro();
     CHECK(!owed_app_intro_active());
     CHECK(strcmp(owed_app_intro_result(), "ok") == 0);

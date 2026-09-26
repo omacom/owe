@@ -72,9 +72,10 @@ while paused, so the main loop sleeps in `poll`.
 
 A still background can play one short intro video at login. The shell
 resolves the matching intro, then calls `owe intro <path>`. The daemon
-starts the renderer if needed, loads the file with `once` and `mute`, and
-reports progress until EOF. The renderer holds the final frame through
-`keep-open`, so the handoff to the shell's still has no black gap. The
+starts the renderer if needed and loads the file with `once`, `mute`, and the
+current still as its transition source. The renderer presents that still before
+the shell releases its layer, then fades it out over the intro. At EOF the renderer
+fades the final frame into the matching still and holds it while the shell returns. The
 daemon ends an intro early when the screen locks, the session sleeps, a
 fullscreen window appears, the background changes, or the renderer dies.
 After an intro the daemon returns the engine to the shell. `intro-status`

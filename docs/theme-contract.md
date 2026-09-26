@@ -24,7 +24,8 @@ It adds no Omarchy-side hooks and edits no packaged file.
 ## Shell handoff
 
 The daemon manages ownership at runtime: it enables the shell background
-plugin for stills and releases that layer after the video renderer starts.
+plugin for stills and releases that layer after the video renderer has decoded
+and presented a matching replacement buffer.
 Uninstall re-enables the background plugin in the current `shell.json`.
 It preserves shell settings added after installation.
 
@@ -35,6 +36,7 @@ reveal wipe. A still to video switch crossfades in the renderer: the
 daemon passes the outgoing still, the renderer draws it over the incoming
 video, and fades it out over the configured fade. Video and GIF changes
 use a hard cut. A battery poster fades in through the renderer GPU fade.
+A one-shot intro prepares the current still under the shell, fades it out only after the shell releases its layer, then fades the final video frame back to the still over 750 milliseconds. The renderer holds that still while the shell recreates its background surface.
 A renderer load reply acknowledges the request. It does not guarantee successful asynchronous video decode.
 `owe render-status` reports decode failures in its `error` field.
 
