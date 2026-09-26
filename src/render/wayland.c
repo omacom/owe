@@ -640,6 +640,10 @@ void owe_wayland_render_pending(struct owe_wayland *wl) {
                 /* The prepared outgoing still is the renderer's first buffer
                  * while the intro decoder is still producing its first frame. */
                 owe_still_render_opaque(app->transition, out);
+            } else if (out->swaps == 0) {
+                /* Leave a new surface unmapped until it has content. A black
+                 * first buffer would fade in over the shell's still. */
+                continue;
             } else {
                 owe_egl_clear_output(app->egl, out, 0.0f, 0.0f, 0.0f, 1.0f);
             }
