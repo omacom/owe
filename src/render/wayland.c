@@ -611,7 +611,8 @@ void owe_wayland_render_pending(struct owe_wayland *wl) {
     {
         int need_frame_cb = (app->still && owe_still_has_image(app->still) &&
                              owe_still_needs_frames(app->still)) ||
-                            (app->transition && owe_still_has_image(app->transition) &&
+                            (!app->intro_waiting && app->transition &&
+                             owe_still_has_image(app->transition) &&
                              owe_still_needs_frames(app->transition));
         for (out = wl->outputs; out; out = out->next) {
             struct wl_callback *cb;
@@ -624,7 +625,10 @@ void owe_wayland_render_pending(struct owe_wayland *wl) {
                 continue;
             }
             out->frame_pending = 0;
-            if (want_video) {
+            if (app->intro_waiting && app->transition &&
+                owe_still_has_image(app->transition)) {
+                owe_still_render_opaque(app->transition, out);
+            } else if (want_video) {
                 owe_mpv_render_output(app->mpv, out);
                 video_drawn = true;
             } else if (app->still && owe_still_has_image(app->still)) {
@@ -632,6 +636,14 @@ void owe_wayland_render_pending(struct owe_wayland *wl) {
             } else if (app->mpv && owe_mpv_has_video(app->mpv)) {
                 owe_mpv_render_output(app->mpv, out);
                 video_drawn = true;
+            } else if (app->transition && owe_still_has_image(app->transition)) {
+                /* The prepared outgoing still is the renderer's first buffer
+                 * while the intro decoder is still producing its first frame. */
+                owe_still_render_opaque(app->transition, out);
+            } else if (out->swaps == 0) {
+                /* Leave a new surface unmapped until it has content. A black
+                 * first buffer would fade in over the shell's still. */
+                continue;
             } else {
                 owe_egl_clear_output(app->egl, out, 0.0f, 0.0f, 0.0f, 1.0f);
             }
@@ -676,7 +688,7 @@ void owe_wayland_render_pending(struct owe_wayland *wl) {
         if (want_video && rendered_video) owe_mpv_report_swap(app->mpv);
     }
     if (rendered_transition && owe_still_has_image(app->transition) &&
-        owe_still_fade_done(app->transition)) {
+        owe_still_fade_done(app->transition) && owe_still_fades_out(app->transition)) {
         owe_egl_make_current(app->egl);
         owe_still_unload(app->transition);
         /* Outputs can finish at different times, including while video is paused. */
