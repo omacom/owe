@@ -151,8 +151,22 @@ static void run_ms(int ms) {
 }
 
 static void await_video(void) {
-    int64_t deadline = now_ms() + 2000;
+    int64_t deadline = now_ms() + 5000;
     while (!owe_mpv_ready(app.mpv) && now_ms() < deadline) tick();
+}
+
+/* Wait for a state, never for a fixed slice of wall clock. Software decode
+   under sanitizers runs behind real time, so a window sized to the media
+   duration fails on slow machines while the behaviour under test is correct.
+   The deadlines below only bound a hang; a real regression still fails. */
+static void await_eof(void) {
+    int64_t deadline = now_ms() + 10000;
+    while (!owe_mpv_eof(app.mpv) && now_ms() < deadline) tick();
+}
+
+static void await_position(double target) {
+    int64_t deadline = now_ms() + 5000;
+    while (owe_mpv_time_pos(app.mpv) <= target && now_ms() < deadline) tick();
 }
 
 static void command(const char *line) {
@@ -351,7 +365,8 @@ int main(void) {
     await_video();
     verify(owe_mpv_ready(app.mpv) && !owe_mpv_eof(app.mpv),
            "a one-shot video does not inherit the previous media EOF");
-    run_ms(3100);
+    await_eof();
+    run_ms(200);
     verify(owe_mpv_eof(app.mpv) && samples[0][2] > 240,
            "a one-shot video reports EOF while it holds the final frame");
     video(0);
@@ -361,7 +376,7 @@ int main(void) {
     verify(!owe_mpv_eof(app.mpv) && owe_mpv_ready(app.mpv),
            "normal playback clears one-shot EOF state");
     double before = owe_mpv_time_pos(app.mpv);
-    run_ms(300);
+    await_position(before + 0.1);
     verify(!owe_mpv_is_paused(app.mpv) && owe_mpv_time_pos(app.mpv) > before + 0.1,
            "normal playback advances after a one-shot video");
 
