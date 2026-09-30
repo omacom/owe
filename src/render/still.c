@@ -45,6 +45,7 @@ struct owe_still {
     char path[4096];
     int fade_ms;
     bool fade_out;
+    bool fade_in;
     bool fade_started;
     struct timespec requested_at;
     struct timespec loaded_at;
@@ -433,6 +434,8 @@ void owe_still_unload(struct owe_still *s) {
         if (owe_egl_make_current(s->egl) == 0) owe_egl_tex_free(s->egl, s->tex);
     }
     s->tex = 0;
+    s->fade_out = false;
+    s->fade_in = false;
     s->fade_started = false;
     s->path[0] = '\0';
 }
@@ -466,6 +469,13 @@ void owe_still_render_output(struct owe_still *s, struct owe_output *out) {
     owe_egl_draw_texture(s->egl, out, s->tex, alpha, s->tex_w, s->tex_h);
 }
 
+void owe_still_render_opaque(struct owe_still *s, struct owe_output *out) {
+    if (!s || !s->tex || !out) {
+        return;
+    }
+    owe_egl_draw_texture(s->egl, out, s->tex, 1.0f, s->tex_w, s->tex_h);
+}
+
 /* Blend a fading still over whatever is already in the framebuffer. */
 void owe_still_render_overlay(struct owe_still *s, struct owe_output *out) {
     struct timespec now;
@@ -482,9 +492,13 @@ void owe_still_render_overlay(struct owe_still *s, struct owe_output *out) {
         long ms;
         clock_gettime(CLOCK_MONOTONIC, &now);
         ms = elapsed_ms(&s->loaded_at, &now);
-        alpha = ms < s->fade_ms ? 1.0f - (float)ms / (float)s->fade_ms : 0.0f;
+        if (s->fade_in) {
+            alpha = ms < s->fade_ms ? (float)ms / (float)s->fade_ms : 1.0f;
+        } else {
+            alpha = ms < s->fade_ms ? 1.0f - (float)ms / (float)s->fade_ms : 0.0f;
+        }
     } else {
-        alpha = 0.0f;
+        alpha = s->fade_in ? 1.0f : 0.0f;
     }
     owe_egl_draw_texture_overlay(s->egl, out, s->tex, alpha, s->tex_w, s->tex_h);
 }
@@ -500,6 +514,19 @@ void owe_still_set_fade_ms(struct owe_still *s, int ms) {
 void owe_still_set_fade_out(struct owe_still *s, int ms) {
     if (s) {
         s->fade_out = true;
+        s->fade_in = false;
+        s->fade_started = false;
+        s->fade_ms = ms;
+        clock_gettime(CLOCK_MONOTONIC, &s->requested_at);
+    }
+}
+
+/* Fade the still over the held final video frame. Once fully opaque it stays
+ * resident until the shell background has reclaimed the layer. */
+void owe_still_set_fade_in(struct owe_still *s, int ms) {
+    if (s) {
+        s->fade_out = false;
+        s->fade_in = true;
         s->fade_started = false;
         s->fade_ms = ms;
         clock_gettime(CLOCK_MONOTONIC, &s->requested_at);
@@ -508,7 +535,7 @@ void owe_still_set_fade_out(struct owe_still *s, int ms) {
 
 bool owe_still_fade_done(struct owe_still *s) {
     struct timespec now;
-    if (!s || !s->tex || !s->fade_out || !s->fade_started) {
+    if (!s || !s->tex || (!s->fade_out && !s->fade_in) || !s->fade_started) {
         return false;
     }
     if (s->fade_ms <= 0) {
@@ -518,12 +545,16 @@ bool owe_still_fade_done(struct owe_still *s) {
     return elapsed_ms(&s->loaded_at, &now) >= s->fade_ms;
 }
 
+bool owe_still_fades_out(struct owe_still *s) {
+    return s && s->fade_out;
+}
+
 bool owe_still_needs_frames(struct owe_still *s) {
     struct timespec now;
     if (!s || !s->tex || s->fade_ms <= 0) {
         return false;
     }
-    if (s->fade_out && !s->fade_started) return true;
+    if ((s->fade_out || s->fade_in) && !s->fade_started) return true;
     clock_gettime(CLOCK_MONOTONIC, &now);
     return elapsed_ms(&s->loaded_at, &now) < s->fade_ms;
 }

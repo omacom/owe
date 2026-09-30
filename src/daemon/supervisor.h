@@ -18,5 +18,6 @@ int owed_supervisor_resume(struct owed_supervisor *s);
 int owed_supervisor_feed_start(struct owed_supervisor *s);
 int owed_supervisor_feed_stop(struct owed_supervisor *s);
 int owed_supervisor_stop_render(struct owed_supervisor *s);
+int owed_supervisor_intro_show(struct owed_supervisor *s);
 int owed_supervisor_fade(struct owed_supervisor *s, int ms);
 int owed_render_is_alive(struct owed_supervisor *s);

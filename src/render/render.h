@@ -21,6 +21,7 @@ typedef struct owe_app {
     bool paused;
     bool feeding;
     bool intro;
+    bool intro_waiting;
     int fade_ms;
     char current_path[4096];
     char current_kind[16];

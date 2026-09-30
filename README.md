@@ -142,6 +142,8 @@ Commands:
 - `{"cmd":"stop"}` — unload all media.
 - `{"cmd":"status"}` reports the path, kind, pause state, outputs, `time_pos`, `hwdec`, and playback `error`.
 - `{"cmd":"fade","ms":250}` — set the still fade length.
+- `{"cmd":"intro-show"}` — reveal a loaded intro once its outgoing still is ready.
+- `{"cmd":"intro-finish","path":"/abs/still.png","ms":750}` — fade the final intro frame into a still and hold it for the shell handoff.
 - `{"cmd":"feed"}` — start muted video output to the lock feed.
 - `{"cmd":"feed-stop"}` — stop the lock feed and release its buffers.
 - `{"cmd":"skip","outputs":["DP-1"]}` — stop desktop swaps on the named outputs.
