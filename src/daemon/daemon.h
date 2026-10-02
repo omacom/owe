@@ -2,6 +2,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <sys/types.h>
 
 #include "config.h"
 #include "transcode.h"
@@ -72,6 +73,8 @@ typedef struct owed_app {
     int intro_phase;
     int intro_fade_in; /* 1 when the intro fades in from the shell's still */
     char intro_path[4096];
+    dev_t intro_still_dev; /* the still file the intro started from and ends on */
+    ino_t intro_still_ino;
     char intro_result[16];
     int64_t intro_deadline_ms;
     int64_t intro_phase_deadline_ms;
@@ -92,4 +95,5 @@ int owed_app_start_intro(const char *path, bool fade_in);
 void owed_app_poll_intro(void);
 void owed_app_stop_intro(const char *reason);
 bool owed_app_intro_active(void);
+bool owed_app_intro_still_is(const char *path);
 const char *owed_app_intro_result(void);

@@ -219,9 +219,12 @@ static void handle_command(void *context, struct owe_ipc_client *c, const char *
     } else if (strcmp(cmd, "refresh") == 0) {
         char resolved[4096];
         if (owed_watch_resolve_current(resolved, sizeof(resolved)) == 0) {
-            app->source_path[0] = '\0';
-            app->loaded_path[0] = '\0';
-            owed_app_on_background_changed(resolved);
+            /* A playing intro already ends on this very still. */
+            if (!owed_app_intro_still_is(resolved)) {
+                app->source_path[0] = '\0';
+                app->loaded_path[0] = '\0';
+                owed_app_on_background_changed(resolved);
+            }
             send_ok(c, NULL);
         } else {
             send_err(c, "symlink unreadable");

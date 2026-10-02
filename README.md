@@ -114,7 +114,7 @@ Commands:
   battery, lock, and renderer liveness.
 - `{"cmd":"config"}` — effective config values.
 - `{"cmd":"set","path":"/abs/file"}` validates a local file and atomically updates the Omarchy background symlink.
-- `{"cmd":"refresh"}` — re-resolve the symlink and load now.
+- `{"cmd":"refresh"}` — re-resolve the symlink and load now. While an intro plays, a refresh that names the intro's own still file leaves it playing.
 - `{"cmd":"pause"}` — set manual pause.
 - `{"cmd":"resume"}` — clear manual pause.
 - `{"cmd":"idle-pause"}` — set idle pause. It does not clear a manual pause.

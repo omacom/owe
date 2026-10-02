@@ -441,6 +441,35 @@ int main(void) {
     CHECK(!g_app.intro_fade_in && renderer.starts == 0);
     owed_app_stop_intro("intro cancelled");
     g_app.renderer_retry_at_ms = 0;
+
+    /* A refresh that names the very still an intro started from leaves the
+     * intro playing. A new file at the same path, as a theme switch can put
+     * there, ends it. */
+    {
+        char still[] = "/tmp/owe-intro-still-XXXXXX.png";
+        char next[] = "/tmp/owe-intro-next-XXXXXX.png";
+        int fd = mkstemps(still, 4);
+        CHECK(fd >= 0);
+        close(fd);
+        fd = mkstemps(next, 4);
+        CHECK(fd >= 0);
+        close(fd);
+        g_app.engine = OWE_ENGINE_SHELL;
+        g_app.shell_enabled = 1;
+        renderer.down = true;
+        snprintf(g_app.source_path, sizeof(g_app.source_path), "%s", still);
+        strcpy(g_app.source_kind, "still");
+        strcpy(supervisor_reply, "{\"status\":\"ok\"}");
+        CHECK(owed_app_start_intro("/intro.mp4", true) == 0);
+        CHECK(owed_app_intro_still_is(still));
+        owed_app_on_background_changed(still);
+        CHECK(owed_app_intro_active());
+        CHECK(rename(next, still) == 0);
+        CHECK(!owed_app_intro_still_is(still));
+        owed_app_on_background_changed(still);
+        CHECK(!owed_app_intro_active());
+        unlink(still);
+    }
     /* An expired poster cancels its load and restores the playable video. */
     g_app.engine = OWE_ENGINE_RENDERER;
     power.battery = true;

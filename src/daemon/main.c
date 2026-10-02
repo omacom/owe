@@ -404,6 +404,12 @@ int owed_app_start_intro(const char *path, bool fade_in) {
     app->intro_active = 1;
     app->intro_phase = OWE_INTRO_PREPARING;
     app->intro_fade_in = fade_in;
+    {
+        struct stat st;
+        bool known = stat(app->source_path, &st) == 0;
+        app->intro_still_dev = known ? st.st_dev : 0;
+        app->intro_still_ino = known ? st.st_ino : 0;
+    }
     snprintf(app->intro_path, sizeof(app->intro_path), "%s", path);
     snprintf(app->intro_result, sizeof(app->intro_result), "running");
     app->intro_deadline_ms = monotonic_ms() + 30000;
@@ -543,6 +549,15 @@ void owed_app_stop_intro(const char *reason) {
 
 bool owed_app_intro_active(void) {
     return g_app.intro_active != 0;
+}
+
+/* A theme switch can put a new file at the background's path, so a refresh
+ * rereads the background even when its path is unchanged. A playing intro
+ * ends on the still it started from, so only a different file ends it. */
+bool owed_app_intro_still_is(const char *path) {
+    struct stat st;
+    return g_app.intro_active && g_app.intro_still_ino != 0 && path && stat(path, &st) == 0 &&
+           st.st_dev == g_app.intro_still_dev && st.st_ino == g_app.intro_still_ino;
 }
 
 const char *owed_app_intro_result(void) {
@@ -820,7 +835,7 @@ void owed_app_on_background_changed(const char *resolved_path) {
     if (!resolved_path || !*resolved_path) {
         return;
     }
-    if (app->intro_active) {
+    if (app->intro_active && !owed_app_intro_still_is(resolved_path)) {
         owed_app_stop_intro("background changed");
     }
     kind = owe_kind_from_path(resolved_path);

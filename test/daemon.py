@@ -319,6 +319,18 @@ def main():
                       "the daemon reveals the intro over its still and brackets both transitions",
                       json.dumps(intro_commands))
 
+                # Omarchy's theme-set hook refreshes the background. While an
+                # intro plays it names the intro's own still, so the intro
+                # plays on to its end.
+                intro = subprocess.Popen(cli + ["intro", "good.mp4"], env=env, cwd=root,
+                                         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline and not call(daemon_socket, "intro-status").get("running"):
+                    time.sleep(0.02)
+                check(call(daemon_socket, "refresh")["status"] == "ok", "the daemon accepts a refresh during an intro")
+                check(intro.wait(timeout=8) == 0, "a refresh of the intro's own still leaves it playing",
+                      intro.stderr.read())
+
                 # A login starts its intro on a fresh renderer, after the
                 # previous intro's renderer has handed the still back.
                 renderer_gone = False
