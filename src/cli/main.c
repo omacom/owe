@@ -1,6 +1,7 @@
 #include <errno.h>
 #include <limits.h>
 #include <spawn.h>  /* system */
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -87,10 +88,9 @@ static int reply_line(int fd, char *reply, size_t len, int timeout_ms) {
     return owe_ipc_recv_line_timeout(fd, reply, len, timeout_ms);
 }
 
-/* Play a one-shot intro video and block until it ends. The shell starts this
- * when a still background has a matching boot intro and reveals the still
- * after the process exits. */
-static int cmd_intro(const char *path) {
+/* Play a one-shot intro video and block until it ends. The intro fades in
+ * from the current still, or with fade_in false starts on its first frame. */
+static int cmd_intro(const char *path, bool fade_in) {
     char sock[PATH_MAX];
     char resolved[PATH_MAX];
     char reply[OWE_IPC_MAX_LINE];
@@ -111,8 +111,8 @@ static int cmd_intro(const char *path) {
         return 1;
     }
     quoted = owe_json_quote(resolved);
-    if (!quoted || snprintf(line, sizeof(line), "{\"cmd\":\"intro\",\"path\":%s}", quoted) >=
-                       (int)sizeof(line)) {
+    if (!quoted || snprintf(line, sizeof(line), "{\"cmd\":\"intro\",\"path\":%s%s}", quoted,
+                            fade_in ? "" : ",\"fade_in\":false") >= (int)sizeof(line)) {
         free(quoted);
         close(fd);
         return 1;
@@ -181,7 +181,8 @@ static void usage(const char *argv0) {
             "  pause                   Pause video manually\n"
             "  resume                  Clear manual pause\n"
             "  always-animate on|off   Force animation regardless of policy\n"
-            "  intro <video>           Play a one-shot intro video and wait\n"
+            "  intro [--no-fade-in] <video>\n"
+            "                          Play a one-shot intro video and wait\n"
             "\n"
             "State:\n"
             "  status                  Daemon status as JSON\n"
@@ -295,11 +296,12 @@ int main(int argc, char **argv) {
         return daemon_call("{\"cmd\":\"resume\"}", 1);
     }
     if (strcmp(cmd, "intro") == 0) {
-        if (argc < 3) {
-            fprintf(stderr, "owe intro <video>\n");
+        bool fade_in = argc == 3 || strcmp(argv[2], "--no-fade-in") != 0;
+        if (argc != (fade_in ? 3 : 4)) {
+            fprintf(stderr, "owe intro [--no-fade-in] <video>\n");
             return 1;
         }
-        return cmd_intro(argv[2]);
+        return cmd_intro(argv[fade_in ? 2 : 3], fade_in);
     }
     if (strcmp(cmd, "always-animate") == 0) {
         if (argc < 3) {

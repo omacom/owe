@@ -317,6 +317,37 @@ def main():
                       "the daemon reveals the intro over its still and brackets both transitions",
                       json.dumps(intro_commands))
 
+                # A login starts its intro on a fresh renderer, after the
+                # previous intro's renderer has handed the still back.
+                renderer_gone = False
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    try:
+                        call(render_socket, "status")
+                    except (ConnectionRefusedError, FileNotFoundError, OSError):
+                        renderer_gone = True
+                        break
+                    time.sleep(0.1)
+                check(renderer_gone, "the intro's renderer stops after handing the still back")
+                commands_before = len(commands_path.read_text().splitlines())
+                result = subprocess.run(cli + ["intro", "--no-fade-in", "good.mp4"], env=env, cwd=root,
+                                        capture_output=True, text=True, timeout=8)
+                check(result.returncode == 0, "an intro without a fade in plays to its end", result.stderr)
+                direct_commands = [json.loads(line) for line in
+                                   commands_path.read_text().splitlines()[commands_before:]]
+                direct_load = next((command for command in direct_commands
+                                    if command.get("cmd") == "load" and command.get("once")), {})
+                check(direct_load and "from" not in direct_load,
+                      "an intro without a fade in prepares no still", json.dumps(direct_commands))
+                check(not any(command.get("cmd") == "intro-show" for command in direct_commands) and
+                      any(command.get("cmd") == "intro-finish" and command.get("path") == str(root / "still.png")
+                          for command in direct_commands),
+                      "an intro without a fade in starts on its video and still fades into the still",
+                      json.dumps(direct_commands))
+                result = subprocess.run(cli + ["intro", "--no-fade-in"], env=env, cwd=root,
+                                        capture_output=True, text=True, timeout=8)
+                check(result.returncode != 0, "the CLI requires a video after --no-fade-in", result.stderr)
+
                 previous_loads = [json.loads(line) for line in commands_path.read_text().splitlines()
                                   if json.loads(line).get("cmd") == "load"]
                 check(call(daemon_socket, "resume")["status"] == "ok", "resume command accepted")

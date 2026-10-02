@@ -193,7 +193,12 @@ static void handle_command(void *context, struct owe_ipc_client *c, const char *
             yyjson_doc_free(doc);
             return;
         }
-        if (owed_app_start_intro(path) != 0) {
+        /* An intro fades in from the shell's still unless "fade_in" is false.
+         * Without it the intro starts on its first frame, for a shell that
+         * leaves the background empty for it. */
+        yyjson_val *vfade_in = yyjson_obj_get(root, "fade_in");
+        bool fade_in = !yyjson_is_bool(vfade_in) || yyjson_get_bool(vfade_in);
+        if (owed_app_start_intro(path, fade_in) != 0) {
             send_err(c, "Intro start failed");
         } else {
             send_ok(c, NULL);
