@@ -193,7 +193,12 @@ static void handle_command(void *context, struct owe_ipc_client *c, const char *
             yyjson_doc_free(doc);
             return;
         }
-        if (owed_app_start_intro(path) != 0) {
+        /* An intro fades in from the shell's still unless "fade_in" is false.
+         * Without it the intro starts on its first frame, for a shell that
+         * leaves the background empty for it. */
+        yyjson_val *vfade_in = yyjson_obj_get(root, "fade_in");
+        bool fade_in = !yyjson_is_bool(vfade_in) || yyjson_get_bool(vfade_in);
+        if (owed_app_start_intro(path, fade_in) != 0) {
             send_err(c, "Intro start failed");
         } else {
             send_ok(c, NULL);
@@ -214,9 +219,12 @@ static void handle_command(void *context, struct owe_ipc_client *c, const char *
     } else if (strcmp(cmd, "refresh") == 0) {
         char resolved[4096];
         if (owed_watch_resolve_current(resolved, sizeof(resolved)) == 0) {
-            app->source_path[0] = '\0';
-            app->loaded_path[0] = '\0';
-            owed_app_on_background_changed(resolved);
+            /* A playing intro already ends on this very still. */
+            if (!owed_app_intro_still_is(resolved)) {
+                app->source_path[0] = '\0';
+                app->loaded_path[0] = '\0';
+                owed_app_on_background_changed(resolved);
+            }
             send_ok(c, NULL);
         } else {
             send_err(c, "symlink unreadable");

@@ -78,6 +78,14 @@ the shell releases its layer, then fades it out over the intro. At EOF the rende
 fades the final frame into the matching still and holds it while the shell returns. The
 daemon ends an intro early when the screen locks, the session sleeps, a
 fullscreen window appears, the background changes, or the renderer dies.
+A refresh that still names the intro's own still file, such as the theme-set
+hook's, leaves the intro playing.
+With `--no-fade-in` the daemon loads the intro without a transition source.
+The new renderer surface stays unmapped until the intro's first frame, and the
+shell releases its layer once the renderer reports that frame drawn. This suits
+a shell that leaves its background empty for the intro, as at login. A
+renderer that is already on screen fades the intro in from its still instead.
+The intro still fades into the still at EOF.
 After an intro the daemon returns the engine to the shell. `intro-status`
 reports `running` and the last result, and `intro-stop` cancels.
 The renderer observes `eof-reached` because `keep-open` can retain playback without an `END_FILE` event.

@@ -6,7 +6,7 @@
 
 struct owed_power { bool locked; bool sleeping; bool battery; };
 struct owed_hypr { bool locked; bool off; bool fullscreen; };
-struct owed_supervisor { int starts; int stops; bool feeding; bool paused; bool fail_start; bool fail_load; int loads; };
+struct owed_supervisor { int starts; int stops; bool feeding; bool paused; bool fail_start; bool fail_load; int loads; bool down; };
 static char covered_names[1024];
 static int skip_sends;
 static char supervisor_reply[1024] = "{\"status\":\"ok\"}";
@@ -38,7 +38,7 @@ bool owed_hypr_locked(struct owed_hypr *h) { return h && h->locked; }
 bool owed_hypr_all_monitors_off(struct owed_hypr *h) { return h && h->off; }
 bool owed_hypr_any_fullscreen(struct owed_hypr *h) { return h && h->fullscreen; }
 bool owed_hypr_any_window_visible(struct owed_hypr *h) { (void)h; return false; }
-int owed_render_is_alive(struct owed_supervisor *s) { return s != NULL; }
+int owed_render_is_alive(struct owed_supervisor *s) { return s != NULL && !s->down; }
 int owed_supervisor_feed_start(struct owed_supervisor *s) {
     s->starts++;
     s->feeding = true;
@@ -57,9 +57,15 @@ int owed_supervisor_load(struct owed_supervisor *s, const char *path, const char
     s->loads++; (void)path; (void)kind; (void)from;
     return s->fail_load ? -1 : 0;
 }
-int owed_supervisor_ensure_running(struct owed_supervisor *s) { s->starts++; return s->fail_start ? -1 : 0; }
+int owed_supervisor_ensure_running(struct owed_supervisor *s) {
+    s->starts++;
+    if (s->fail_start) return -1;
+    s->down = false;
+    return 0;
+}
 void owed_supervisor_stop(struct owed_supervisor *s) { s->stops++; }
-int owed_supervisor_intro_show(struct owed_supervisor *s) { (void)s; return 0; }
+static int intro_show_calls;
+int owed_supervisor_intro_show(struct owed_supervisor *s) { (void)s; intro_show_calls++; return 0; }
 int owed_supervisor_fade(struct owed_supervisor *s, int ms) { (void)s; (void)ms; return 0; }
 
 static int shell_plugin_calls;
@@ -314,8 +320,10 @@ int main(void) {
     shell_plugin_enabled = true;
     shell_plugin_calls = 0;
     renderer.starts = 0;
+    /* The shell draws the still, so the renderer is stopped. */
+    renderer.down = true;
     strcpy(supervisor_reply, "{\"status\":\"ok\"}");
-    CHECK(owed_app_start_intro("/intro.mp4") == 0);
+    CHECK(owed_app_start_intro("/intro.mp4", true) == 0);
     CHECK(owed_app_intro_active());
     CHECK(strstr(supervisor_last, "\"once\":true") != NULL);
     CHECK(strstr(supervisor_last, "\"mute\":true") != NULL);
@@ -329,7 +337,7 @@ int main(void) {
     CHECK(owed_app_intro_active());
     CHECK(g_app.engine == OWE_ENGINE_RENDERER);
     CHECK(shell_plugin_calls == 1 && !shell_plugin_enabled);
-    CHECK(owed_app_start_intro("/other.mp4") != 0);
+    CHECK(owed_app_start_intro("/other.mp4", true) != 0);
     strcpy(supervisor_reply, "{\"status\":\"ok\",\"ready\":true,\"error\":\"\",\"eof\":true,\"has_transition\":false,\"transition_busy\":false,\"transition_done\":false}");
     owed_app_poll_intro();
     CHECK(owed_app_intro_active() && g_app.intro_phase == OWE_INTRO_FINISHING);
@@ -346,7 +354,7 @@ int main(void) {
     g_app.shell_enabled = 1;
     shell_plugin_calls = 0;
     strcpy(supervisor_reply, "{\"status\":\"ok\",\"ready\":true,\"error\":\"\",\"eof\":false}");
-    CHECK(owed_app_start_intro("/intro.mp4") == 0);
+    CHECK(owed_app_start_intro("/intro.mp4", true) == 0);
     power.locked = true;
     owed_app_poll_intro();
     CHECK(!owed_app_intro_active());
@@ -356,12 +364,12 @@ int main(void) {
 
     /* A fullscreen window and an explicit stop also interrupt. */
     strcpy(supervisor_reply, "{\"status\":\"ok\",\"ready\":true,\"error\":\"\",\"eof\":false}");
-    CHECK(owed_app_start_intro("/intro.mp4") == 0);
+    CHECK(owed_app_start_intro("/intro.mp4", true) == 0);
     hypr.fullscreen = true;
     owed_app_poll_intro();
     CHECK(!owed_app_intro_active());
     hypr.fullscreen = false;
-    CHECK(owed_app_start_intro("/intro.mp4") == 0);
+    CHECK(owed_app_start_intro("/intro.mp4", true) == 0);
     owed_app_stop_intro("intro cancelled");
     CHECK(!owed_app_intro_active());
     CHECK(strcmp(owed_app_intro_result(), "error") == 0);
@@ -370,15 +378,98 @@ int main(void) {
     g_app.engine = OWE_ENGINE_SHELL;
     g_app.shell_enabled = 1;
     strcpy(supervisor_reply, "{\"status\":\"error\"}");
-    CHECK(owed_app_start_intro("/intro.mp4") != 0);
+    CHECK(owed_app_start_intro("/intro.mp4", true) != 0);
     CHECK(!owed_app_intro_active());
     CHECK(g_app.engine == OWE_ENGINE_SHELL);
     strcpy(supervisor_reply, "{\"status\":\"ok\"}");
-    CHECK(owed_app_start_intro("/intro.mp4") == 0);
+    CHECK(owed_app_start_intro("/intro.mp4", true) == 0);
     hypr.locked = true;
     owed_app_poll_intro();
     CHECK(!owed_app_intro_active() && g_app.engine == OWE_ENGINE_SHELL);
     hypr.locked = false;
+
+    /* An intro without a fade in prepares no still. The shell keeps its layer
+     * until the renderer has drawn the intro's first frame, and the intro
+     * still fades into the still at its end. */
+    g_app.engine = OWE_ENGINE_SHELL;
+    g_app.shell_enabled = 1;
+    shell_plugin_enabled = true;
+    shell_plugin_calls = 0;
+    intro_show_calls = 0;
+    renderer.down = true;
+    strcpy(supervisor_reply, "{\"status\":\"ok\"}");
+    CHECK(owed_app_start_intro("/intro.mp4", false) == 0);
+    CHECK(strstr(supervisor_last, "\"once\":true") != NULL);
+    CHECK(strstr(supervisor_last, "\"from\"") == NULL);
+    strcpy(supervisor_reply, "{\"status\":\"ok\",\"ready\":false,\"error\":\"\",\"eof\":false,\"has_transition\":false,\"transition_busy\":false,\"transition_done\":false}");
+    owed_app_poll_intro();
+    CHECK(owed_app_intro_active() && g_app.intro_phase == OWE_INTRO_PREPARING);
+    CHECK(g_app.engine == OWE_ENGINE_SHELL && shell_plugin_calls == 0);
+    strcpy(supervisor_reply, "{\"status\":\"ok\",\"ready\":true,\"error\":\"\",\"eof\":false,\"has_transition\":false,\"transition_busy\":false,\"transition_done\":false}");
+    owed_app_poll_intro();
+    CHECK(owed_app_intro_active() && g_app.intro_phase == OWE_INTRO_PLAYING);
+    CHECK(g_app.engine == OWE_ENGINE_RENDERER);
+    CHECK(shell_plugin_calls == 1 && !shell_plugin_enabled);
+    CHECK(intro_show_calls == 0);
+    strcpy(supervisor_reply, "{\"status\":\"ok\",\"ready\":true,\"error\":\"\",\"eof\":true,\"has_transition\":false,\"transition_busy\":false,\"transition_done\":false}");
+    owed_app_poll_intro();
+    CHECK(g_app.intro_phase == OWE_INTRO_FINISHING);
+    CHECK(strstr(supervisor_last, "\"cmd\":\"intro-finish\"") != NULL);
+    strcpy(supervisor_reply, "{\"status\":\"ok\",\"ready\":true,\"error\":\"\",\"eof\":true,\"has_transition\":true,\"transition_busy\":false,\"transition_done\":true}");
+    owed_app_poll_intro();
+    CHECK(!owed_app_intro_active() && strcmp(owed_app_intro_result(), "ok") == 0);
+    CHECK(g_app.engine == OWE_ENGINE_SHELL && shell_plugin_enabled);
+
+    /* A renderer already on screen fades the intro in from its still rather
+     * than clearing that still before the intro's first frame. */
+    strcpy(supervisor_reply, "{\"status\":\"ok\",\"swaps\":12}");
+    CHECK(owed_app_start_intro("/intro.mp4", false) == 0);
+    CHECK(strstr(supervisor_last, "\"from\":\"/corrupt.png\"") != NULL);
+    CHECK(g_app.intro_fade_in);
+    owed_app_stop_intro("intro cancelled");
+
+    /* A renderer left running by a shell handoff that failed at startup has
+     * drawn nothing, so the intro still starts on its first frame, and the
+     * handoff's retry delay does not refuse it. */
+    g_app.engine = OWE_ENGINE_NONE;
+    g_app.shell_enabled = -1;
+    g_app.renderer_retry_at_ms = monotonic_ms() + 30000;
+    renderer.starts = 0;
+    strcpy(supervisor_reply, "{\"status\":\"ok\",\"swaps\":0}");
+    CHECK(owed_app_start_intro("/intro.mp4", false) == 0);
+    CHECK(strstr(supervisor_last, "\"from\"") == NULL);
+    CHECK(!g_app.intro_fade_in && renderer.starts == 0);
+    owed_app_stop_intro("intro cancelled");
+    g_app.renderer_retry_at_ms = 0;
+
+    /* A refresh that names the very still an intro started from leaves the
+     * intro playing. A new file at the same path, as a theme switch can put
+     * there, ends it. */
+    {
+        char still[] = "/tmp/owe-intro-still-XXXXXX.png";
+        char next[] = "/tmp/owe-intro-next-XXXXXX.png";
+        int fd = mkstemps(still, 4);
+        CHECK(fd >= 0);
+        close(fd);
+        fd = mkstemps(next, 4);
+        CHECK(fd >= 0);
+        close(fd);
+        g_app.engine = OWE_ENGINE_SHELL;
+        g_app.shell_enabled = 1;
+        renderer.down = true;
+        snprintf(g_app.source_path, sizeof(g_app.source_path), "%s", still);
+        strcpy(g_app.source_kind, "still");
+        strcpy(supervisor_reply, "{\"status\":\"ok\"}");
+        CHECK(owed_app_start_intro("/intro.mp4", true) == 0);
+        CHECK(owed_app_intro_still_is(still));
+        owed_app_on_background_changed(still);
+        CHECK(owed_app_intro_active());
+        CHECK(rename(next, still) == 0);
+        CHECK(!owed_app_intro_still_is(still));
+        owed_app_on_background_changed(still);
+        CHECK(!owed_app_intro_active());
+        unlink(still);
+    }
     /* An expired poster cancels its load and restores the playable video. */
     g_app.engine = OWE_ENGINE_RENDERER;
     power.battery = true;
