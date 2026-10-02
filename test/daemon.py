@@ -142,7 +142,7 @@ def main():
         bin_dir.mkdir()
         shell_stub = bin_dir / "omarchy-shell"
         shell_stub.write_text(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >>\"$OWE_TEST_SHELL_LOG\"\n"
+            "#!/bin/sh\nprintf '%s timeout=%s\\n' \"$*\" \"$OMARCHY_SHELL_IPC_TIMEOUT\" >>\"$OWE_TEST_SHELL_LOG\"\n"
             "if [ \"$4\" = true ] && [ -e \"$OWE_TEST_SHELL_FAIL\" ]; then exit 1; fi\n"
             "exit 0\n")
         shell_stub.chmod(0o755)
@@ -187,6 +187,8 @@ def main():
                         break
                     time.sleep(0.1)
                 check(disable, "daemon disabled the shell background for the video")
+                check("setPluginEnabled omarchy.background false timeout=4s" in text,
+                      "the shell gets longer than omarchy-shell's default to answer", text)
                 result = subprocess.run(cli + ["status"], env=env, capture_output=True, text=True, timeout=5)
                 check(result.returncode == 0 and json.loads(result.stdout)["status"] == "ok",
                       "the CLI reaches a custom daemon socket", result.stderr)
