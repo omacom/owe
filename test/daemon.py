@@ -142,7 +142,7 @@ def main():
         bin_dir.mkdir()
         shell_stub = bin_dir / "omarchy-shell"
         shell_stub.write_text(
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >>\"$OWE_TEST_SHELL_LOG\"\n"
+            "#!/bin/sh\nprintf '%s timeout=%s\\n' \"$*\" \"$OMARCHY_SHELL_IPC_TIMEOUT\" >>\"$OWE_TEST_SHELL_LOG\"\n"
             "if [ \"$4\" = true ] && [ -e \"$OWE_TEST_SHELL_FAIL\" ]; then exit 1; fi\n"
             "exit 0\n")
         shell_stub.chmod(0o755)
@@ -187,6 +187,8 @@ def main():
                         break
                     time.sleep(0.1)
                 check(disable, "daemon disabled the shell background for the video")
+                check("setPluginEnabled omarchy.background false timeout=4s" in text,
+                      "the shell gets longer than omarchy-shell's default to answer", text)
                 result = subprocess.run(cli + ["status"], env=env, capture_output=True, text=True, timeout=5)
                 check(result.returncode == 0 and json.loads(result.stdout)["status"] == "ok",
                       "the CLI reaches a custom daemon socket", result.stderr)
@@ -316,6 +318,59 @@ def main():
                           for command in intro_commands),
                       "the daemon reveals the intro over its still and brackets both transitions",
                       json.dumps(intro_commands))
+
+                # Omarchy's theme-set hook refreshes the background. While an
+                # intro plays it names the intro's own still, so the intro
+                # plays on to its end.
+                intro = subprocess.Popen(cli + ["intro", "good.mp4"], env=env, cwd=root,
+                                         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline and not call(daemon_socket, "intro-status").get("running"):
+                    time.sleep(0.02)
+                check(call(daemon_socket, "refresh")["status"] == "ok", "the daemon accepts a refresh during an intro")
+                check(intro.wait(timeout=8) == 0, "a refresh of the intro's own still leaves it playing",
+                      intro.stderr.read())
+
+                # A login starts its intro on a fresh renderer, after the
+                # previous intro's renderer has handed the still back.
+                renderer_gone = False
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    try:
+                        call(render_socket, "status")
+                    except (ConnectionRefusedError, FileNotFoundError, OSError):
+                        renderer_gone = True
+                        break
+                    time.sleep(0.1)
+                check(renderer_gone, "the intro's renderer stops after handing the still back")
+                commands_before = len(commands_path.read_text().splitlines())
+                result = subprocess.run(cli + ["intro", "--start", "first-frame", "good.mp4"], env=env, cwd=root,
+                                        capture_output=True, text=True, timeout=8)
+                check(result.returncode == 0, "an intro started on its first frame plays to its end", result.stderr)
+                direct_commands = [json.loads(line) for line in
+                                   commands_path.read_text().splitlines()[commands_before:]]
+                direct_load = next((command for command in direct_commands
+                                    if command.get("cmd") == "load" and command.get("once")), {})
+                check(direct_load and "from" not in direct_load,
+                      "an intro started on its first frame prepares no still", json.dumps(direct_commands))
+                check(not any(command.get("cmd") == "intro-show" for command in direct_commands) and
+                      any(command.get("cmd") == "intro-finish" and command.get("path") == str(root / "still.png")
+                          for command in direct_commands),
+                      "an intro started on its first frame starts on its video and still fades into the still",
+                      json.dumps(direct_commands))
+                usage = "owe intro [--start still|first-frame] <video>"
+                for args, case in ((["intro"], "without a video"),
+                                   (["intro", "--start", "first-frame"], "without a video after --start"),
+                                   (["intro", "--start"], "without a start value"),
+                                   (["intro", "--start", "bogus", "good.mp4"], "with an unknown start value"),
+                                   (["intro", "good.mp4", "--start", "first-frame"], "with --start after the video")):
+                    result = subprocess.run(cli + args, env=env, cwd=root,
+                                            capture_output=True, text=True, timeout=8)
+                    check(result.returncode == 1 and usage in result.stderr,
+                          "the CLI prints its usage for an intro " + case, result.stderr)
+                reply = call(daemon_socket, "intro", path=str(root / "good.mp4"), start="bogus")
+                check(reply.get("status") == "error" and "still or first-frame" in reply.get("message", ""),
+                      "the daemon rejects an unknown intro start", json.dumps(reply))
 
                 previous_loads = [json.loads(line) for line in commands_path.read_text().splitlines()
                                   if json.loads(line).get("cmd") == "load"]

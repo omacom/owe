@@ -37,6 +37,7 @@ daemon passes the outgoing still, the renderer draws it over the incoming
 video, and fades it out over the configured fade. Video and GIF changes
 use a hard cut. A battery poster fades in through the renderer GPU fade.
 A one-shot intro prepares the current still under the shell, fades it out only after the shell releases its layer, then fades the final video frame back to the still over 750 milliseconds. The renderer holds that still while the shell recreates its background surface.
+An intro started with `--start first-frame` skips the opening fade and starts on its own first frame, for a shell that shows no still before it.
 A renderer load reply acknowledges the request. It does not guarantee successful asynchronous video decode.
 `owe render-status` reports decode failures in its `error` field.
 

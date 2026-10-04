@@ -322,7 +322,30 @@ static void intro_finish(const char *error) {
     }
 }
 
-int owed_app_start_intro(const char *path) {
+/* A renderer that has presented a frame keeps it on screen until it draws the
+ * next one. One whose status cannot be read counts as on screen. */
+static bool renderer_on_screen(void) {
+    owed_app_t *app = &g_app;
+    char reply[8192] = "";
+    yyjson_doc *doc;
+    yyjson_val *swaps;
+    bool shown = true;
+    if (!owed_render_is_alive(app->supervisor)) {
+        return false;
+    }
+    if (owed_supervisor_send(app->supervisor, "{\"cmd\":\"status\"}", reply, sizeof(reply)) != 0 ||
+        !(doc = yyjson_read(reply, strlen(reply), 0))) {
+        return true;
+    }
+    swaps = yyjson_obj_get(yyjson_doc_get_root(doc), "swaps");
+    if (yyjson_is_num(swaps)) {
+        shown = yyjson_get_num(swaps) > 0;
+    }
+    yyjson_doc_free(doc);
+    return shown;
+}
+
+int owed_app_start_intro(const char *path, bool from_still) {
     owed_app_t *app = &g_app;
     char reply[8192] = "";
     char *quoted = NULL;
@@ -343,7 +366,16 @@ int owed_app_start_intro(const char *path) {
         (app->hypr && owed_hypr_any_fullscreen(app->hypr))) {
         return -1;
     }
-    if (ensure_renderer() != 0) {
+    /* Starting on the first frame relies on a renderer surface that is still
+     * unmapped. A renderer already on screen, such as one that kept the still
+     * when the shell could not take it back, would clear that still to black
+     * first, so the intro starts from it instead. */
+    if (!from_still && renderer_on_screen()) {
+        from_still = true;
+    }
+    /* A shell handoff that failed at startup holds off renderer starts for a
+     * while. A renderer that is already running can still play the intro. */
+    if (!owed_render_is_alive(app->supervisor) && ensure_renderer() != 0) {
         return -1;
     }
     quoted = owe_json_quote(path);
@@ -351,8 +383,11 @@ int owed_app_start_intro(const char *path) {
     if (!quoted || !from) {
         goto fail;
     }
+    /* Starting on the first frame there is no outgoing still to prepare, so a new
+     * renderer surface stays unmapped until the intro's first frame. */
     if (asprintf(&line, "{\"cmd\":\"load\",\"path\":%s,\"kind\":\"video\","
-                        "\"once\":true,\"mute\":true,\"from\":%s}", quoted, from) < 0) {
+                        "\"once\":true,\"mute\":true%s%s}", quoted,
+                 from_still ? ",\"from\":" : "", from_still ? from : "") < 0) {
         goto fail;
     }
     free(quoted);
@@ -368,6 +403,13 @@ int owed_app_start_intro(const char *path) {
     }
     app->intro_active = 1;
     app->intro_phase = OWE_INTRO_PREPARING;
+    app->intro_from_still = from_still;
+    {
+        struct stat st;
+        bool known = stat(app->source_path, &st) == 0;
+        app->intro_still_dev = known ? st.st_dev : 0;
+        app->intro_still_ino = known ? st.st_ino : 0;
+    }
     snprintf(app->intro_path, sizeof(app->intro_path), "%s", path);
     snprintf(app->intro_result, sizeof(app->intro_result), "running");
     app->intro_deadline_ms = monotonic_ms() + 30000;
@@ -447,6 +489,23 @@ void owed_app_poll_intro(void) {
         intro_finish("intro decode failed");
         return;
     }
+    if (app->intro_phase == OWE_INTRO_PREPARING && !app->intro_from_still) {
+        /* The renderer reports ready once it has drawn the intro's first
+         * frame, so releasing the shell's layer reveals the intro rather than
+         * an empty background. */
+        if (ready) {
+            if (activate_renderer() != 0) {
+                intro_finish("renderer handoff failed");
+                return;
+            }
+            app->intro_phase = OWE_INTRO_PLAYING;
+            app->intro_phase_deadline_ms = 0;
+            OWE_INFO("intro playing: %s", app->intro_path);
+        } else if (now >= app->intro_phase_deadline_ms) {
+            intro_finish("intro start timed out");
+        }
+        return;
+    }
     if (app->intro_phase == OWE_INTRO_PREPARING) {
         if (has_transition) {
             if (activate_renderer() != 0) {
@@ -490,6 +549,15 @@ void owed_app_stop_intro(const char *reason) {
 
 bool owed_app_intro_active(void) {
     return g_app.intro_active != 0;
+}
+
+/* A theme switch can put a new file at the background's path, so a refresh
+ * rereads the background even when its path is unchanged. A playing intro
+ * ends on the still it started from, so only a different file ends it. */
+bool owed_app_intro_still_is(const char *path) {
+    struct stat st;
+    return g_app.intro_active && g_app.intro_still_ino != 0 && path && stat(path, &st) == 0 &&
+           st.st_dev == g_app.intro_still_dev && st.st_ino == g_app.intro_still_ino;
 }
 
 const char *owed_app_intro_result(void) {
@@ -767,7 +835,7 @@ void owed_app_on_background_changed(const char *resolved_path) {
     if (!resolved_path || !*resolved_path) {
         return;
     }
-    if (app->intro_active) {
+    if (app->intro_active && !owed_app_intro_still_is(resolved_path)) {
         owed_app_stop_intro("background changed");
     }
     kind = owe_kind_from_path(resolved_path);

@@ -193,7 +193,17 @@ static void handle_command(void *context, struct owe_ipc_client *c, const char *
             yyjson_doc_free(doc);
             return;
         }
-        if (owed_app_start_intro(path) != 0) {
+        /* An intro starts from the shell's still, or with "start":
+         * "first-frame" on its own first frame, for a shell that leaves the
+         * background empty for it. */
+        yyjson_val *vstart = yyjson_obj_get(root, "start");
+        const char *start = vstart && yyjson_is_str(vstart) ? yyjson_get_str(vstart) : NULL;
+        if (vstart && (!start || (strcmp(start, "still") != 0 && strcmp(start, "first-frame") != 0))) {
+            send_err(c, "Intro start must be still or first-frame");
+            yyjson_doc_free(doc);
+            return;
+        }
+        if (owed_app_start_intro(path, !start || strcmp(start, "still") == 0) != 0) {
             send_err(c, "Intro start failed");
         } else {
             send_ok(c, NULL);
@@ -214,9 +224,12 @@ static void handle_command(void *context, struct owe_ipc_client *c, const char *
     } else if (strcmp(cmd, "refresh") == 0) {
         char resolved[4096];
         if (owed_watch_resolve_current(resolved, sizeof(resolved)) == 0) {
-            app->source_path[0] = '\0';
-            app->loaded_path[0] = '\0';
-            owed_app_on_background_changed(resolved);
+            /* A playing intro already ends on this very still. */
+            if (!owed_app_intro_still_is(resolved)) {
+                app->source_path[0] = '\0';
+                app->loaded_path[0] = '\0';
+                owed_app_on_background_changed(resolved);
+            }
             send_ok(c, NULL);
         } else {
             send_err(c, "symlink unreadable");

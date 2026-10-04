@@ -1,6 +1,7 @@
 #include <errno.h>
 #include <limits.h>
 #include <spawn.h>  /* system */
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -87,10 +88,9 @@ static int reply_line(int fd, char *reply, size_t len, int timeout_ms) {
     return owe_ipc_recv_line_timeout(fd, reply, len, timeout_ms);
 }
 
-/* Play a one-shot intro video and block until it ends. The shell starts this
- * when a still background has a matching boot intro and reveals the still
- * after the process exits. */
-static int cmd_intro(const char *path) {
+/* Play a one-shot intro video and block until it ends. The intro starts from
+ * the current still, or with from_still false on its own first frame. */
+static int cmd_intro(const char *path, bool from_still) {
     char sock[PATH_MAX];
     char resolved[PATH_MAX];
     char reply[OWE_IPC_MAX_LINE];
@@ -111,8 +111,8 @@ static int cmd_intro(const char *path) {
         return 1;
     }
     quoted = owe_json_quote(resolved);
-    if (!quoted || snprintf(line, sizeof(line), "{\"cmd\":\"intro\",\"path\":%s}", quoted) >=
-                       (int)sizeof(line)) {
+    if (!quoted || snprintf(line, sizeof(line), "{\"cmd\":\"intro\",\"path\":%s%s}", quoted,
+                            from_still ? "" : ",\"start\":\"first-frame\"") >= (int)sizeof(line)) {
         free(quoted);
         close(fd);
         return 1;
@@ -181,7 +181,8 @@ static void usage(const char *argv0) {
             "  pause                   Pause video manually\n"
             "  resume                  Clear manual pause\n"
             "  always-animate on|off   Force animation regardless of policy\n"
-            "  intro <video>           Play a one-shot intro video and wait\n"
+            "  intro [--start still|first-frame] <video>\n"
+            "                          Play a one-shot intro video and wait\n"
             "\n"
             "State:\n"
             "  status                  Daemon status as JSON\n"
@@ -295,11 +296,23 @@ int main(int argc, char **argv) {
         return daemon_call("{\"cmd\":\"resume\"}", 1);
     }
     if (strcmp(cmd, "intro") == 0) {
-        if (argc < 3) {
-            fprintf(stderr, "owe intro <video>\n");
+        /* The intro starts from the still on screen unless told to start on
+         * its own first frame. */
+        bool from_still = true;
+        int path_arg = 2;
+        if (argc > 2 && strcmp(argv[2], "--start") == 0) {
+            if (argc < 4 || (strcmp(argv[3], "still") != 0 && strcmp(argv[3], "first-frame") != 0)) {
+                path_arg = argc;
+            } else {
+                from_still = strcmp(argv[3], "still") == 0;
+                path_arg = 4;
+            }
+        }
+        if (argc != path_arg + 1) {
+            fprintf(stderr, "owe intro [--start still|first-frame] <video>\n");
             return 1;
         }
-        return cmd_intro(argv[2]);
+        return cmd_intro(argv[path_arg], from_still);
     }
     if (strcmp(cmd, "always-animate") == 0) {
         if (argc < 3) {
