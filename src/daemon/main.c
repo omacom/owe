@@ -345,7 +345,7 @@ static bool renderer_on_screen(void) {
     return shown;
 }
 
-int owed_app_start_intro(const char *path, bool fade_in) {
+int owed_app_start_intro(const char *path, bool from_still) {
     owed_app_t *app = &g_app;
     char reply[8192] = "";
     char *quoted = NULL;
@@ -369,9 +369,9 @@ int owed_app_start_intro(const char *path, bool fade_in) {
     /* Starting on the first frame relies on a renderer surface that is still
      * unmapped. A renderer already on screen, such as one that kept the still
      * when the shell could not take it back, would clear that still to black
-     * first, so the intro fades in from it instead. */
-    if (!fade_in && renderer_on_screen()) {
-        fade_in = true;
+     * first, so the intro starts from it instead. */
+    if (!from_still && renderer_on_screen()) {
+        from_still = true;
     }
     /* A shell handoff that failed at startup holds off renderer starts for a
      * while. A renderer that is already running can still play the intro. */
@@ -383,11 +383,11 @@ int owed_app_start_intro(const char *path, bool fade_in) {
     if (!quoted || !from) {
         goto fail;
     }
-    /* Without a fade in there is no outgoing still to prepare, so a new
+    /* Starting on the first frame there is no outgoing still to prepare, so a new
      * renderer surface stays unmapped until the intro's first frame. */
     if (asprintf(&line, "{\"cmd\":\"load\",\"path\":%s,\"kind\":\"video\","
                         "\"once\":true,\"mute\":true%s%s}", quoted,
-                 fade_in ? ",\"from\":" : "", fade_in ? from : "") < 0) {
+                 from_still ? ",\"from\":" : "", from_still ? from : "") < 0) {
         goto fail;
     }
     free(quoted);
@@ -403,7 +403,7 @@ int owed_app_start_intro(const char *path, bool fade_in) {
     }
     app->intro_active = 1;
     app->intro_phase = OWE_INTRO_PREPARING;
-    app->intro_fade_in = fade_in;
+    app->intro_from_still = from_still;
     {
         struct stat st;
         bool known = stat(app->source_path, &st) == 0;
@@ -489,7 +489,7 @@ void owed_app_poll_intro(void) {
         intro_finish("intro decode failed");
         return;
     }
-    if (app->intro_phase == OWE_INTRO_PREPARING && !app->intro_fade_in) {
+    if (app->intro_phase == OWE_INTRO_PREPARING && !app->intro_from_still) {
         /* The renderer reports ready once it has drawn the intro's first
          * frame, so releasing the shell's layer reveals the intro rather than
          * an empty background. */

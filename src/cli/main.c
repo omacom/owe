@@ -88,9 +88,9 @@ static int reply_line(int fd, char *reply, size_t len, int timeout_ms) {
     return owe_ipc_recv_line_timeout(fd, reply, len, timeout_ms);
 }
 
-/* Play a one-shot intro video and block until it ends. The intro fades in
- * from the current still, or with fade_in false starts on its first frame. */
-static int cmd_intro(const char *path, bool fade_in) {
+/* Play a one-shot intro video and block until it ends. The intro starts from
+ * the current still, or with from_still false on its own first frame. */
+static int cmd_intro(const char *path, bool from_still) {
     char sock[PATH_MAX];
     char resolved[PATH_MAX];
     char reply[OWE_IPC_MAX_LINE];
@@ -112,7 +112,7 @@ static int cmd_intro(const char *path, bool fade_in) {
     }
     quoted = owe_json_quote(resolved);
     if (!quoted || snprintf(line, sizeof(line), "{\"cmd\":\"intro\",\"path\":%s%s}", quoted,
-                            fade_in ? "" : ",\"fade_in\":false") >= (int)sizeof(line)) {
+                            from_still ? "" : ",\"start\":\"first-frame\"") >= (int)sizeof(line)) {
         free(quoted);
         close(fd);
         return 1;
@@ -181,7 +181,7 @@ static void usage(const char *argv0) {
             "  pause                   Pause video manually\n"
             "  resume                  Clear manual pause\n"
             "  always-animate on|off   Force animation regardless of policy\n"
-            "  intro [--no-fade-in] <video>\n"
+            "  intro [--start still|first-frame] <video>\n"
             "                          Play a one-shot intro video and wait\n"
             "\n"
             "State:\n"
@@ -296,13 +296,23 @@ int main(int argc, char **argv) {
         return daemon_call("{\"cmd\":\"resume\"}", 1);
     }
     if (strcmp(cmd, "intro") == 0) {
-        bool fade_in = argc < 3 || strcmp(argv[2], "--no-fade-in") != 0;
-        int path_arg = fade_in ? 2 : 3;
+        /* The intro starts from the still on screen unless told to start on
+         * its own first frame. */
+        bool from_still = true;
+        int path_arg = 2;
+        if (argc > 2 && strcmp(argv[2], "--start") == 0) {
+            if (argc < 4 || (strcmp(argv[3], "still") != 0 && strcmp(argv[3], "first-frame") != 0)) {
+                path_arg = argc;
+            } else {
+                from_still = strcmp(argv[3], "still") == 0;
+                path_arg = 4;
+            }
+        }
         if (argc != path_arg + 1) {
-            fprintf(stderr, "owe intro [--no-fade-in] <video>\n");
+            fprintf(stderr, "owe intro [--start still|first-frame] <video>\n");
             return 1;
         }
-        return cmd_intro(argv[path_arg], fade_in);
+        return cmd_intro(argv[path_arg], from_still);
     }
     if (strcmp(cmd, "always-animate") == 0) {
         if (argc < 3) {

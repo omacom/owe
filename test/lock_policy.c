@@ -388,7 +388,7 @@ int main(void) {
     CHECK(!owed_app_intro_active() && g_app.engine == OWE_ENGINE_SHELL);
     hypr.locked = false;
 
-    /* An intro without a fade in prepares no still. The shell keeps its layer
+    /* An intro that starts on its first frame prepares no still. The shell keeps its layer
      * until the renderer has drawn the intro's first frame, and the intro
      * still fades into the still at its end. */
     g_app.engine = OWE_ENGINE_SHELL;
@@ -425,7 +425,7 @@ int main(void) {
     strcpy(supervisor_reply, "{\"status\":\"ok\",\"swaps\":12}");
     CHECK(owed_app_start_intro("/intro.mp4", false) == 0);
     CHECK(strstr(supervisor_last, "\"from\":\"/corrupt.png\"") != NULL);
-    CHECK(g_app.intro_fade_in);
+    CHECK(g_app.intro_from_still);
     owed_app_stop_intro("intro cancelled");
 
     /* A renderer left running by a shell handoff that failed at startup has
@@ -438,7 +438,7 @@ int main(void) {
     strcpy(supervisor_reply, "{\"status\":\"ok\",\"swaps\":0}");
     CHECK(owed_app_start_intro("/intro.mp4", false) == 0);
     CHECK(strstr(supervisor_last, "\"from\"") == NULL);
-    CHECK(!g_app.intro_fade_in && renderer.starts == 0);
+    CHECK(!g_app.intro_from_still && renderer.starts == 0);
     owed_app_stop_intro("intro cancelled");
     g_app.renderer_retry_at_ms = 0;
 

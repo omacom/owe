@@ -71,7 +71,7 @@ typedef struct owed_app {
     int render_feeding; /* 1 while the lock feed owns the renderer */
     int intro_active; /* 1 while a one-shot intro video owns the renderer */
     int intro_phase;
-    int intro_fade_in; /* 1 when the intro fades in from the shell's still */
+    int intro_from_still; /* 1 when the intro starts from the shell's still */
     char intro_path[4096];
     dev_t intro_still_dev; /* the still file the intro started from and ends on */
     ino_t intro_still_ino;
@@ -91,7 +91,7 @@ void owed_app_apply_policy(void);
 const char *owed_app_engine(void);
 bool owed_app_renderer_expected(void);
 
-int owed_app_start_intro(const char *path, bool fade_in);
+int owed_app_start_intro(const char *path, bool from_still);
 void owed_app_poll_intro(void);
 void owed_app_stop_intro(const char *reason);
 bool owed_app_intro_active(void);

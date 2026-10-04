@@ -72,7 +72,7 @@ owe pause                 # Pause video manually
 owe resume                # Clear manual pause
 owe always-animate on|off # Force animation regardless of policy
 owe intro <video>         # Play a one-shot intro video and wait
-owe intro --no-fade-in <video> # Start the intro on its first frame
+owe intro --start first-frame <video> # Start the intro on its own first frame
 owe status                # Daemon status as JSON
 owe config                # Effective config as JSON
 owe render-status         # Renderer status as JSON
@@ -97,7 +97,7 @@ owe --socket "$XDG_RUNTIME_DIR/owe-test/owed.sock" status
 One daemon can run in each runtime directory.
 An intro requires a still background and ends after 30 seconds at most.
 The CLI accepts an absolute or relative intro path.
-An intro fades in from the current still. `--no-fade-in` starts it on its first frame instead, for a shell that leaves the background empty for it.
+An intro starts from the current still by default (`--start still`). `--start first-frame` starts it on its own first frame instead, for a shell that leaves the background empty for it.
 
 ## IPC reference
 
@@ -123,7 +123,7 @@ Commands:
 - `{"cmd":"reload-config"}` — reload `~/.config/owe/config.toml`.
 - `{"cmd":"render-status"}` — proxy the renderer status reply.
 - `{"cmd":"render-restart"}` — restart `owe-render` and reload current media.
-- `{"cmd":"intro","path":"/abs/file.mp4"}` — play a one-shot intro video over a still background, muted. Reply means it started. Cancel with `intro-stop`. `"fade_in":false` starts it on its first frame instead of fading in from the still.
+- `{"cmd":"intro","path":"/abs/file.mp4"}` — play a one-shot intro video over a still background, muted. Reply means it started. Cancel with `intro-stop`. `"start":"first-frame"` starts it on its own first frame instead of from the still; `"start":"still"` is the default, and any other value is rejected.
 - `{"cmd":"intro-status"}` — reply `{"running":bool,"result":"running|ok|error"}`.
 - `{"cmd":"intro-stop"}` — cancel a running intro.
 - `{"cmd":"shutdown"}` — stop the daemon.

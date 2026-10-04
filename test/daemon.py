@@ -344,28 +344,33 @@ def main():
                     time.sleep(0.1)
                 check(renderer_gone, "the intro's renderer stops after handing the still back")
                 commands_before = len(commands_path.read_text().splitlines())
-                result = subprocess.run(cli + ["intro", "--no-fade-in", "good.mp4"], env=env, cwd=root,
+                result = subprocess.run(cli + ["intro", "--start", "first-frame", "good.mp4"], env=env, cwd=root,
                                         capture_output=True, text=True, timeout=8)
-                check(result.returncode == 0, "an intro without a fade in plays to its end", result.stderr)
+                check(result.returncode == 0, "an intro started on its first frame plays to its end", result.stderr)
                 direct_commands = [json.loads(line) for line in
                                    commands_path.read_text().splitlines()[commands_before:]]
                 direct_load = next((command for command in direct_commands
                                     if command.get("cmd") == "load" and command.get("once")), {})
                 check(direct_load and "from" not in direct_load,
-                      "an intro without a fade in prepares no still", json.dumps(direct_commands))
+                      "an intro started on its first frame prepares no still", json.dumps(direct_commands))
                 check(not any(command.get("cmd") == "intro-show" for command in direct_commands) and
                       any(command.get("cmd") == "intro-finish" and command.get("path") == str(root / "still.png")
                           for command in direct_commands),
-                      "an intro without a fade in starts on its video and still fades into the still",
+                      "an intro started on its first frame starts on its video and still fades into the still",
                       json.dumps(direct_commands))
-                result = subprocess.run(cli + ["intro", "--no-fade-in"], env=env, cwd=root,
-                                        capture_output=True, text=True, timeout=8)
-                check(result.returncode == 1 and "owe intro [--no-fade-in] <video>" in result.stderr,
-                      "the CLI requires a video after --no-fade-in", result.stderr)
-                result = subprocess.run(cli + ["intro"], env=env, cwd=root,
-                                        capture_output=True, text=True, timeout=8)
-                check(result.returncode == 1 and "owe intro [--no-fade-in] <video>" in result.stderr,
-                      "the CLI prints its usage for an intro without a video", result.stderr)
+                usage = "owe intro [--start still|first-frame] <video>"
+                for args, case in ((["intro"], "without a video"),
+                                   (["intro", "--start", "first-frame"], "without a video after --start"),
+                                   (["intro", "--start"], "without a start value"),
+                                   (["intro", "--start", "bogus", "good.mp4"], "with an unknown start value"),
+                                   (["intro", "good.mp4", "--start", "first-frame"], "with --start after the video")):
+                    result = subprocess.run(cli + args, env=env, cwd=root,
+                                            capture_output=True, text=True, timeout=8)
+                    check(result.returncode == 1 and usage in result.stderr,
+                          "the CLI prints its usage for an intro " + case, result.stderr)
+                reply = call(daemon_socket, "intro", path=str(root / "good.mp4"), start="bogus")
+                check(reply.get("status") == "error" and "still or first-frame" in reply.get("message", ""),
+                      "the daemon rejects an unknown intro start", json.dumps(reply))
 
                 previous_loads = [json.loads(line) for line in commands_path.read_text().splitlines()
                                   if json.loads(line).get("cmd") == "load"]
