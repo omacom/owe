@@ -360,7 +360,12 @@ def main():
                       json.dumps(direct_commands))
                 result = subprocess.run(cli + ["intro", "--no-fade-in"], env=env, cwd=root,
                                         capture_output=True, text=True, timeout=8)
-                check(result.returncode != 0, "the CLI requires a video after --no-fade-in", result.stderr)
+                check(result.returncode == 1 and "owe intro [--no-fade-in] <video>" in result.stderr,
+                      "the CLI requires a video after --no-fade-in", result.stderr)
+                result = subprocess.run(cli + ["intro"], env=env, cwd=root,
+                                        capture_output=True, text=True, timeout=8)
+                check(result.returncode == 1 and "owe intro [--no-fade-in] <video>" in result.stderr,
+                      "the CLI prints its usage for an intro without a video", result.stderr)
 
                 previous_loads = [json.loads(line) for line in commands_path.read_text().splitlines()
                                   if json.loads(line).get("cmd") == "load"]

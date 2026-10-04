@@ -296,12 +296,13 @@ int main(int argc, char **argv) {
         return daemon_call("{\"cmd\":\"resume\"}", 1);
     }
     if (strcmp(cmd, "intro") == 0) {
-        bool fade_in = argc == 3 || strcmp(argv[2], "--no-fade-in") != 0;
-        if (argc != (fade_in ? 3 : 4)) {
+        bool fade_in = argc < 3 || strcmp(argv[2], "--no-fade-in") != 0;
+        int path_arg = fade_in ? 2 : 3;
+        if (argc != path_arg + 1) {
             fprintf(stderr, "owe intro [--no-fade-in] <video>\n");
             return 1;
         }
-        return cmd_intro(argv[fade_in ? 2 : 3], fade_in);
+        return cmd_intro(argv[path_arg], fade_in);
     }
     if (strcmp(cmd, "always-animate") == 0) {
         if (argc < 3) {
