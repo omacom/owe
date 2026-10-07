@@ -515,6 +515,93 @@ int main(void) {
     strcpy(supervisor_reply, "{\"status\":\"ok\",\"path\":\"/video.mp4\",\"kind\":\"video\",\"ready\":true}");
     check_media_ready();
     CHECK(g_app.media_ready && !g_app.media_pending);
+    /* A staged copy consumes exactly its prepared clip. A changed file,
+     * expired context, locked session or exposed renderer cannot reuse it. */
+    {
+        char staged[] = "/tmp/owe-prepared-stage-XXXXXX";
+        char prepared[sizeof(staged) + 16], published[sizeof(staged) + 8];
+        char copy[] = "/tmp/owe-prepared-copy-XXXXXX";
+        CHECK(mkdtemp(staged));
+        snprintf(prepared, sizeof(prepared), "%s/intro.mp4", staged);
+        int a = open(prepared, O_CREAT | O_RDWR, 0600), b = mkstemp(copy);
+        CHECK(a >= 0 && b >= 0);
+        CHECK(write(a, "clip-a", 6) == 6 && write(b, "clip-a", 6) == 6);
+        close(a); close(b);
+        power.locked = power.sleeping = false;
+        hypr.locked = false;
+        g_app.engine = OWE_ENGINE_SHELL;
+        g_app.shell_enabled = 1;
+        g_app.renderer_retry_at_ms = 0;
+        renderer.down = false;
+        strcpy(g_app.source_kind, "still");
+        strcpy(supervisor_reply, "{\"status\":\"ok\"}");
+        /* Startup may decode while the initial shell handoff is pending,
+         * but never bypass lock/sleep policy or warm an exposed renderer. */
+        g_app.engine = OWE_ENGINE_NONE;
+        g_app.shell_enabled = -1;
+        CHECK(owed_app_prepare_intro(prepared) != 0);
+        power.locked = true;
+        CHECK(prepare_intro(prepared, true) != 0);
+        power.locked = false;
+        power.sleeping = true;
+        CHECK(prepare_intro(prepared, true) != 0);
+        power.sleeping = false;
+        hypr.locked = true;
+        CHECK(prepare_intro(prepared, true) != 0);
+        hypr.locked = false;
+        CHECK(prepare_intro(prepared, true) == 0);
+        CHECK(g_app.engine == OWE_ENGINE_NONE && g_app.shell_enabled == -1);
+        CHECK(g_app.intro_prepared && !g_app.intro_active);
+        CHECK(switch_to_shell() == 0);
+        CHECK(g_app.intro_prepared);
+        CHECK(owed_app_prepare_intro(prepared) == 0);
+        CHECK(g_app.intro_prepared && strstr(supervisor_last, "\"prepare\":true"));
+        CHECK(prepared_intro_matches(copy));
+        snprintf(published, sizeof(published), "%s.live", staged);
+        CHECK(rename(staged, published) == 0);
+        snprintf(prepared, sizeof(prepared), "%s/intro.mp4", published);
+        CHECK(prepared_intro_matches(prepared));
+        CHECK(owed_app_prepare_intro(copy) == 0); /* no second load */
+        CHECK(owed_app_start_intro(copy, false) == 0);
+        CHECK(strstr(supervisor_last, "intro-start") && g_app.intro_prepared);
+        strcpy(supervisor_reply, "{\"status\":\"ok\",\"ready\":true}");
+        owed_app_poll_intro();
+        CHECK(!g_app.intro_prepared);
+        strcpy(supervisor_reply, "{\"status\":\"ok\"}");
+        owed_app_stop_intro("intro cancelled");
+        CHECK(owed_app_prepare_intro(prepared) == 0);
+        b = open(copy, O_WRONLY);
+        CHECK(b >= 0 && write(b, "clip-b", 6) == 6);
+        close(b);
+        CHECK(!prepared_intro_matches(copy));
+        a = open(prepared, O_WRONLY);
+        CHECK(a >= 0 && write(a, "clip-c", 6) == 6);
+        close(a);
+        CHECK(!prepared_intro_matches(prepared));
+        clear_prepared_intro();
+        CHECK(owed_app_prepare_intro(copy) == 0);
+        g_app.renderer_warm_until_ms = monotonic_ms() - 1;
+        {
+            int stops = renderer.stops;
+            process_shell_handoff();
+            CHECK(!g_app.intro_prepared && renderer.stops == stops + 1);
+        }
+        power.locked = true;
+        CHECK(owed_app_prepare_intro(copy) != 0);
+        power.locked = false;
+        CHECK(owed_app_prepare_intro(copy) == 0);
+        hypr.locked = true;
+        {
+            int stops = renderer.stops;
+            process_shell_handoff();
+            CHECK(!g_app.intro_prepared && renderer.stops == stops + 1);
+        }
+        CHECK(owed_app_prepare_intro(copy) != 0);
+        hypr.locked = false;
+        g_app.engine = OWE_ENGINE_RENDERER;
+        CHECK(owed_app_prepare_intro(copy) != 0);
+        unlink(prepared); unlink(copy); rmdir(published);
+    }
     owed_policy_free(g_app.policy);
     puts("lock policy and still transition checks passed");
     return 0;

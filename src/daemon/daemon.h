@@ -2,6 +2,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <time.h>
 #include <sys/types.h>
 
 #include "config.h"
@@ -43,6 +44,14 @@ typedef struct owed_app {
     int64_t shell_stop_at_ms;
     int64_t shell_retry_at_ms;
     int64_t renderer_retry_at_ms;
+    int64_t renderer_warm_until_ms;
+    bool intro_prepared;
+    int intro_prepared_fd;
+    dev_t intro_prepared_dev;
+    ino_t intro_prepared_ino;
+    off_t intro_prepared_size;
+    struct timespec intro_prepared_mtime;
+    struct timespec intro_prepared_ctime;
 
     char source_path[4096];
     char source_kind[16];
@@ -92,6 +101,8 @@ const char *owed_app_engine(void);
 bool owed_app_renderer_expected(void);
 
 int owed_app_start_intro(const char *path, bool from_still);
+int owed_app_warm_renderer(void);
+int owed_app_prepare_intro(const char *path);
 void owed_app_poll_intro(void);
 void owed_app_stop_intro(const char *reason);
 bool owed_app_intro_active(void);

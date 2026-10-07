@@ -90,7 +90,7 @@ static int reply_line(int fd, char *reply, size_t len, int timeout_ms) {
 
 /* Play a one-shot intro video and block until it ends. The intro starts from
  * the current still, or with from_still false on its own first frame. */
-static int cmd_intro(const char *path, bool from_still) {
+static int cmd_intro(const char *path, bool from_still, bool refresh) {
     char sock[PATH_MAX];
     char resolved[PATH_MAX];
     char reply[OWE_IPC_MAX_LINE];
@@ -111,8 +111,9 @@ static int cmd_intro(const char *path, bool from_still) {
         return 1;
     }
     quoted = owe_json_quote(resolved);
-    if (!quoted || snprintf(line, sizeof(line), "{\"cmd\":\"intro\",\"path\":%s%s}", quoted,
-                            from_still ? "" : ",\"start\":\"first-frame\"") >= (int)sizeof(line)) {
+    if (!quoted || snprintf(line, sizeof(line), "{\"cmd\":\"intro\",\"path\":%s%s%s}", quoted,
+                            from_still ? "" : ",\"start\":\"first-frame\"",
+                            refresh ? ",\"refresh\":true" : "") >= (int)sizeof(line)) {
         free(quoted);
         close(fd);
         return 1;
@@ -181,8 +182,10 @@ static void usage(const char *argv0) {
             "  pause                   Pause video manually\n"
             "  resume                  Clear manual pause\n"
             "  always-animate on|off   Force animation regardless of policy\n"
-            "  intro [--start still|first-frame] <video>\n"
+            "  intro [--start still|first-frame] [--refresh] <video>\n"
             "                          Play a one-shot intro video and wait\n"
+            "  warm                    Keep an idle renderer ready for one minute\n"
+            "  intro-prepare <video>   Decode an intro offscreen, paused at its start\n"
             "\n"
             "State:\n"
             "  status                  Daemon status as JSON\n"
@@ -289,6 +292,22 @@ int main(int argc, char **argv) {
     if (strcmp(cmd, "refresh") == 0) {
         return daemon_call("{\"cmd\":\"refresh\"}", 1);
     }
+    if (strcmp(cmd, "warm") == 0) {
+        return daemon_call("{\"cmd\":\"warm\"}", 1);
+    }
+    if (strcmp(cmd, "intro-prepare") == 0) {
+        char resolved[PATH_MAX];
+        char *quoted;
+        if (argc != 3 || !realpath(argv[2], resolved)) {
+            fprintf(stderr, "owe intro-prepare <video>\n");
+            return 1;
+        }
+        quoted = owe_json_quote(resolved);
+        if (!quoted) return 1;
+        snprintf(line, sizeof(line), "{\"cmd\":\"intro-prepare\",\"path\":%s}", quoted);
+        free(quoted);
+        return daemon_call(line, 1);
+    }
     if (strcmp(cmd, "pause") == 0) {
         return daemon_call("{\"cmd\":\"pause\"}", 1);
     }
@@ -299,6 +318,7 @@ int main(int argc, char **argv) {
         /* The intro starts from the still on screen unless told to start on
          * its own first frame. */
         bool from_still = true;
+        bool refresh = false;
         int path_arg = 2;
         if (argc > 2 && strcmp(argv[2], "--start") == 0) {
             if (argc < 4 || (strcmp(argv[3], "still") != 0 && strcmp(argv[3], "first-frame") != 0)) {
@@ -308,11 +328,15 @@ int main(int argc, char **argv) {
                 path_arg = 4;
             }
         }
+        if (path_arg < argc && strcmp(argv[path_arg], "--refresh") == 0) {
+            refresh = true;
+            path_arg++;
+        }
         if (argc != path_arg + 1) {
-            fprintf(stderr, "owe intro [--start still|first-frame] <video>\n");
+            fprintf(stderr, "owe intro [--start still|first-frame] [--refresh] <video>\n");
             return 1;
         }
-        return cmd_intro(argv[path_arg], from_still);
+        return cmd_intro(argv[path_arg], from_still, refresh);
     }
     if (strcmp(cmd, "always-animate") == 0) {
         if (argc < 3) {

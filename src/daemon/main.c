@@ -53,6 +53,7 @@ static bool battery_poster_active(void) {
 #define INTRO_PREPARE_TIMEOUT_MS 3000
 #define INTRO_FINISH_TIMEOUT_MS 5000
 #define INTRO_FADE_OUT_MS 750
+#define RENDERER_WARM_MS 60000
 
 static int64_t monotonic_ms(void) {
     struct timespec now;
@@ -242,14 +243,34 @@ static int switch_to_renderer(void) {
     return activate_renderer();
 }
 
+static void clear_prepared_intro(void) {
+    if (g_app.intro_prepared) close(g_app.intro_prepared_fd);
+    g_app.intro_prepared = false;
+}
+
 static void process_shell_handoff(void) {
     owed_app_t *app = &g_app;
     if (app->shell_stop_at_ms && monotonic_ms() >= app->shell_stop_at_ms) {
         app->shell_stop_at_ms = 0;
         if (app->engine == OWE_ENGINE_SHELL && owed_render_is_alive(app->supervisor)) {
-            OWE_INFO("renderer stopped, the shell draws the still");
-            owed_supervisor_stop(app->supervisor);
+            char reply[1024];
+            if (owed_supervisor_send(app->supervisor, "{\"cmd\":\"park\"}", reply, sizeof(reply)) == 0 &&
+                owe_json_ok(reply)) {
+                app->renderer_warm_until_ms = monotonic_ms() + RENDERER_WARM_MS;
+                OWE_INFO("renderer parked, the shell draws the still");
+            } else {
+                owed_supervisor_stop(app->supervisor);
+            }
         }
+    }
+    if (app->renderer_warm_until_ms && !app->intro_active &&
+        (monotonic_ms() >= app->renderer_warm_until_ms ||
+         (app->power && owed_power_locked(app->power)) ||
+         (app->hypr && owed_hypr_locked(app->hypr)) ||
+         (app->power && owed_power_sleeping(app->power)))) {
+        app->renderer_warm_until_ms = 0;
+        clear_prepared_intro();
+        if (app->engine == OWE_ENGINE_SHELL) owed_supervisor_stop(app->supervisor);
     }
 }
 
@@ -300,6 +321,7 @@ static void intro_finish(const char *error) {
         return;
     }
     renderer_owned = app->engine == OWE_ENGINE_RENDERER;
+    clear_prepared_intro();
     app->intro_active = 0;
     app->intro_phase = OWE_INTRO_IDLE;
     app->intro_deadline_ms = 0;
@@ -345,6 +367,94 @@ static bool renderer_on_screen(void) {
     return shown;
 }
 
+/* Staging can rename or copy the selected file. Retain its descriptor and
+ * compare bytes so only that decoded clip can be reused, even after a rename. */
+static bool prepared_intro_matches(const char *path) {
+    struct stat saved, candidate;
+    char a[65536], b[65536];
+    off_t offset = 0;
+    int fd;
+    bool matches = false;
+    if (!g_app.intro_prepared || !owed_render_is_alive(g_app.supervisor) ||
+        fstat(g_app.intro_prepared_fd, &saved) != 0 ||
+        saved.st_dev != g_app.intro_prepared_dev || saved.st_ino != g_app.intro_prepared_ino ||
+        saved.st_size != g_app.intro_prepared_size ||
+        saved.st_mtim.tv_sec != g_app.intro_prepared_mtime.tv_sec ||
+        saved.st_mtim.tv_nsec != g_app.intro_prepared_mtime.tv_nsec ||
+        saved.st_ctim.tv_sec != g_app.intro_prepared_ctime.tv_sec ||
+        saved.st_ctim.tv_nsec != g_app.intro_prepared_ctime.tv_nsec) return false;
+    fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return false;
+    if (fstat(fd, &candidate) != 0 || candidate.st_size != saved.st_size) goto done;
+    while (offset < saved.st_size) {
+        ssize_t count = pread(g_app.intro_prepared_fd, a, sizeof(a), offset);
+        if (count <= 0 || pread(fd, b, (size_t)count, offset) != count || memcmp(a, b, (size_t)count)) goto done;
+        offset += count;
+    }
+    matches = true;
+done:
+    close(fd);
+    return matches;
+}
+
+static int warm_renderer(bool startup) {
+    owed_app_t *app = &g_app;
+    if (!app->supervisor || app->intro_active ||
+        (startup ? app->engine != OWE_ENGINE_NONE :
+                   (app->engine != OWE_ENGINE_SHELL || app->shell_enabled != 1)) ||
+        (app->power && (owed_power_locked(app->power) || owed_power_sleeping(app->power))) ||
+        (app->hypr && owed_hypr_locked(app->hypr))) return -1;
+    if (ensure_renderer() != 0) return -1;
+    app->renderer_warm_until_ms = monotonic_ms() + RENDERER_WARM_MS;
+    return 0;
+}
+
+int owed_app_warm_renderer(void) {
+    return warm_renderer(false);
+}
+
+static int prepare_intro(const char *path, bool startup) {
+    struct stat st;
+    char reply[1024], fd_path[128], *quoted, *line = NULL;
+    int fd, rc = -1;
+    fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) return -1;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) goto done;
+    if (warm_renderer(startup) != 0) goto done;
+    if (prepared_intro_matches(path)) {
+        close(fd);
+        return 0;
+    }
+    /* The staged directory can move while the decoder starts. Keep this
+     * opened inode available until it has produced the first playback frame. */
+    snprintf(fd_path, sizeof(fd_path), "/proc/%ld/fd/%d", (long)getpid(), fd);
+    quoted = owe_json_quote(fd_path);
+    if (quoted && asprintf(&line, "{\"cmd\":\"load\",\"kind\":\"video\",\"prepare\":true,\"mute\":true,\"path\":%s}", quoted) >= 0 &&
+        owed_supervisor_send(g_app.supervisor, line, reply, sizeof(reply)) == 0 && owe_json_ok(reply)) {
+        clear_prepared_intro();
+        g_app.intro_prepared = true;
+        g_app.intro_prepared_fd = fd;
+        g_app.intro_prepared_dev = st.st_dev;
+        g_app.intro_prepared_ino = st.st_ino;
+        g_app.intro_prepared_size = st.st_size;
+        g_app.intro_prepared_mtime = st.st_mtim;
+        g_app.intro_prepared_ctime = st.st_ctim;
+        g_app.shell_stop_at_ms = 0;
+        rc = 0;
+    } else {
+        clear_prepared_intro();
+    }
+    free(quoted);
+    free(line);
+done:
+    if (rc != 0) close(fd);
+    return rc;
+}
+
+int owed_app_prepare_intro(const char *path) {
+    return prepare_intro(path, false);
+}
+
 int owed_app_start_intro(const char *path, bool from_still) {
     owed_app_t *app = &g_app;
     char reply[8192] = "";
@@ -352,6 +462,7 @@ int owed_app_start_intro(const char *path, bool from_still) {
     char *from = NULL;
     char *line = NULL;
     int rc;
+    bool prepared;
     if (!path || !*path || !app->supervisor || app->intro_active) {
         return -1;
     }
@@ -366,12 +477,13 @@ int owed_app_start_intro(const char *path, bool from_still) {
         (app->hypr && owed_hypr_any_fullscreen(app->hypr))) {
         return -1;
     }
+    prepared = !from_still && app->engine == OWE_ENGINE_SHELL && app->shell_enabled == 1 && prepared_intro_matches(path);
     /* Starting on the first frame relies on a renderer surface that is still
      * unmapped. A renderer already on screen, such as one that kept the still
      * when the shell could not take it back, would clear that still to black
      * first. Recreate it when the shell already covers it; otherwise the
      * intro must start from its still. */
-    if (!from_still && renderer_on_screen()) {
+    if (!prepared && !from_still && renderer_on_screen()) {
         if (app->engine == OWE_ENGINE_SHELL && app->shell_enabled == 1) {
             /* The shell covers the old renderer. Recreate its unmapped
              * surfaces so first-frame mode does not prepare the target still. */
@@ -385,22 +497,28 @@ int owed_app_start_intro(const char *path, bool from_still) {
     if (!owed_render_is_alive(app->supervisor) && ensure_renderer() != 0) {
         return -1;
     }
-    quoted = owe_json_quote(path);
-    from = owe_json_quote(app->source_path);
-    if (!quoted || !from) {
-        goto fail;
+    if (prepared) {
+        line = strdup("{\"cmd\":\"intro-start\"}");
+        if (!line) goto fail;
+    } else {
+        quoted = owe_json_quote(path);
+        from = owe_json_quote(app->source_path);
+        if (!quoted || !from) {
+            goto fail;
+        }
+        /* Starting on the first frame there is no outgoing still to prepare, so a new
+         * renderer surface stays unmapped until the intro's first frame. */
+        if (asprintf(&line, "{\"cmd\":\"load\",\"path\":%s,\"kind\":\"video\","
+                            "\"once\":true,\"mute\":true%s%s}", quoted,
+                     from_still ? ",\"from\":" : "", from_still ? from : "") < 0) {
+            goto fail;
+        }
+        free(quoted);
+        quoted = NULL;
+        free(from);
+        from = NULL;
     }
-    /* Starting on the first frame there is no outgoing still to prepare, so a new
-     * renderer surface stays unmapped until the intro's first frame. */
-    if (asprintf(&line, "{\"cmd\":\"load\",\"path\":%s,\"kind\":\"video\","
-                        "\"once\":true,\"mute\":true%s%s}", quoted,
-                 from_still ? ",\"from\":" : "", from_still ? from : "") < 0) {
-        goto fail;
-    }
-    free(quoted);
-    quoted = NULL;
-    free(from);
-    from = NULL;
+    if (!prepared) clear_prepared_intro();
     rc = owed_supervisor_send(app->supervisor, line, reply, sizeof(reply));
     free(line);
     line = NULL;
@@ -425,6 +543,7 @@ int owed_app_start_intro(const char *path, bool from_still) {
     OWE_INFO("intro preparing: %s", path);
     return 0;
 fail:
+    clear_prepared_intro();
     free(quoted);
     free(from);
     free(line);
@@ -501,6 +620,7 @@ void owed_app_poll_intro(void) {
          * frame, so releasing the shell's layer reveals the intro rather than
          * an empty background. */
         if (ready) {
+            clear_prepared_intro();
             if (activate_renderer() != 0) {
                 intro_finish("renderer handoff failed");
                 return;
@@ -821,6 +941,7 @@ void owed_app_on_job_done(void) {
 }
 
 void owed_app_on_renderer_restarted(void) {
+    clear_prepared_intro();
     g_app.loaded_path[0] = '\0';
     g_app.loaded_kind[0] = '\0';
     g_app.render_paused = -1;
@@ -966,6 +1087,7 @@ static void usage(const char *argv0) {
     fprintf(stderr,
             "Usage: %s [options]\n"
             "  --socket PATH   IPC socket path (default: $XDG_RUNTIME_DIR/owe/owed.sock)\n"
+            "  --prepare-intro PATH  Prepare a login intro before the shell handoff\n"
             "  --verbose       Enable debug logging\n"
             "  --help          Show this help\n",
             argv0);
@@ -977,6 +1099,7 @@ int main(int argc, char **argv) {
     char lock_path[PATH_MAX + 32];
     char runtime[PATH_MAX];
     bool verbose = false;
+    const char *startup_intro = NULL;
     bool blocklisted = false;
     int64_t tick_ms = 0;
     int i;
@@ -989,6 +1112,8 @@ int main(int argc, char **argv) {
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--socket") == 0 && i + 1 < argc) {
             snprintf(socket_path, sizeof(socket_path), "%s", argv[++i]);
+        } else if (strcmp(argv[i], "--prepare-intro") == 0 && i + 1 < argc) {
+            startup_intro = argv[++i];
         } else if (strcmp(argv[i], "--verbose") == 0 || strcmp(argv[i], "-v") == 0) {
             verbose = true;
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
@@ -1062,6 +1187,12 @@ int main(int argc, char **argv) {
     owed_policy_recompute(g_app.policy);
 
     if (owed_watch_resolve_current(resolved, sizeof(resolved)) == 0) {
+        /* Decode offscreen while Quickshell builds its desktop. The usual
+         * shell handoff and first-frame intro still gate presentation. */
+        if (startup_intro && *startup_intro && owe_kind_from_path(resolved) == OWE_KIND_STILL) {
+            if (prepare_intro(startup_intro, true) != 0)
+                OWE_WARN("startup intro preparation failed: %s", startup_intro);
+        }
         owed_app_on_background_changed(resolved);
     } else {
         OWE_WARN("no current background symlink yet");

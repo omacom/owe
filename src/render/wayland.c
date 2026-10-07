@@ -602,6 +602,10 @@ void owe_wayland_render_pending(struct owe_wayland *wl) {
     if (!app || !app->egl) {
         return;
     }
+    if (app->preparing) {
+        owe_wayland_flush(wl);
+        return;
+    }
     /* Keep the last buffer until the outgoing image can cover video startup. */
     if (owe_mpv_has_video(app->mpv) && owe_still_transition_waiting(app->transition)) {
         owe_wayland_flush(wl);

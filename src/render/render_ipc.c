@@ -177,6 +177,7 @@ static void handle_load(struct owe_render_ipc *ipc, struct owe_ipc_client *c, yy
         const char *from = vfrom && yyjson_is_str(vfrom) ? yyjson_get_str(vfrom) : "";
         bool once = yyjson_is_bool(vonce) && yyjson_get_bool(vonce);
         bool mute = yyjson_is_bool(vmute) && yyjson_get_bool(vmute);
+        bool prepare = yyjson_get_bool(yyjson_obj_get(root, "prepare"));
         if (vfrom && (!owe_json_path(vfrom) || from[0] != '/' || stat(from, &st) != 0 ||
                       !S_ISREG(st.st_mode) || access(from, R_OK) != 0)) {
             OWE_WARN("Transition image is not a readable local file");
@@ -186,10 +187,14 @@ static void handle_load(struct owe_render_ipc *ipc, struct owe_ipc_client *c, yy
             send_err(c, "video load failed");
             return;
         }
-        owe_mpv_set_loop(app->mpv, !once);
+        owe_mpv_set_loop(app->mpv, !once && !prepare);
         ipc->load_error[0] = '\0';
         owe_mpv_set_muted(app->mpv, mute || app->feeding);
-        if (once) {
+        app->preparing = prepare;
+        if (prepare) {
+            app->paused = true;
+            owe_mpv_set_paused(app->mpv, true);
+        } else if (once) {
             app->paused = false;
             owe_mpv_set_paused(app->mpv, false);
         }
@@ -212,7 +217,7 @@ static void handle_load(struct owe_render_ipc *ipc, struct owe_ipc_client *c, yy
         }
         owe_still_unload(app->still);
         pending_reply(ipc, 0, "load superseded");
-        if (!once) {
+        if (!once && !prepare) {
             owe_mpv_set_paused(app->mpv, app->paused);
         }
         snprintf(app->current_path, sizeof(app->current_path), "%s", path);
@@ -221,6 +226,7 @@ static void handle_load(struct owe_render_ipc *ipc, struct owe_ipc_client *c, yy
         return;
     }
     if (strcmp(kind, "still") == 0) {
+        app->preparing = false;
         int max_w = 0;
         int max_h = 0;
         owe_wayland_outputs_max_size(app->wl, &max_w, &max_h);
@@ -299,8 +305,28 @@ static void handle_command(void *context, struct owe_ipc_client *c, const char *
         send_ok(c, "\"version\":1");
     } else if (strcmp(cmd, "load") == 0) {
         handle_load(ipc, c, root);
+    } else if (strcmp(cmd, "snapshot") == 0) {
+        yyjson_val *vpath = yyjson_obj_get(root, "path");
+        const char *path = yyjson_get_str(vpath);
+        int w = 0, h = 0;
+        if (app && !app->preparing && !app->feeding && owe_mpv_ready(app->mpv) &&
+            !owe_still_has_image(app->still) && !owe_still_has_image(app->transition) &&
+            owe_json_path(vpath) && path[0] == '/') {
+            owe_wayland_outputs_max_size(app->wl, &w, &h);
+            if (owe_mpv_snapshot(app->mpv, path, w, h) == 0) send_ok(c, NULL);
+            else send_err(c, "snapshot failed");
+        } else send_err(c, "no exposed video frame");
     } else if (strcmp(cmd, "intro-finish") == 0) {
         handle_intro_finish(c, root);
+    } else if (strcmp(cmd, "intro-start") == 0) {
+        if (app && app->preparing && strcmp(app->current_kind, "video") == 0) {
+            app->preparing = false;
+            app->intro = true;
+            app->paused = false;
+            owe_mpv_set_paused(app->mpv, false);
+            owe_app_request_render();
+            send_ok(c, NULL);
+        } else send_err(c, "no prepared intro");
     } else if (strcmp(cmd, "intro-show") == 0) {
         if (app && app->intro && owe_still_has_image(app->transition)) {
             app->intro_waiting = false;
@@ -336,7 +362,7 @@ static void handle_command(void *context, struct owe_ipc_client *c, const char *
     } else if (strcmp(cmd, "feed-stop") == 0) {
         stop_feed(app);
         send_ok(c, NULL);
-    } else if (strcmp(cmd, "stop") == 0) {
+    } else if (strcmp(cmd, "stop") == 0 || strcmp(cmd, "park") == 0) {
         if (app) {
             stop_feed(app);
             owe_mpv_stop(app->mpv);
@@ -346,6 +372,7 @@ static void handle_command(void *context, struct owe_ipc_client *c, const char *
             app->current_kind[0] = '\0';
             app->intro = false;
             app->intro_waiting = false;
+            app->preparing = strcmp(cmd, "park") == 0;
             owe_app_request_render();
         }
         pending_reply(ipc, 0, "load cancelled");
