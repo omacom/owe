@@ -62,6 +62,10 @@ test('decode', decode_test, timeout : 45)
 test('uninstall', find_program('bash'),
   args : [files('uninstall.sh'), meson.project_source_root() / 'packaging/uninstall.sh'])
 
+test('startup', find_program('python3'),
+  args : [files('startup.py'), owed.full_path()],
+  depends : owed, timeout : 30)
+
 test('daemon', find_program('python3'),
   args : [files('daemon.py'), owed.full_path(), owe_cli.full_path()],
   depends : [owed, owe_cli], timeout : 45)

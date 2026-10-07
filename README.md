@@ -98,6 +98,8 @@ owe --socket "$XDG_RUNTIME_DIR/owe-test/owed.sock" status
 
 One daemon can run in each runtime directory.
 An intro requires a still background and ends after 30 seconds at most.
+The daemon accepts `--prepare-intro <video>` to start an offscreen, paused decode before its initial shell handoff. The systemd unit asks Omarchy for the enabled login intro; an empty or unavailable selection keeps ordinary startup. Preparation never plays the clip or consumes the login. Quickshell still starts the intro and reveals the desktop only when it is ready.
+
 The CLI accepts an absolute or relative intro path. `intro-prepare` warms one clip while the shell owns the still wallpaper; it never maps a preview or advances playback. A matching first-frame intro resumes that decoder, including when the theme staged a copy or renamed its directory. A changed clip falls back to an ordinary load. The prepared clip and idle context expire after one minute, and locking or sleeping releases them. After an intro the renderer unloads its media but keeps its context warm for that same window. `intro --start first-frame --refresh <video>` synchronizes the background symlink and starts playback in one request.
 An intro starts from the current still by default (`--start still`). `--start first-frame` starts it on its own first frame instead, for a shell that leaves the background empty for it.
 

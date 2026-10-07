@@ -79,6 +79,12 @@ while True:
             pending = None
         elif command == "intro-show":
             pass
+        elif command == "park":
+            pending = intro_end = transition_end = None
+            state.update(path="", kind="", ready=False, paused=False, has_transition=False)
+        elif command == "intro-start":
+            state["paused"] = False
+            intro_end = time.monotonic() + 0.3
         elif command == "intro-finish":
             state.update(has_transition=True, transition_busy=False, transition_done=False)
             transition_end = time.monotonic() + 0.3
@@ -143,7 +149,7 @@ def main():
         shell_stub = bin_dir / "omarchy-shell"
         shell_stub.write_text(
             "#!/bin/sh\nprintf '%s timeout=%s\\n' \"$*\" \"$OMARCHY_SHELL_IPC_TIMEOUT\" >>\"$OWE_TEST_SHELL_LOG\"\n"
-            "if [ \"$4\" = true ] && [ -e \"$OWE_TEST_SHELL_FAIL\" ]; then exit 1; fi\n"
+            "if [ -e \"$OWE_TEST_SHELL_FAIL\" ] && { [ \"$4\" = true ] || { [ \"$2\" = setSuspended ] && [ \"$3\" = false ]; }; }; then exit 1; fi\n"
             "exit 0\n")
         shell_stub.chmod(0o755)
         shell_log = root / "shell.log"
@@ -182,12 +188,12 @@ def main():
                 deadline = time.monotonic() + 8
                 while time.monotonic() < deadline:
                     text = shell_log.read_text() if shell_log.exists() else ""
-                    if "setPluginEnabled omarchy.background false" in text:
+                    if "setSuspended true" in text:
                         disable = True
                         break
                     time.sleep(0.1)
                 check(disable, "daemon disabled the shell background for the video")
-                check("setPluginEnabled omarchy.background false timeout=4s" in text,
+                check("setSuspended true timeout=4s" in text,
                       "the shell gets longer than omarchy-shell's default to answer", text)
                 result = subprocess.run(cli + ["status"], env=env, capture_output=True, text=True, timeout=5)
                 check(result.returncode == 0 and json.loads(result.stdout)["status"] == "ok",
@@ -280,7 +286,7 @@ def main():
                 deadline = time.monotonic() + 8
                 while time.monotonic() < deadline:
                     text = shell_log.read_text() if shell_log.exists() else ""
-                    if "setPluginEnabled omarchy.background true" in text:
+                    if "setSuspended false" in text:
                         enabled = True
                         break
                     time.sleep(0.1)
@@ -294,16 +300,19 @@ def main():
                     time.sleep(0.1)
                 check(status["engine"] == "shell", "daemon reports the shell engine",
                       json.dumps(status))
-                renderer_gone = False
+                renderer_parked = False
                 deadline = time.monotonic() + 5
                 while time.monotonic() < deadline:
                     try:
-                        call(render_socket, "status")
+                        renderer = call(render_socket, "status")
+                        if not renderer["path"] and not renderer["kind"]:
+                            renderer_parked = True
+                            break
                     except (ConnectionRefusedError, FileNotFoundError, OSError):
-                        renderer_gone = True
+                        renderer_parked = True
                         break
                     time.sleep(0.1)
-                check(renderer_gone, "renderer stopped while the shell draws the still")
+                check(renderer_parked, "renderer releases its media while the shell draws the still")
 
                 result = subprocess.run(cli + ["intro", "good.mp4"], env=env, cwd=root,
                                         capture_output=True, text=True, timeout=8)
@@ -333,16 +342,19 @@ def main():
 
                 # A login starts its intro on a fresh renderer, after the
                 # previous intro's renderer has handed the still back.
-                renderer_gone = False
+                renderer_parked = False
                 deadline = time.monotonic() + 5
                 while time.monotonic() < deadline:
                     try:
-                        call(render_socket, "status")
+                        renderer = call(render_socket, "status")
+                        if not renderer["path"] and not renderer["kind"]:
+                            renderer_parked = True
+                            break
                     except (ConnectionRefusedError, FileNotFoundError, OSError):
-                        renderer_gone = True
+                        renderer_parked = True
                         break
                     time.sleep(0.1)
-                check(renderer_gone, "the intro's renderer stops after handing the still back")
+                check(renderer_parked, "the intro's renderer releases its media after handing the still back")
                 commands_before = len(commands_path.read_text().splitlines())
                 result = subprocess.run(cli + ["intro", "--start", "first-frame", "good.mp4"], env=env, cwd=root,
                                         capture_output=True, text=True, timeout=8)
@@ -358,7 +370,7 @@ def main():
                           for command in direct_commands),
                       "an intro started on its first frame starts on its video and still fades into the still",
                       json.dumps(direct_commands))
-                usage = "owe intro [--start still|first-frame] <video>"
+                usage = "owe intro [--start still|first-frame] [--refresh] <video>"
                 for args, case in ((["intro"], "without a video"),
                                    (["intro", "--start", "first-frame"], "without a video after --start"),
                                    (["intro", "--start"], "without a start value"),

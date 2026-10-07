@@ -5,7 +5,8 @@ After=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=%h/.local/bin/owed
+# A missing Omarchy helper leaves ordinary daemon startup unchanged.
+ExecStart=/bin/bash -c 'exec %h/.local/bin/owed --prepare-intro "$("$$OMARCHY_PATH/bin/omarchy-theme-bg-boot-intro" --resolve-startup 2>/dev/null)"'
 Restart=on-failure
 RestartSec=2
 

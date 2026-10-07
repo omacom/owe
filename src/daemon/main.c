@@ -397,10 +397,11 @@ done:
     return matches;
 }
 
-int owed_app_warm_renderer(void) {
+static int warm_renderer(bool startup) {
     owed_app_t *app = &g_app;
-    if (!app->supervisor || app->intro_active || app->engine != OWE_ENGINE_SHELL ||
-        app->shell_enabled != 1 ||
+    if (!app->supervisor || app->intro_active ||
+        (startup ? app->engine != OWE_ENGINE_NONE :
+                   (app->engine != OWE_ENGINE_SHELL || app->shell_enabled != 1)) ||
         (app->power && (owed_power_locked(app->power) || owed_power_sleeping(app->power))) ||
         (app->hypr && owed_hypr_locked(app->hypr))) return -1;
     if (ensure_renderer() != 0) return -1;
@@ -408,14 +409,18 @@ int owed_app_warm_renderer(void) {
     return 0;
 }
 
-int owed_app_prepare_intro(const char *path) {
+int owed_app_warm_renderer(void) {
+    return warm_renderer(false);
+}
+
+static int prepare_intro(const char *path, bool startup) {
     struct stat st;
     char reply[1024], fd_path[128], *quoted, *line = NULL;
     int fd, rc = -1;
     fd = open(path, O_RDONLY | O_CLOEXEC);
     if (fd < 0) return -1;
     if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) goto done;
-    if (owed_app_warm_renderer() != 0) goto done;
+    if (warm_renderer(startup) != 0) goto done;
     if (prepared_intro_matches(path)) {
         close(fd);
         return 0;
@@ -444,6 +449,10 @@ int owed_app_prepare_intro(const char *path) {
 done:
     if (rc != 0) close(fd);
     return rc;
+}
+
+int owed_app_prepare_intro(const char *path) {
+    return prepare_intro(path, false);
 }
 
 int owed_app_start_intro(const char *path, bool from_still) {
@@ -1078,6 +1087,7 @@ static void usage(const char *argv0) {
     fprintf(stderr,
             "Usage: %s [options]\n"
             "  --socket PATH   IPC socket path (default: $XDG_RUNTIME_DIR/owe/owed.sock)\n"
+            "  --prepare-intro PATH  Prepare a login intro before the shell handoff\n"
             "  --verbose       Enable debug logging\n"
             "  --help          Show this help\n",
             argv0);
@@ -1089,6 +1099,7 @@ int main(int argc, char **argv) {
     char lock_path[PATH_MAX + 32];
     char runtime[PATH_MAX];
     bool verbose = false;
+    const char *startup_intro = NULL;
     bool blocklisted = false;
     int64_t tick_ms = 0;
     int i;
@@ -1101,6 +1112,8 @@ int main(int argc, char **argv) {
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--socket") == 0 && i + 1 < argc) {
             snprintf(socket_path, sizeof(socket_path), "%s", argv[++i]);
+        } else if (strcmp(argv[i], "--prepare-intro") == 0 && i + 1 < argc) {
+            startup_intro = argv[++i];
         } else if (strcmp(argv[i], "--verbose") == 0 || strcmp(argv[i], "-v") == 0) {
             verbose = true;
         } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
@@ -1174,6 +1187,12 @@ int main(int argc, char **argv) {
     owed_policy_recompute(g_app.policy);
 
     if (owed_watch_resolve_current(resolved, sizeof(resolved)) == 0) {
+        /* Decode offscreen while Quickshell builds its desktop. The usual
+         * shell handoff and first-frame intro still gate presentation. */
+        if (startup_intro && *startup_intro && owe_kind_from_path(resolved) == OWE_KIND_STILL) {
+            if (prepare_intro(startup_intro, true) != 0)
+                OWE_WARN("startup intro preparation failed: %s", startup_intro);
+        }
         owed_app_on_background_changed(resolved);
     } else {
         OWE_WARN("no current background symlink yet");

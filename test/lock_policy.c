@@ -535,6 +535,25 @@ int main(void) {
         renderer.down = false;
         strcpy(g_app.source_kind, "still");
         strcpy(supervisor_reply, "{\"status\":\"ok\"}");
+        /* Startup may decode while the initial shell handoff is pending,
+         * but never bypass lock/sleep policy or warm an exposed renderer. */
+        g_app.engine = OWE_ENGINE_NONE;
+        g_app.shell_enabled = -1;
+        CHECK(owed_app_prepare_intro(prepared) != 0);
+        power.locked = true;
+        CHECK(prepare_intro(prepared, true) != 0);
+        power.locked = false;
+        power.sleeping = true;
+        CHECK(prepare_intro(prepared, true) != 0);
+        power.sleeping = false;
+        hypr.locked = true;
+        CHECK(prepare_intro(prepared, true) != 0);
+        hypr.locked = false;
+        CHECK(prepare_intro(prepared, true) == 0);
+        CHECK(g_app.engine == OWE_ENGINE_NONE && g_app.shell_enabled == -1);
+        CHECK(g_app.intro_prepared && !g_app.intro_active);
+        CHECK(switch_to_shell() == 0);
+        CHECK(g_app.intro_prepared);
         CHECK(owed_app_prepare_intro(prepared) == 0);
         CHECK(g_app.intro_prepared && strstr(supervisor_last, "\"prepare\":true"));
         CHECK(prepared_intro_matches(copy));
