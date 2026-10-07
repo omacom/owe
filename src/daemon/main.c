@@ -1109,7 +1109,10 @@ int main(int argc, char **argv) {
         }
         n += owed_ipc_pollfds(g_app.ipc, &pfds[n]);
 
+        /* Catch the first decoded frame promptly; coarse playback polling is
+         * enough once the shell has handed the background to the renderer. */
         rc = poll(pfds, (nfds_t)n,
+                  g_app.intro_active && g_app.intro_phase == OWE_INTRO_PREPARING ? 16 :
                   (have_job || g_app.media_pending || g_app.intro_active) ? 200 : 1000);
         if (rc < 0) {
             if (errno == EINTR) {
