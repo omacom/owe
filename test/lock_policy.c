@@ -576,6 +576,13 @@ int main(void) {
         CHECK(!prepared_intro_matches(copy));
         a = open(prepared, O_WRONLY);
         CHECK(a >= 0 && write(a, "clip-c", 6) == 6);
+        /* Fast writes can share a timestamp on the builder filesystem.
+         * Advance mtime explicitly to exercise prepared-file invalidation. */
+        struct timespec changed_times[2] = {
+            { .tv_nsec = UTIME_OMIT },
+            { .tv_sec = g_app.intro_prepared_mtime.tv_sec + 1 }
+        };
+        CHECK(futimens(a, changed_times) == 0);
         close(a);
         CHECK(!prepared_intro_matches(prepared));
         clear_prepared_intro();
