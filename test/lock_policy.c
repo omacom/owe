@@ -420,6 +420,23 @@ int main(void) {
     CHECK(!owed_app_intro_active() && strcmp(owed_app_intro_result(), "ok") == 0);
     CHECK(g_app.engine == OWE_ENGINE_SHELL && shell_plugin_enabled);
 
+    /* A renderer covered by the shell restarts without preparing the target still. */
+    strcpy(supervisor_reply, "{\"status\":\"ok\",\"swaps\":12}");
+    g_app.engine = OWE_ENGINE_SHELL;
+    g_app.shell_enabled = 1;
+    renderer.down = false;
+    {
+        int stops = renderer.stops;
+        CHECK(owed_app_start_intro("/intro.mp4", false) == 0);
+        CHECK(renderer.stops == stops + 1);
+        CHECK(!g_app.intro_from_still);
+        CHECK(strstr(supervisor_last, "\"from\"") == NULL);
+        owed_app_stop_intro("intro cancelled");
+    }
+    g_app.engine = OWE_ENGINE_NONE;
+    g_app.shell_enabled = -1;
+    renderer.down = false;
+
     /* A renderer already on screen fades the intro in from its still rather
      * than clearing that still before the intro's first frame. */
     strcpy(supervisor_reply, "{\"status\":\"ok\",\"swaps\":12}");
