@@ -369,9 +369,16 @@ int owed_app_start_intro(const char *path, bool from_still) {
     /* Starting on the first frame relies on a renderer surface that is still
      * unmapped. A renderer already on screen, such as one that kept the still
      * when the shell could not take it back, would clear that still to black
-     * first, so the intro starts from it instead. */
+     * first. Recreate it when the shell already covers it; otherwise the
+     * intro must start from its still. */
     if (!from_still && renderer_on_screen()) {
-        from_still = true;
+        if (app->engine == OWE_ENGINE_SHELL && app->shell_enabled == 1) {
+            /* The shell covers the old renderer. Recreate its unmapped
+             * surfaces so first-frame mode does not prepare the target still. */
+            owed_supervisor_stop(app->supervisor);
+        } else {
+            from_still = true;
+        }
     }
     /* A shell handoff that failed at startup holds off renderer starts for a
      * while. A renderer that is already running can still play the intro. */
