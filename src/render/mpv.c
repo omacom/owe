@@ -507,6 +507,26 @@ void owe_mpv_report_swap(struct owe_mpv *m) {
     }
 }
 
+/* Decode and upload the paused opening frame without mapping a wallpaper. */
+int owe_mpv_prepare_frame(struct owe_mpv *m, int w, int h) {
+    GLuint texture = 0, fbo = 0;
+    int rc = -1;
+    owe_app_t *app = owe_app_get();
+    if (!app || !m || !m->file_loaded || w <= 0 || h <= 0 || owe_egl_make_current(app->egl) != 0) return -1;
+    glGenTextures(1, &texture);
+    glBindTexture(GL_TEXTURE_2D, texture);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE)
+        rc = owe_mpv_render_fbo(m, (int)fbo, w, h);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &fbo);
+    glDeleteTextures(1, &texture);
+    return rc;
+}
+
 double owe_mpv_time_pos(struct owe_mpv *m) {
     double pos = -1.0;
     if (m && m->handle) {

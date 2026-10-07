@@ -183,6 +183,14 @@ static void handle_command(void *context, struct owe_ipc_client *c, const char *
         handle_config(c);
     } else if (strcmp(cmd, "set") == 0) {
         handle_set(c, root);
+    } else if (strcmp(cmd, "warm") == 0) {
+        if (owed_app_warm_renderer() == 0) send_ok(c, NULL);
+        else send_err(c, "renderer cannot be warmed now");
+    } else if (strcmp(cmd, "intro-prepare") == 0) {
+        yyjson_val *vpath = yyjson_obj_get(root, "path");
+        const char *path = yyjson_is_str(vpath) ? yyjson_get_str(vpath) : "";
+        if (owe_json_path(vpath) && path[0] == '/' && owed_app_prepare_intro(path) == 0) send_ok(c, NULL);
+        else send_err(c, "intro preparation failed");
     } else if (strcmp(cmd, "intro") == 0) {
         yyjson_val *vpath = yyjson_obj_get(root, "path");
         const char *path = vpath && yyjson_is_str(vpath) ? yyjson_get_str(vpath) : "";
@@ -202,6 +210,19 @@ static void handle_command(void *context, struct owe_ipc_client *c, const char *
             send_err(c, "Intro start must be still or first-frame");
             yyjson_doc_free(doc);
             return;
+        }
+        if (yyjson_get_bool(yyjson_obj_get(root, "refresh"))) {
+            char resolved[4096];
+            if (owed_watch_resolve_current(resolved, sizeof(resolved)) != 0) {
+                send_err(c, "symlink unreadable");
+                yyjson_doc_free(doc);
+                return;
+            }
+            if (!owed_app_intro_still_is(resolved)) {
+                app->source_path[0] = '\0';
+                app->loaded_path[0] = '\0';
+                owed_app_on_background_changed(resolved);
+            }
         }
         if (owed_app_start_intro(path, !start || strcmp(start, "still") == 0) != 0) {
             send_err(c, "Intro start failed");

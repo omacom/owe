@@ -112,7 +112,11 @@ static void tick(void) {
         owe_still_poll(app.transition);
         owe_app_request_render();
     }
-    if (owe_mpv_process_updates(app.mpv)) owe_app_request_render();
+    if (owe_mpv_process_updates(app.mpv)) {
+        if (app.preparing && !owe_mpv_ready(app.mpv)) {
+            if (owe_mpv_prepare_frame(app.mpv, 128, 72) == 0) owe_mpv_report_swap(app.mpv);
+        } else owe_app_request_render();
+    }
     for (int i = 0; i < 2; i++) {
         if (callbacks_enabled && outputs[i].frame_callback) frame_done(&outputs[i], outputs[i].frame_callback, 0);
     }
@@ -405,6 +409,26 @@ int main(void) {
     await_video();
     verify(owe_mpv_ready(app.mpv) && !owe_still_busy(app.transition) && samples[0][2] > 240,
            "an unavailable optional transition image does not reject a video");
+
+    command("{\"cmd\":\"park\"}");
+    swaps = outputs[0].swaps;
+    snprintf(line, sizeof(line), "{\"cmd\":\"load\",\"path\":\"%s/blue.mp4\",\"kind\":\"video\",\"prepare\":true,\"mute\":true}", root);
+    command(line);
+    await_video();
+    run_ms(200);
+    verify(owe_mpv_ready(app.mpv) && owe_mpv_is_paused(app.mpv) && owe_mpv_time_pos(app.mpv) == 0 && outputs[0].swaps == swaps,
+           "a prepared opening frame stays paused and never reaches a wallpaper surface");
+    command("{\"cmd\":\"intro-start\"}");
+    await_position(0.1);
+    verify(app.intro && !app.preparing && !owe_mpv_is_paused(app.mpv) && outputs[0].swaps > swaps,
+           "starting a prepared intro resumes moving video on the existing renderer");
+    await_eof();
+    verify(owe_mpv_eof(app.mpv), "a prepared intro plays once rather than looping");
+    command("{\"cmd\":\"park\"}");
+    swaps = outputs[0].swaps;
+    run_ms(100);
+    verify(!owe_mpv_has_video(app.mpv) && !owe_still_has_image(app.still) && outputs[0].swaps == swaps,
+           "parking unloads decoded media without presenting black");
 
     close(client);
     owe_render_ipc_free(app.ipc);

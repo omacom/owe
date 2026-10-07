@@ -286,7 +286,10 @@ int main(int argc, char **argv) {
             owe_wayland_render_pending(g_app.wl);
         }
         if (mpvfd >= 0 && mpv_ready && owe_mpv_process_updates(g_app.mpv)) {
-            if (g_app.feeding) {
+            if (g_app.preparing && !owe_mpv_ready(g_app.mpv)) {
+                if (owe_mpv_prepare_frame(g_app.mpv, max_w, max_h) == 0)
+                    owe_mpv_report_swap(g_app.mpv);
+            } else if (g_app.feeding) {
                 if (owe_feed_publish(g_app.feed, g_app.mpv) == 0) {
                     owe_mpv_report_swap(g_app.mpv);
                 }

@@ -71,6 +71,8 @@ owe refresh               # Re-read the background symlink now
 owe pause                 # Pause video manually
 owe resume                # Clear manual pause
 owe always-animate on|off # Force animation regardless of policy
+owe warm                  # Keep an idle decoder/GPU context ready for one minute
+owe intro-prepare <video> # Decode one intro offscreen and pause at its opening frame
 owe intro <video>         # Play a one-shot intro video and wait
 owe intro --start first-frame <video> # Start the intro on its own first frame
 owe status                # Daemon status as JSON
@@ -96,7 +98,7 @@ owe --socket "$XDG_RUNTIME_DIR/owe-test/owed.sock" status
 
 One daemon can run in each runtime directory.
 An intro requires a still background and ends after 30 seconds at most.
-The CLI accepts an absolute or relative intro path.
+The CLI accepts an absolute or relative intro path. `intro-prepare` warms one clip while the shell owns the still wallpaper; it never maps a preview or advances playback. A matching first-frame intro resumes that decoder, including when the theme staged a copy or renamed its directory. A changed clip falls back to an ordinary load. The prepared clip and idle context expire after one minute, and locking or sleeping releases them. After an intro the renderer unloads its media but keeps its context warm for that same window. `intro --start first-frame --refresh <video>` synchronizes the background symlink and starts playback in one request.
 An intro starts from the current still by default (`--start still`). `--start first-frame` starts it on its own first frame instead, for a shell that leaves the background empty for it.
 
 ## IPC reference
@@ -123,7 +125,9 @@ Commands:
 - `{"cmd":"reload-config"}` — reload `~/.config/owe/config.toml`.
 - `{"cmd":"render-status"}` — proxy the renderer status reply.
 - `{"cmd":"render-restart"}` — restart `owe-render` and reload current media.
-- `{"cmd":"intro","path":"/abs/file.mp4"}` — play a one-shot intro video over a still background, muted. Reply means it started. Cancel with `intro-stop`. `"start":"first-frame"` starts it on its own first frame instead of from the still; `"start":"still"` is the default, and any other value is rejected.
+- `{"cmd":"intro","path":"/abs/file.mp4"}` — play a one-shot intro video over a still background, muted. Reply means it started. Cancel with `intro-stop`. `"start":"first-frame"` starts it on its own first frame instead of from the still; `"start":"still"` is the default, and any other value is rejected. `"refresh":true` synchronizes the background symlink before starting.
+- `{"cmd":"warm"}` — keep the covered renderer ready for one minute.
+- `{"cmd":"intro-prepare","path":"/abs/video.mp4"}` — prepare one paused intro offscreen.
 - `{"cmd":"intro-status"}` — reply `{"running":bool,"result":"running|ok|error"}`.
 - `{"cmd":"intro-stop"}` — cancel a running intro.
 - `{"cmd":"shutdown"}` — stop the daemon.
@@ -133,7 +137,7 @@ Commands:
 Commands:
 
 - `{"cmd":"hello"}` — reply `{"status":"ok","version":1}`.
-- `{"cmd":"load","path":"/abs/file","kind":"video|still"}` — load media. `"once":true` and `"mute":true` load a one-shot intro.
+- `{"cmd":"load","path":"/abs/file","kind":"video|still"}` — load media. `"once":true` and `"mute":true` load a one-shot intro. `"prepare":true` decodes a paused opening frame offscreen instead.
 - Add `"async":true` to a still load for an immediate acknowledgement.
   Poll `status` until `ready` is true and `path` matches the request.
   An asynchronous still load has a 30-second deadline.
@@ -142,9 +146,11 @@ Commands:
 - `{"cmd":"pause"}` — pause decode. The last frame stays presented.
 - `{"cmd":"resume"}` — resume decode.
 - `{"cmd":"stop"}` — unload all media.
+- `{"cmd":"park"}` — unload all media while retaining the last wallpaper buffer and idle context.
 - `{"cmd":"status"}` reports the path, kind, pause state, outputs, `time_pos`, `hwdec`, and playback `error`.
 - `{"cmd":"fade","ms":250}` — set the still fade length.
 - `{"cmd":"intro-show"}` — reveal a loaded intro once its outgoing still is ready.
+- `{"cmd":"intro-start"}` — resume a prepared intro and play it once.
 - `{"cmd":"intro-finish","path":"/abs/still.png","ms":750}` — fade the final intro frame into a still and hold it for the shell handoff.
 - `{"cmd":"feed"}` — start muted video output to the lock feed.
 - `{"cmd":"feed-stop"}` — stop the lock feed and release its buffers.
