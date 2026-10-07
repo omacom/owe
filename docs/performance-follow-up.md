@@ -411,7 +411,7 @@ GIF and poster caches have no size limit or eviction policy.
 - [x] Add cache size reporting and cleanup controls.
 - [x] Define a cache budget and eviction policy.
 
-References: `packaging/install.sh:23`, `packaging/PKGBUILD:14–28`, `systemd/owed.service:8`, `src/daemon/transcode.c`.
+References: `packaging/install.sh:23`, [OPR's OWE PKGBUILD](https://github.com/omacom/omarchy-pkgs/blob/master/pkgbuilds/owe/PKGBUILD), `systemd/owed.service:8`, `src/daemon/transcode.c`.
 
 ## Verification commands
 

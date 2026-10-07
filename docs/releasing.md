@@ -1,14 +1,6 @@
 # Releasing
 
-One tag push builds, tests, publishes the GitHub release, and updates the AUR package.
-
-## One-time setup
-
-1. The AUR repository exists at `ssh://aur@aur.archlinux.org/owe.git`. The first push created it.
-2. Add the AUR private key as the repository secret `AUR_SSH_PRIVATE_KEY`.
-   The matching public key must be registered on the AUR account.
-   Without the secret the release still publishes to GitHub and skips the AUR job.
-3. Confirm the AUR package name is `owe`. No other package uses the name.
+One tag push builds, tests, and publishes the GitHub source release. Arch packages are maintained in the [Omarchy Package Repository (OPR)](https://github.com/omacom/omarchy-pkgs/tree/master/pkgbuilds/owe).
 
 ## Release steps
 
@@ -21,14 +13,8 @@ One tag push builds, tests, publishes the GitHub release, and updates the AUR pa
    git push origin vX.Y.Z
    ```
 
-4. The release workflow runs:
-   - builds and tests on Arch,
-   - checks that the tag matches `meson.build`,
-   - runs `meson dist` and attaches the archive and `SHA256SUMS` to the GitHub release,
-    - rewrites the AUR `PKGBUILD` for the version and the tag archive checksum, then pushes it.
-
-The tag archive checksum becomes available after the tag exists.
-After publication, update `packaging/PKGBUILD` with that version and checksum in a separate commit.
+4. The release workflow builds and tests on Arch, checks that the tag matches `meson.build`, and runs `meson dist` to attach the source archive and `SHA256SUMS` to the GitHub release.
+5. OPR watches GitHub releases for version and checksum updates. Review and merge the OWE package update there; changes to dependencies, build steps, or installed files belong in its PKGBUILD. OPR builds, signs, and publishes the packages.
 
 To run the flow without a tag, dispatch it with the version:
 
@@ -40,10 +26,9 @@ The workflow creates the tag at the current `main` commit. Both paths require th
 
 ## Dependencies
 
-The AUR package declares three dependency groups:
+OPR's PKGBUILD declares three dependency groups:
 
-- `depends` contains `mpv`, `ffmpeg`, `wayland`, `libglvnd`, `libepoxy`, `systemd-libs`, `socat`, and `qt6-declarative`.
-  `mpv` supplies Mesa and the VAAPI libraries as dependencies.
+- `depends` contains `mpv`, `ffmpeg`, `wayland`, `libglvnd`, `libepoxy`, `systemd-libs`, `socat`, and `qt6-declarative`. `mpv` supplies Mesa and the VAAPI libraries as dependencies.
 - `makedepends` contains `meson`, `ninja`, `gcc`, `pkgconf`, `wayland-protocols`, and `cmake`.
 - `checkdepends` is `python`, used by the daemon test.
 - `optdepends` names the VAAPI drivers for hardware decode: `intel-media-driver` on Intel and `libva-mesa-driver` on AMD.
@@ -56,4 +41,4 @@ for b in owe owed owe-render; do readelf -d "$b" | awk '/NEEDED/ {print $NF}'; d
 
 ## Rollback
 
-The workflow never rewrites AUR history. It adds one commit per release. To correct a bad release, publish a new `pkgrel` or version.
+To correct a bad release, publish a new version or update OPR's package with a new `pkgrel`.

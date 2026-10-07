@@ -22,7 +22,7 @@ It changes no packaged Omarchy file.
 
 ## Install
 
-From the AUR:
+From the Omarchy Package Repository (OPR):
 
 ```bash
 omarchy pkg add owe
@@ -356,7 +356,7 @@ cmake --build build-qml
 ctest --test-dir build-qml --output-on-failure
 ```
 
-The AUR package installs the plugin to `/usr/lib/qt6/qml/Owe/LockFeed`.
+The OPR package installs the plugin to `/usr/lib/qt6/qml/Owe/LockFeed`.
 The local installer uses `~/.local/lib/qt6/qml/Owe/LockFeed`; add
 `~/.local/lib/qt6/qml` to the consuming application's `QML_IMPORT_PATH`.
 Installing the module does not change the lock screen's QML layout.
