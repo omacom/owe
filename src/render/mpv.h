@@ -27,6 +27,7 @@ bool owe_mpv_process_updates(struct owe_mpv *m);
 void owe_mpv_render_output(struct owe_mpv *m, struct owe_output *out);
 int owe_mpv_render_fbo(struct owe_mpv *m, int fbo, int w, int h);
 int owe_mpv_prepare_frame(struct owe_mpv *m, int w, int h);
+int owe_mpv_snapshot(struct owe_mpv *m, const char *path, int w, int h);
 void owe_mpv_report_swap(struct owe_mpv *m);
 double owe_mpv_time_pos(struct owe_mpv *m);
 const char *owe_mpv_error(struct owe_mpv *m);

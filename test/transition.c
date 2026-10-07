@@ -70,6 +70,8 @@ static int init_display(void) {
         owe_output_t *out = &outputs[i];
         out->width = i ? 96 : 128;
         out->height = 72;
+        out->buffer_w = out->width;
+        out->buffer_h = out->height;
         out->scale = 1;
         out->configured = out->frame_ready = out->frame_pending = 1;
         out->owner = &wl;
@@ -180,6 +182,7 @@ static void command(const char *line) {
     while (poll(&pfd, 1, 0) == 0 && now_ms() < deadline) tick();
     char reply[8192];
     CHECK(owe_ipc_recv_line(client, reply, sizeof(reply)) == 0);
+    if (!strstr(reply, "\"status\":\"ok\"")) fprintf(stderr, "command %s: %s\n", line, reply);
     CHECK(strstr(reply, "\"status\":\"ok\""));
 }
 
@@ -422,6 +425,23 @@ int main(void) {
     await_position(0.1);
     verify(app.intro && !app.preparing && !owe_mpv_is_paused(app.mpv) && outputs[0].swaps > swaps,
            "starting a prepared intro resumes moving video on the existing renderer");
+    {
+        char snapshot[256], magic[3];
+        int w, h, max;
+        unsigned char pixel[3];
+        snprintf(snapshot, sizeof(snapshot), "%s/outgoing.ppm", root);
+        snprintf(line, sizeof(line), "{\"cmd\":\"snapshot\",\"path\":\"%s\"}", snapshot);
+        command(line);
+        FILE *file = fopen(snapshot, "rb");
+        CHECK(file && fscanf(file, "%2s %d %d %d", magic, &w, &h, &max) == 4);
+        CHECK(fgetc(file) == '\n' && fread(pixel, 1, 3, file) == 3);
+        fclose(file);
+        verify(strcmp(magic, "P6") == 0 && w == 128 && h == 72 && max == 255 && pixel[0] < 10 && pixel[2] > 240,
+               "an outgoing snapshot contains the current video frame rather than its final still");
+        verify(owe_mpv_snapshot(app.mpv, snapshot, 128, 72) != 0,
+               "a snapshot never overwrites an existing file");
+        unlink(snapshot);
+    }
     await_eof();
     verify(owe_mpv_eof(app.mpv), "a prepared intro plays once rather than looping");
     command("{\"cmd\":\"park\"}");

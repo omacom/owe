@@ -305,6 +305,17 @@ static void handle_command(void *context, struct owe_ipc_client *c, const char *
         send_ok(c, "\"version\":1");
     } else if (strcmp(cmd, "load") == 0) {
         handle_load(ipc, c, root);
+    } else if (strcmp(cmd, "snapshot") == 0) {
+        yyjson_val *vpath = yyjson_obj_get(root, "path");
+        const char *path = yyjson_get_str(vpath);
+        int w = 0, h = 0;
+        if (app && !app->preparing && !app->feeding && owe_mpv_ready(app->mpv) &&
+            !owe_still_has_image(app->still) && !owe_still_has_image(app->transition) &&
+            owe_json_path(vpath) && path[0] == '/') {
+            owe_wayland_outputs_max_size(app->wl, &w, &h);
+            if (owe_mpv_snapshot(app->mpv, path, w, h) == 0) send_ok(c, NULL);
+            else send_err(c, "snapshot failed");
+        } else send_err(c, "no exposed video frame");
     } else if (strcmp(cmd, "intro-finish") == 0) {
         handle_intro_finish(c, root);
     } else if (strcmp(cmd, "intro-start") == 0) {

@@ -2,6 +2,7 @@
 
 #include <fcntl.h>
 #include <limits.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
@@ -507,8 +508,8 @@ void owe_mpv_report_swap(struct owe_mpv *m) {
     }
 }
 
-/* Decode and upload the paused opening frame without mapping a wallpaper. */
-int owe_mpv_prepare_frame(struct owe_mpv *m, int w, int h) {
+/* Render offscreen for preparation or an outgoing video snapshot. */
+static int render_frame(struct owe_mpv *m, int w, int h, FILE *snapshot) {
     GLuint texture = 0, fbo = 0;
     int rc = -1;
     owe_app_t *app = owe_app_get();
@@ -519,11 +520,47 @@ int owe_mpv_prepare_frame(struct owe_mpv *m, int w, int h) {
     glGenFramebuffers(1, &fbo);
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, texture, 0);
-    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE)
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE) {
         rc = owe_mpv_render_fbo(m, (int)fbo, w, h);
+        if (rc == 0 && snapshot) {
+            size_t size = (size_t)w * (size_t)h * 3;
+            unsigned char *pixels = malloc(size);
+            rc = -1;
+            if (pixels) {
+                glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+                glPixelStorei(GL_PACK_ALIGNMENT, 1);
+                glReadPixels(0, 0, w, h, GL_RGB, GL_UNSIGNED_BYTE, pixels);
+                glPixelStorei(GL_PACK_ALIGNMENT, 4);
+                if (glGetError() == GL_NO_ERROR && fprintf(snapshot, "P6\n%d %d\n255\n", w, h) > 0 &&
+                    fwrite(pixels, 1, size, snapshot) == size) rc = 0;
+                free(pixels);
+            }
+        }
+    }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glDeleteFramebuffers(1, &fbo);
     glDeleteTextures(1, &texture);
+    return rc;
+}
+
+int owe_mpv_prepare_frame(struct owe_mpv *m, int w, int h) {
+    return render_frame(m, w, h, NULL);
+}
+
+int owe_mpv_snapshot(struct owe_mpv *m, const char *path, int w, int h) {
+    int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+    FILE *file;
+    int rc;
+    if (fd < 0) return -1;
+    file = fdopen(fd, "wb");
+    if (!file) {
+        close(fd);
+        unlink(path);
+        return -1;
+    }
+    rc = render_frame(m, w, h, file);
+    if (fclose(file) != 0) rc = -1;
+    if (rc != 0) unlink(path);
     return rc;
 }
 

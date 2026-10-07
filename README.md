@@ -147,6 +147,7 @@ Commands:
 - `{"cmd":"resume"}` — resume decode.
 - `{"cmd":"stop"}` — unload all media.
 - `{"cmd":"park"}` — unload all media while retaining the last wallpaper buffer and idle context.
+- `{"cmd":"snapshot","path":"/abs/new.ppm"}` — save the current video frame for an outgoing wallpaper cover. Creates a new private PPM file and never overwrites an existing path. Prepared media and still transitions cannot be captured.
 - `{"cmd":"status"}` reports the path, kind, pause state, outputs, `time_pos`, `hwdec`, and playback `error`.
 - `{"cmd":"fade","ms":250}` — set the still fade length.
 - `{"cmd":"intro-show"}` — reveal a loaded intro once its outgoing still is ready.
