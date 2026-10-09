@@ -3,6 +3,8 @@
 
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #x); exit(1); } } while (0)
 
+void owe_output_buffer_size(const owe_output_t *out, int *w, int *h) { *w = out->width; *h = out->height; }
+
 int main(void) {
     EGLDisplay display = eglGetPlatformDisplay(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, NULL);
     if (display == EGL_NO_DISPLAY || !eglInitialize(display, NULL, NULL)) return 77;
@@ -36,6 +38,22 @@ int main(void) {
     GLuint texture = owe_egl_tex_from_rgba(&egl, rgba, 1, 1);
     CHECK(texture && glIsTexture(texture));
     owe_egl_tex_free(&egl, texture);
+    /* A context first made current without a surface can keep GL_NONE as the
+     * default framebuffer's draw and read buffers, as NVIDIA does. Binding an
+     * output must still draw to its back buffer. */
+    glDrawBuffer(GL_NONE);
+    glReadBuffer(GL_NONE);
+    EGLSurface window = eglCreatePbufferSurface(display, config, size);
+    CHECK(window != EGL_NO_SURFACE);
+    owe_output_t drawn = {.egl_surface = window, .width = 2, .height = 2, .scale = 1};
+    CHECK(owe_egl_prepare_output(&egl, &drawn) == 0);
+    GLint draw_buffer = 0;
+    GLint read_buffer = 0;
+    glGetIntegerv(GL_DRAW_BUFFER, &draw_buffer);
+    glGetIntegerv(GL_READ_BUFFER, &read_buffer);
+    CHECK(draw_buffer == GL_BACK && read_buffer == GL_BACK);
+    CHECK(glGetError() == GL_NO_ERROR);
+    owe_egl_destroy_output(&egl, &drawn);
     glDeleteBuffers(1, &egl.blit.vbo);
     glDeleteVertexArrays(1, &egl.blit.vao);
     glDeleteProgram(egl.blit.prog);

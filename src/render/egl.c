@@ -311,6 +311,12 @@ int owe_egl_prepare_output(struct owe_egl *egl, struct owe_output *out) {
             return -1;
         }
         egl->current = (EGLSurface)out->egl_surface;
+        /* The context is first made current without a surface, which leaves the
+         * default framebuffer's draw and read buffers at GL_NONE. NVIDIA keeps
+         * that once a window surface is bound, so every frame would be dropped. */
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        glDrawBuffer(GL_BACK);
+        glReadBuffer(GL_BACK);
     }
     if (!egl->blit.ready && blit_init(&egl->blit) != 0) return -1;
     owe_output_buffer_size(out, &w, &h);
