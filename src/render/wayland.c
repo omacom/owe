@@ -632,6 +632,16 @@ void owe_wayland_render_pending(struct owe_wayland *wl) {
             if (app->intro_waiting && app->transition &&
                 owe_still_has_image(app->transition)) {
                 owe_still_render_opaque(app->transition, out);
+            } else if (want_video && !owe_mpv_has_frame(app->mpv)) {
+                /* Until mpv has decoded a frame, drawing the video renders
+                 * black. Hold the outgoing still, or leave the surface as it
+                 * is: a new one stays unmapped over the shell's still. */
+                if (app->transition && owe_still_has_image(app->transition)) {
+                    owe_still_render_opaque(app->transition, out);
+                } else {
+                    out->frame_pending = 1;
+                    continue;
+                }
             } else if (want_video) {
                 owe_mpv_render_output(app->mpv, out);
                 video_drawn = true;

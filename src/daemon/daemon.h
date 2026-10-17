@@ -41,6 +41,9 @@ typedef struct owed_app {
 
     int engine;
     int shell_enabled; /* -1 unknown, 0 disabled, 1 enabled */
+    /* A video is loading behind the shell's still; the shell lets go once
+     * the renderer has drawn its first frame. */
+    bool handoff_pending;
     int64_t shell_stop_at_ms;
     int64_t shell_retry_at_ms;
     int64_t renderer_retry_at_ms;

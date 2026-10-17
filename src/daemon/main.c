@@ -234,13 +234,30 @@ static int activate_renderer(void) {
     return 0;
 }
 
-/* Normal video backgrounds still switch immediately. Boot intros use the two
- * steps separately so their matching still is decoded before this handoff. */
+/* Without a shell still on screen there is nothing to keep, so the renderer
+ * takes over at once. Taking over from the shell's still waits for the new
+ * media's first frame instead; see owed_app_apply_policy. */
 static int switch_to_renderer(void) {
     if (ensure_renderer() != 0) {
         return -1;
     }
     return activate_renderer();
+}
+
+/* The shell keeps its still: stop the renderer that was loading behind it. */
+static void cancel_handoff(const char *reason) {
+    owed_app_t *app = &g_app;
+    if (!app->handoff_pending) {
+        return;
+    }
+    app->handoff_pending = false;
+    app->media_pending = false;
+    app->loaded_path[0] = '\0';
+    app->loaded_kind[0] = '\0';
+    if (owed_render_is_alive(app->supervisor)) {
+        owed_supervisor_stop(app->supervisor);
+    }
+    OWE_INFO("renderer handoff cancelled (%s), the shell keeps the still", reason);
 }
 
 static void clear_prepared_intro(void) {
@@ -703,6 +720,11 @@ static void media_failed(void) {
         owed_supervisor_send(app->supervisor, "{\"cmd\":\"cancel-load\"}", NULL, 0);
     }
     OWE_WARN("media did not start: %s", app->source_path);
+    if (app->handoff_pending) {
+        /* The shell never let go of its still, so nothing needs restoring. */
+        cancel_handoff("media did not start");
+        return;
+    }
     if (*app->restore_path &&
         strcmp(app->restore_path, app->loaded_path) != 0) {
         if (load_if_needed(app->restore_path, app->restore_kind) == 0) {
@@ -718,7 +740,7 @@ static void check_media_ready(void) {
     char reply[OWE_IPC_MAX_LINE];
     bool ready = false;
     bool error = false;
-    if (app->engine != OWE_ENGINE_RENDERER || !app->media_pending) {
+    if ((app->engine != OWE_ENGINE_RENDERER && !app->handoff_pending) || !app->media_pending) {
         return;
     }
     if (monotonic_ms() >= app->media_deadline_ms) {
@@ -742,6 +764,16 @@ static void check_media_ready(void) {
                        yyjson_equals_str(yyjson_obj_get(root, "kind"), app->loaded_kind);
         yyjson_doc_free(doc);
         if (!matches) return;
+        if (app->handoff_pending) {
+            /* The first frame is drawn, so releasing the shell's still
+             * reveals the new media rather than an empty background. */
+            if (activate_renderer() != 0) {
+                cancel_handoff("the shell kept its still");
+                return;
+            }
+            app->handoff_pending = false;
+            OWE_INFO("engine: renderer");
+        }
         app->media_pending = false;
         app->media_ready = true;
         copy_path(app->last_good_path, sizeof(app->last_good_path), app->loaded_path);
@@ -827,6 +859,7 @@ void owed_app_apply_policy(void) {
      * Omarchy's shell, so the renderer never starts for one. */
     shell_engine = strcmp(app->source_kind, "still") == 0;
     if (shell_engine) {
+        cancel_handoff("the background is a still again");
         if (app->engine != OWE_ENGINE_SHELL) {
             if (switch_to_shell() == 0) {
                 OWE_INFO("engine: shell");
@@ -836,7 +869,17 @@ void owed_app_apply_policy(void) {
             return;
         }
     }
-    if (app->engine != OWE_ENGINE_RENDERER) {
+    if (app->engine == OWE_ENGINE_SHELL && app->shell_enabled == 1) {
+        /* Keep the shell's still on screen while the renderer loads behind
+         * it; check_media_ready lets the shell go after the first frame. */
+        if (!app->handoff_pending) {
+            if (ensure_renderer() != 0) {
+                return;
+            }
+            app->handoff_pending = true;
+            OWE_INFO("renderer loading behind the shell's still");
+        }
+    } else if (app->engine != OWE_ENGINE_RENDERER) {
         if (switch_to_renderer() != 0) {
             return;
         }
