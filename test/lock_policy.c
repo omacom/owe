@@ -221,18 +221,53 @@ int main(void) {
     owed_app_apply_policy();
     CHECK(renderer.starts == 2 && !strcmp(g_app.loaded_path, "/retry.mp4"));
 
-    /* A failed shell disable keeps the shell state and retries the handoff. */
+    /* A video replacing the shell's still loads behind it, and the shell lets
+     * go only once the renderer has drawn the first frame. Releasing it
+     * earlier showed an empty background until then. */
     g_app.engine = OWE_ENGINE_SHELL;
     g_app.shell_enabled = 1;
-    shell_plugin_fail = true;
+    g_app.loaded_path[0] = '\0';
+    g_app.loaded_kind[0] = '\0';
     int loads_before_handoff = renderer.loads;
+    shell_plugin_calls = 0;
     owed_app_apply_policy();
-    CHECK(g_app.engine == OWE_ENGINE_SHELL && g_app.shell_enabled == 1);
-    CHECK(renderer.loads == loads_before_handoff && g_app.renderer_retry_at_ms > 0);
+    CHECK(g_app.engine == OWE_ENGINE_SHELL && g_app.shell_enabled == 1 && g_app.handoff_pending);
+    CHECK(renderer.loads == loads_before_handoff + 1 && shell_plugin_calls == 0);
+    strcpy(supervisor_reply, "{\"status\":\"ok\",\"ready\":false,\"error\":\"\"}");
+    check_media_ready();
+    CHECK(g_app.engine == OWE_ENGINE_SHELL && g_app.handoff_pending && shell_plugin_calls == 0);
+
+    /* A failed shell disable keeps the shell's still and retries the handoff. */
+    strcpy(supervisor_reply, "{\"status\":\"ok\",\"ready\":true,\"error\":\"\",\"path\":\"/retry.mp4\",\"kind\":\"video\"}");
+    shell_plugin_fail = true;
+    check_media_ready();
+    CHECK(g_app.engine == OWE_ENGINE_SHELL && g_app.shell_enabled == 1 && !g_app.handoff_pending);
+    CHECK(g_app.renderer_retry_at_ms > 0);
     shell_plugin_fail = false;
     g_app.renderer_retry_at_ms = 0;
     owed_app_apply_policy();
-    CHECK(g_app.engine == OWE_ENGINE_RENDERER && g_app.shell_enabled == 0);
+    CHECK(g_app.handoff_pending && renderer.loads == loads_before_handoff + 2);
+    check_media_ready();
+    CHECK(g_app.engine == OWE_ENGINE_RENDERER && g_app.shell_enabled == 0 && !g_app.handoff_pending);
+    strcpy(supervisor_reply, "{\"status\":\"ok\"}");
+
+    /* Going back to a still while the video loads keeps the shell and stops
+     * the renderer behind it. */
+    g_app.engine = OWE_ENGINE_SHELL;
+    g_app.shell_enabled = 1;
+    g_app.loaded_path[0] = '\0';
+    owed_app_apply_policy();
+    CHECK(g_app.handoff_pending);
+    strcpy(g_app.source_path, "/still.png");
+    strcpy(g_app.source_kind, "still");
+    owed_app_apply_policy();
+    CHECK(!g_app.handoff_pending && g_app.engine == OWE_ENGINE_SHELL && !*g_app.loaded_path);
+    strcpy(g_app.source_path, "/retry.mp4");
+    strcpy(g_app.source_kind, "video");
+    g_app.engine = OWE_ENGINE_RENDERER;
+    g_app.shell_enabled = 0;
+    /* The status polls above went through the renderer stub too. */
+    skip_sends = 0;
 
     /* A failed shell command is also rate limited while the still falls back. */
     strcpy(g_app.source_path, "/still.png");

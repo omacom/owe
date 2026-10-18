@@ -29,6 +29,9 @@ struct owe_mpv {
     bool pause_known;
     bool ready;
     bool file_loaded;
+    /* mpv has decoded a frame of the current file. Drawing earlier renders
+     * black, which would cover the still the video replaces. */
+    bool has_frame;
     int video_w;
     int video_h;
     bool eof;
@@ -265,6 +268,7 @@ int owe_mpv_load(struct owe_mpv *m, const char *path) {
     m->pause_known = false;
     m->ready = false;
     m->file_loaded = false;
+    m->has_frame = false;
     m->video_w = m->video_h = 0;
     m->eof = false;
     return 0;
@@ -280,6 +284,7 @@ void owe_mpv_stop(struct owe_mpv *m) {
     m->path[0] = '\0';
     m->ready = false;
     m->file_loaded = false;
+    m->has_frame = false;
     m->video_w = m->video_h = 0;
     m->eof = false;
     m->error[0] = '\0';
@@ -370,6 +375,7 @@ bool owe_mpv_process_updates(struct owe_mpv *m) {
         if (event->event_id == MPV_EVENT_LOG_MESSAGE) log_message(event->data);
         if (event->event_id == MPV_EVENT_START_FILE) {
             m->file_loaded = false;
+            m->has_frame = false;
             m->video_w = m->video_h = 0;
             m->ready = false;
             m->eof = false;
@@ -402,7 +408,12 @@ bool owe_mpv_process_updates(struct owe_mpv *m) {
     }
     owe_egl_make_current(owe_app_get()->egl);
     flags = mpv_render_context_update(m->ctx);
+    if ((flags & MPV_RENDER_UPDATE_FRAME) && m->file_loaded) m->has_frame = true;
     return (flags & MPV_RENDER_UPDATE_FRAME) != 0;
+}
+
+bool owe_mpv_has_frame(struct owe_mpv *m) {
+    return m && m->has_frame;
 }
 
 const char *owe_mpv_error(struct owe_mpv *m) { return m ? m->error : ""; }

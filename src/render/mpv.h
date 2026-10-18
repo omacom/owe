@@ -19,6 +19,7 @@ bool owe_mpv_eof(struct owe_mpv *m);
 bool owe_mpv_has_video(struct owe_mpv *m);
 bool owe_mpv_is_paused(struct owe_mpv *m);
 bool owe_mpv_ready(struct owe_mpv *m);
+bool owe_mpv_has_frame(struct owe_mpv *m);
 const char *owe_mpv_path(struct owe_mpv *m);
 int owe_mpv_video_size(struct owe_mpv *m, int *w, int *h);
 
