@@ -269,7 +269,11 @@ static void process_shell_handoff(void) {
     owed_app_t *app = &g_app;
     if (app->shell_stop_at_ms && monotonic_ms() >= app->shell_stop_at_ms) {
         app->shell_stop_at_ms = 0;
-        if (app->engine == OWE_ENGINE_SHELL && owed_render_is_alive(app->supervisor)) {
+        /* A video chosen before this still's renderer was released is loading
+         * behind the shell. Parking that renderer drops the load, the ready
+         * timeout fires, and the still stays up. */
+        if (!app->handoff_pending && app->engine == OWE_ENGINE_SHELL &&
+            owed_render_is_alive(app->supervisor)) {
             char reply[1024];
             if (owed_supervisor_send(app->supervisor, "{\"cmd\":\"park\"}", reply, sizeof(reply)) == 0 &&
                 owe_json_ok(reply)) {
@@ -877,6 +881,9 @@ void owed_app_apply_policy(void) {
                 return;
             }
             app->handoff_pending = true;
+            /* The delayed park only covers the shell taking the still over.
+             * This renderer is now loading the video that replaces it. */
+            app->shell_stop_at_ms = 0;
             OWE_INFO("renderer loading behind the shell's still");
         }
     } else if (app->engine != OWE_ENGINE_RENDERER) {
