@@ -644,6 +644,54 @@ int main(void) {
         CHECK(owed_app_prepare_intro(copy) != 0);
         unlink(prepared); unlink(copy); rmdir(published);
     }
+    /* A still holds the renderer for two seconds so the shell can take the
+     * surface over. A video set inside that window must not be parked: the
+     * park drops the load, the ready timeout reports the video failed, and
+     * the still stays on screen. */
+    power.locked = false;
+    power.sleeping = false;
+    power.battery = false;
+    hypr.locked = false;
+    g_app.intro_active = 0;
+    g_app.job = NULL;
+    g_app.engine = OWE_ENGINE_SHELL;
+    g_app.shell_enabled = 1;
+    g_app.handoff_pending = false;
+    g_app.renderer_warm_until_ms = 0;
+    g_app.renderer_retry_at_ms = 0;
+    renderer.down = false;
+    strcpy(supervisor_reply, "{\"status\":\"ok\"}");
+    g_app.shell_stop_at_ms = monotonic_ms() - 1;
+    process_shell_handoff();
+    CHECK(strstr(supervisor_last, "\"cmd\":\"park\"") != NULL);
+    CHECK(g_app.shell_stop_at_ms == 0);
+
+    strcpy(g_app.source_path, "/return.mp4");
+    strcpy(g_app.source_kind, "video");
+    g_app.fail_path[0] = '\0';
+    g_app.poster_fail_path[0] = '\0';
+    g_app.loaded_path[0] = '\0';
+    g_app.loaded_kind[0] = '\0';
+    g_app.engine = OWE_ENGINE_SHELL;
+    g_app.shell_enabled = 1;
+    g_app.handoff_pending = false;
+    g_app.intro_active = 0;
+    g_app.shell_stop_at_ms = monotonic_ms() + 2000;
+    owed_app_apply_policy();
+    CHECK(g_app.handoff_pending);
+    CHECK(g_app.shell_stop_at_ms == 0);
+    CHECK(!strcmp(g_app.loaded_path, "/return.mp4"));
+    g_app.shell_stop_at_ms = monotonic_ms() - 1;
+    supervisor_last[0] = '\0';
+    {
+        int stops = renderer.stops;
+        process_shell_handoff();
+        CHECK(g_app.handoff_pending);
+        CHECK(supervisor_last[0] == '\0' || strstr(supervisor_last, "\"cmd\":\"park\"") == NULL);
+        CHECK(renderer.stops == stops);
+        CHECK(!strcmp(g_app.loaded_path, "/return.mp4"));
+    }
+
     owed_policy_free(g_app.policy);
     puts("lock policy and still transition checks passed");
     return 0;
