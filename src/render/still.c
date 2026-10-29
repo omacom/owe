@@ -103,6 +103,7 @@ static void set_colorspace(struct SwsContext *sws, const AVFrame *frame) {
     }
     if (sws_getColorspaceDetails(sws, &inv_table, &src_range, &table, &dst_range, &brightness,
                                  &contrast, &saturation) < 0) {
+        OWE_WARN("still colourspace not applied, using swscale defaults");
         return;
     }
     if (frame->colorspace != AVCOL_SPC_UNSPECIFIED) {
@@ -111,8 +112,10 @@ static void set_colorspace(struct SwsContext *sws, const AVFrame *frame) {
     if (frame->color_range != AVCOL_RANGE_UNSPECIFIED) {
         src_range = frame->color_range == AVCOL_RANGE_JPEG;
     }
-    sws_setColorspaceDetails(sws, inv_table, src_range, table, dst_range, brightness, contrast,
-                             saturation);
+    if (sws_setColorspaceDetails(sws, inv_table, src_range, table, dst_range, brightness,
+                                 contrast, saturation) < 0) {
+        OWE_WARN("still colourspace not applied, using swscale defaults");
+    }
 }
 
 static int decode_first_frame(const char *path, int max_w, int max_h, uint8_t **rgba_out,

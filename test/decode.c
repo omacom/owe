@@ -86,6 +86,34 @@ static int generate(const char *name, const char *size) {
     return run(argv);
 }
 
+/* A flat 0x3080c0 frame stored as YUV with the given matrix and range tags. */
+static int generate_tagged(const char *name, const char *matrix, const char *colorspace,
+                           const char *range) {
+    char path[1024];
+    char filter[128];
+    char *argv[] = {"ffmpeg", "-y", "-v", "error", "-nostdin", "-f", "lavfi", "-i",
+                    "color=c=0x3080c0:size=64x48", "-frames:v", "1", "-vf", filter, "-pix_fmt",
+                    "yuv444p", "-colorspace", (char *)colorspace, "-color_range", (char *)range,
+                    "-c:v", "ffv1", path, NULL};
+    path_for(path, sizeof(path), name);
+    snprintf(filter, sizeof(filter), "scale=out_color_matrix=%s:out_range=%s", matrix, range);
+    return run(argv);
+}
+
+static void check_colour(const char *name) {
+    char path[1024];
+    uint8_t *rgba = NULL;
+    const uint8_t *px;
+    int w = 0, h = 0;
+    path_for(path, sizeof(path), name);
+    CHECK(decode_first_frame(path, 0, 0, &rgba, &w, &h, NULL) == 0);
+    px = rgba + ((size_t)(h / 2) * w + w / 2) * 4;
+    printf("%s decoded %d,%d,%d\n", name, px[0], px[1], px[2]);
+    /* Swscale defaults (BT.601, limited) put these 5 to 11 levels off. */
+    CHECK(abs(px[0] - 0x30) <= 3 && abs(px[1] - 0x80) <= 3 && abs(px[2] - 0xc0) <= 3);
+    free(rgba);
+}
+
 static void check_decode(const char *name, int *w, int *h) {
     char path[1024];
     uint8_t *rgba = NULL;
@@ -138,6 +166,11 @@ int main(void) {
         check_decode("portrait.jpg", &w, &h);
         CHECK(w == 1200 && h == 2400);
     }
+
+    CHECK(generate_tagged("bt709.mkv", "bt709", "bt709", "tv") == 0);
+    check_colour("bt709.mkv");
+    CHECK(generate_tagged("full.mkv", "bt601", "smpte170m", "pc") == 0);
+    check_colour("full.mkv");
 
     {
         char path[1024];
