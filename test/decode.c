@@ -114,6 +114,48 @@ static void check_colour(const char *name) {
     free(rgba);
 }
 
+/* An untagged flat lossy WebP, decoded the way libwebp does (BT.601 limited
+ * with accurate rounding and full chroma interpolation), so the still can be
+ * compared with that reference rather than with the lossily coded source. */
+static int generate_webp(const char *name, const char *ref) {
+    char path[1024];
+    char ref_path[1024];
+    char *encode[] = {"ffmpeg", "-y", "-v", "error", "-nostdin", "-f", "lavfi", "-i",
+                      "color=c=0x3080c0:size=64x48", "-frames:v", "1", "-c:v", "libwebp",
+                      "-pix_fmt", "yuv420p", path, NULL};
+    char *decode[] = {"ffmpeg", "-y", "-v", "error", "-nostdin", "-i", path, "-vf",
+                      "scale=flags=accurate_rnd+full_chroma_int,format=rgba", "-f", "rawvideo",
+                      ref_path, NULL};
+    path_for(path, sizeof(path), name);
+    path_for(ref_path, sizeof(ref_path), ref);
+    if (run(encode) != 0) return -1;
+    return run(decode);
+}
+
+static void check_webp(const char *name, const char *ref) {
+    char path[1024];
+    uint8_t *rgba = NULL;
+    uint8_t expected[64 * 48 * 4];
+    FILE *f;
+    double sum = 0;
+    int w = 0, h = 0;
+    int i;
+    path_for(path, sizeof(path), ref);
+    f = fopen(path, "rb");
+    CHECK(f && fread(expected, 1, sizeof(expected), f) == sizeof(expected));
+    fclose(f);
+    path_for(path, sizeof(path), name);
+    CHECK(decode_first_frame(path, 0, 0, &rgba, &w, &h, NULL) == 0);
+    CHECK(w == 64 && h == 48);
+    for (i = 0; i < w * h * 4; i++) {
+        if (i % 4 != 3) sum += abs(rgba[i] - expected[i]);
+    }
+    printf("%s mean difference from reference %.3f\n", name, sum / (w * h * 3));
+    /* Swscale's fast rounding is about 1.4 levels off, green the most. */
+    CHECK(sum / (w * h * 3) <= 0.5);
+    free(rgba);
+}
+
 static void check_decode(const char *name, int *w, int *h) {
     char path[1024];
     uint8_t *rgba = NULL;
@@ -171,6 +213,12 @@ int main(void) {
     check_colour("bt709.mkv");
     CHECK(generate_tagged("full.mkv", "bt601", "smpte170m", "pc") == 0);
     check_colour("full.mkv");
+    if (generate_webp("flat.webp", "flat.rgba") == 0) {
+        check_webp("flat.webp", "flat.rgba");
+    } else {
+        skipped++;
+        printf("libwebp encoder unavailable, skip webp colour\n");
+    }
 
     {
         char path[1024];
