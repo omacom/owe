@@ -129,7 +129,9 @@ static int generate_webp(const char *name, const char *ref) {
     path_for(path, sizeof(path), name);
     path_for(ref_path, sizeof(ref_path), ref);
     if (run(encode) != 0) return -1;
-    return run(decode);
+    /* Only a missing encoder skips the check; a failed reference decode fails it. */
+    CHECK(run(decode) == 0);
+    return 0;
 }
 
 static void check_webp(const char *name, const char *ref) {
