@@ -256,6 +256,13 @@ static void make_media(void) {
 }
 
 int main(void) {
+    verify(vaapi_interop_only("Intel", "Mesa Intel(R) Arc(tm) B390 (PTL)") &&
+           vaapi_interop_only("AMD", "AMD Radeon 860M Graphics (radeonsi, krackan1, ACO)") &&
+           vaapi_interop_only("X.Org", "AMD RENOIR (radeonsi, renoir, LLVM 15.0.7)") &&
+           !vaapi_interop_only("NVIDIA Corporation", "NVIDIA GeForce RTX 4070 Ti/PCIe/SSE2") &&
+           !vaapi_interop_only("Mesa", "llvmpipe (LLVM 21.1.8, 256 bits)") &&
+           !vaapi_interop_only("Broadcom", "V3D 7.1.10.2") && !vaapi_interop_only(NULL, NULL),
+           "only Intel and AMD GL limit mpv to the VA-API interop");
     CHECK(mkdtemp(root));
     make_media();
     int rc = init_display();
