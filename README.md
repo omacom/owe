@@ -140,6 +140,7 @@ Commands:
 
 - `{"cmd":"hello"}` — reply `{"status":"ok","version":1}`.
 - `{"cmd":"load","path":"/abs/file","kind":"video|still"}` — load media. `"once":true` and `"mute":true` load a one-shot intro. `"prepare":true` decodes a paused opening frame offscreen instead.
+- Add `"from":"/abs/still.png"` to a video load to fade that still into the video. Add `"hold":true` to keep the still opaque over the playing video until `transition-start`.
 - Add `"async":true` to a still load for an immediate acknowledgement.
   Poll `status` until `ready` is true and `path` matches the request.
   An asynchronous still load has a 30-second deadline.
@@ -152,6 +153,7 @@ Commands:
 - `{"cmd":"snapshot","path":"/abs/new.ppm"}` — save the current video frame for an outgoing wallpaper cover. Creates a new private PPM file and never overwrites an existing path. Prepared media and still transitions cannot be captured.
 - `{"cmd":"status"}` reports the path, kind, pause state, outputs, `time_pos`, `hwdec`, and playback `error`.
 - `{"cmd":"fade","ms":250}` — set the still fade length.
+- `{"cmd":"transition-start"}` — start the fade of a held transition still.
 - `{"cmd":"intro-show"}` — reveal a loaded intro once its outgoing still is ready.
 - `{"cmd":"intro-start"}` — resume a prepared intro and play it once.
 - `{"cmd":"intro-finish","path":"/abs/still.png","ms":750}` — fade the final intro frame into a still and hold it for the shell handoff.

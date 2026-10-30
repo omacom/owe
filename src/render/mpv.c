@@ -34,6 +34,9 @@ struct owe_mpv {
     bool has_frame;
     int video_w;
     int video_h;
+    /* The core sends these values as property events. A synchronous read on
+     * the render thread can wait 200 ms while the core waits for this thread. */
+    char hwdec_current[64];
     bool eof;
     char error[256];
     int wakeup_pipe[2];
@@ -228,6 +231,9 @@ struct owe_mpv *owe_mpv_new(struct owe_wayland *wl) {
     mpv_render_context_set_update_callback(m->ctx, on_render_update, m);
     mpv_set_wakeup_callback(m->handle, on_mpv_wakeup, m);
     mpv_observe_property(m->handle, 1, "eof-reached", MPV_FORMAT_FLAG);
+    mpv_observe_property(m->handle, 2, "dwidth", MPV_FORMAT_INT64);
+    mpv_observe_property(m->handle, 3, "dheight", MPV_FORMAT_INT64);
+    mpv_observe_property(m->handle, 4, "hwdec-current", MPV_FORMAT_STRING);
     OWE_INFO("libmpv ready");
     return m;
 }
@@ -269,7 +275,6 @@ int owe_mpv_load(struct owe_mpv *m, const char *path) {
     m->ready = false;
     m->file_loaded = false;
     m->has_frame = false;
-    m->video_w = m->video_h = 0;
     m->eof = false;
     return 0;
 }
@@ -285,7 +290,6 @@ void owe_mpv_stop(struct owe_mpv *m) {
     m->ready = false;
     m->file_loaded = false;
     m->has_frame = false;
-    m->video_w = m->video_h = 0;
     m->eof = false;
     m->error[0] = '\0';
 }
@@ -342,13 +346,12 @@ const char *owe_mpv_path(struct owe_mpv *m) {
     return m ? m->path : "";
 }
 
-static void update_video_size(struct owe_mpv *m) {
-    int64_t value = 0;
-    m->video_w = m->video_h = 0;
-    if (mpv_get_property(m->handle, "dwidth", MPV_FORMAT_INT64, &value) >= 0 &&
-        value > 0 && value <= INT_MAX) m->video_w = (int)value;
-    if (mpv_get_property(m->handle, "dheight", MPV_FORMAT_INT64, &value) >= 0 &&
-        value > 0 && value <= INT_MAX) m->video_h = (int)value;
+/* An unavailable size arrives as MPV_FORMAT_NONE and clears the value. The
+ * core sends a size only when it changes, so a new file of the same size keeps
+ * the cached one. */
+static int property_size(const mpv_event_property *property) {
+    int64_t value = property->format == MPV_FORMAT_INT64 && property->data ? *(int64_t *)property->data : 0;
+    return value > 0 && value <= INT_MAX ? (int)value : 0;
 }
 
 int owe_mpv_video_size(struct owe_mpv *m, int *w, int *h) {
@@ -376,21 +379,25 @@ bool owe_mpv_process_updates(struct owe_mpv *m) {
         if (event->event_id == MPV_EVENT_START_FILE) {
             m->file_loaded = false;
             m->has_frame = false;
-            m->video_w = m->video_h = 0;
             m->ready = false;
             m->eof = false;
             m->has_video = true;
             m->error[0] = '\0';
         } else if (event->event_id == MPV_EVENT_FILE_LOADED) {
             m->file_loaded = true;
-            update_video_size(m);
-        } else if (event->event_id == MPV_EVENT_VIDEO_RECONFIG) {
-            update_video_size(m);
         } else if (event->event_id == MPV_EVENT_PROPERTY_CHANGE) {
             mpv_event_property *property = event->data;
             if (property && property->format == MPV_FORMAT_FLAG && property->data &&
                 strcmp(property->name, "eof-reached") == 0) {
                 m->eof = *(int *)property->data != 0;
+            } else if (property && strcmp(property->name, "dwidth") == 0) {
+                m->video_w = property_size(property);
+            } else if (property && strcmp(property->name, "dheight") == 0) {
+                m->video_h = property_size(property);
+            } else if (property && strcmp(property->name, "hwdec-current") == 0) {
+                snprintf(m->hwdec_current, sizeof(m->hwdec_current), "%s",
+                         property->format == MPV_FORMAT_STRING && property->data
+                             ? *(char **)property->data : "");
             }
         }
         if (event->event_id == MPV_EVENT_END_FILE) {
@@ -419,11 +426,7 @@ bool owe_mpv_has_frame(struct owe_mpv *m) {
 const char *owe_mpv_error(struct owe_mpv *m) { return m ? m->error : ""; }
 
 const char *owe_mpv_hwdec(struct owe_mpv *m) {
-    static char name[64];
-    char *value = m ? mpv_get_property_string(m->handle, "hwdec-current") : NULL;
-    snprintf(name, sizeof(name), "%s", value ? value : "no");
-    mpv_free(value);
-    return name;
+    return m && *m->hwdec_current ? m->hwdec_current : "no";
 }
 
 static int render_target(struct owe_mpv *m, mpv_render_param *params) {
@@ -575,9 +578,12 @@ int owe_mpv_snapshot(struct owe_mpv *m, const char *path, int w, int h) {
     return rc;
 }
 
+/* A property read waits for the mpv core. Until the first frame is drawn the
+ * core can wait for the render thread, and this read then stalls both for
+ * 200 ms. No position exists before that frame. */
 double owe_mpv_time_pos(struct owe_mpv *m) {
     double pos = -1.0;
-    if (m && m->handle) {
+    if (m && m->handle && m->ready) {
         mpv_get_property(m->handle, "time-pos", MPV_FORMAT_DOUBLE, &pos);
     }
     return pos;

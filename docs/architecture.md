@@ -42,6 +42,10 @@ A crossfade over video keeps the region, because the video keeps the
 alpha at 1.
 `mpv_render_context_render` writes directly into the window
 framebuffer. No intermediate framebuffer or blit exists.
+Before the first frame, the render thread reads no mpv property synchronously.
+The core can wait for that thread while it starts a decoder, and such a read
+then stalls both for 200 ms. The video size and `hwdec-current` arrive as
+property events. `time-pos` is read only after the first frame.
 
 The blit shader owns one VAO, one VBO, and one program. Still images
 apply a cover crop in the fragment shader: the visible UV sub-rect is
@@ -66,6 +70,9 @@ Readiness requires the reported path and kind to match the accepted request.
 The renderer uploads one texture, presents the fade, and stops frame requests after the fully opaque final frame.
 
 The outgoing transition image can upload through any available output surface.
+While the shell's still covers the renderer, the daemon loads the video with
+`hold`. The renderer then draws the still opaque over the playing video, and
+the fade starts at `transition-start`, after the daemon suspends the shell.
 Video waits at most one second for that optional image.
 If the image is not ready, the renderer cancels the transition and continues video playback.
 The event loop discards a cancelled image when its worker completes.
@@ -166,7 +173,7 @@ The daemon tracks what the renderer currently shows. A load is sent only
 when the target path or kind changes. Pause and resume are sent only on
 state transitions. A video load reply means the renderer accepted the
 request, so the daemon polls the renderer status until the first frame
-presents. A video that fails to decode, or that never presents a frame
+presents. While the shell's still waits for that frame, it polls every 16 ms. A video that fails to decode, or that never presents a frame
 within five seconds, falls back to the last media that proved it plays.
 The renderer child is reaped on `SIGCHLD` and restarted with the current
 media when it dies. Only the daemon restart path spawns a replacement;

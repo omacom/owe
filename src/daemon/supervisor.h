@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdbool.h>
+
 struct owed_supervisor;
 
 struct owed_supervisor *owed_supervisor_new(const char *daemon_socket);
@@ -12,7 +14,7 @@ void owed_supervisor_stop(struct owed_supervisor *s);
 int owed_supervisor_send(struct owed_supervisor *s, const char *line, char *reply,
                          unsigned long reply_len);
 int owed_supervisor_load(struct owed_supervisor *s, const char *path, const char *kind,
-                         const char *from);
+                         const char *from, bool hold);
 int owed_supervisor_pause(struct owed_supervisor *s);
 int owed_supervisor_resume(struct owed_supervisor *s);
 int owed_supervisor_feed_start(struct owed_supervisor *s);

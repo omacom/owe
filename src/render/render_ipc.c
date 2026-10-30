@@ -210,6 +210,9 @@ static void handle_load(struct owe_render_ipc *ipc, struct owe_ipc_client *c, yy
             if (owe_still_start(app->transition, from, max_w > 0 ? max_w : 4096,
                                 max_h > 0 ? max_h : 4096) == 0) {
                 owe_still_set_fade_out(app->transition, app->fade_ms);
+                /* The shell's identical still covers the renderer until owed
+                 * releases it, so the fade waits for transition-start. */
+                owe_still_set_held(app->transition, yyjson_get_bool(yyjson_obj_get(root, "hold")));
                 OWE_INFO("transition from %s", from);
             }
         } else if (app->transition) {
@@ -335,6 +338,12 @@ static void handle_command(void *context, struct owe_ipc_client *c, const char *
         } else {
             send_err(c, "intro is not prepared");
         }
+    } else if (strcmp(cmd, "transition-start") == 0) {
+        if (app && app->transition) {
+            owe_still_set_held(app->transition, false);
+            owe_app_request_render();
+        }
+        send_ok(c, NULL);
     } else if (strcmp(cmd, "pause") == 0) {
         if (app) {
             stop_feed(app);

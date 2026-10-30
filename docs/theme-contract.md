@@ -34,7 +34,10 @@ It preserves shell settings added after installation.
 Stills belong to the shell, so a still to still switch uses the shell
 reveal wipe. A still to video switch crossfades in the renderer: the
 daemon passes the outgoing still, the renderer draws it over the incoming
-video, and fades it out over the configured fade. Video and GIF changes
+video, and fades it out over the configured fade. The shell keeps its still
+on screen when the next background is a video, until the daemon suspends the
+shell background. The renderer keeps its copy of the still opaque until then,
+so the fade starts when the shell layer is gone. Video and GIF changes
 use a hard cut. A battery poster fades in through the renderer GPU fade.
 A one-shot intro prepares the current still under the shell, fades it out only after the shell releases its layer, then fades the final video frame back to the still over 750 milliseconds. The renderer holds that still while the shell recreates its background surface.
 An intro started with `--start first-frame` skips the opening fade and starts on its own first frame, for a shell that shows no still before it.

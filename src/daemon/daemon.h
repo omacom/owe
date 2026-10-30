@@ -44,6 +44,8 @@ typedef struct owed_app {
     /* A video is loading behind the shell's still; the shell lets go once
      * the renderer has drawn its first frame. */
     bool handoff_pending;
+    /* The renderer holds the outgoing still until it accepts transition-start. */
+    bool transition_release_pending;
     int64_t shell_stop_at_ms;
     int64_t shell_retry_at_ms;
     int64_t renderer_retry_at_ms;
