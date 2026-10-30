@@ -1,0 +1,11 @@
+# Guest root file system for test/e2e/run-gpu.sh. It adds a kernel and an init
+# script to the arm64 test image, so the same packages boot in a virtual machine.
+FROM owe-e2e:linux-arm64
+
+# mesa-va-drivers has the virgl VA-API driver, which sends decode work to the host.
+USER root
+RUN apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        linux-image-arm64 initramfs-tools kmod udev mesa-va-drivers vainfo \
+    && rm -rf /var/lib/apt/lists/*
+COPY --chmod=0755 guest-init.sh /usr/local/sbin/owe-vm-init

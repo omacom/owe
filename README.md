@@ -187,11 +187,11 @@ and sleep. Reasons in priority order:
 
 1. `manual` pause from `owe pause`.
 2. `sleep` pauses playback before suspend.
-3. `always-animate` bypasses automatic pause rules.
-4. `idle` pause from the `owe-idle` helper.
-5. `locked` follows logind or Hyprland session state.
-6. `dpms-off` applies when every connected monitor reports a known off state.
+3. `dpms-off` applies when every connected monitor reports a known off state.
    Missing DRM data falls back to Hyprland state.
+4. `always-animate` bypasses the automatic pause rules below it.
+5. `idle` pause from the `owe-idle` helper.
+6. `locked` follows logind or Hyprland session state.
 7. `battery` holds or replaces playback while on battery. Off by default.
    Set `battery_mode = "pause"` to hold the current frame, or
    `battery_mode = "poster"` to show a still poster. `battery_poster = true`
@@ -206,7 +206,7 @@ and it sets the idle pause. `owe resume` clears only the manual pause,
 so an idle resume never releases a manual pause.
 
 To bypass automatic pause rules, run `owe always-animate on`.
-Manual pause and sleep still take precedence.
+Manual pause, sleep and DPMS off still take precedence.
 
 A locked session can keep video moving through the muted lock feed instead
 of the desktop layer. The feed honors manual pause, sleep, DPMS, idle,
@@ -236,11 +236,14 @@ media is silent. Source files remain intact.
 
 ## Performance design
 
-- Stills never start the renderer. While a still background shows, `owed`
-  enables the shell background plugin, stops `owe-render`, and keeps only
-  the 4 MiB daemon. A video or GIF starts the renderer again.
+- A still background does not keep the renderer. `owed` enables the shell
+  background plugin, parks `owe-render` 2 seconds later, and stops it after
+  1 more minute. Then only the 4 MiB daemon runs. During the switch, the
+  video holds its current frame. A video or GIF starts the renderer again.
 - Video renders only when `libmpv` signals a new frame. The render rate
-  tracks the media frame rate, not the display refresh rate.
+  tracks the media frame rate, not the display refresh rate. A fade draws
+  on each frame callback until it ends. A still that stays on screen does
+  not commit again.
 - A switch from a still to a video crossfades. The renderer draws the
   outgoing still over the incoming video and fades it out.
 - Video draws straight into the window framebuffer. No intermediate
@@ -248,8 +251,16 @@ media is silent. Source files remain intact.
 - Video redraws wait for the compositor's frame callback. A blanked
   output stops the draw loop instead of stalling the event loop, and an
   output covered by a fullscreen window stops swapping buffers.
+- A commit marks the surface opaque when the frame has no transparent
+  pixel. This covers video frames, and a still with no transparent pixel
+  after its fade. The compositor can then skip what is below the wallpaper
+  and draw it without blending. While a still fades in, the surface has no
+  opaque region, so the compositor blends it. A crossfade over video keeps
+  the opaque region, because the video below it keeps the alpha at 1.
 - Hardware decode is on by default (`hwdec=auto-safe`). Override with
   the `OWE_HWDEC` environment variable.
+- The renderer uses desktop OpenGL 3.2 or later. If the driver has no
+  such context, as on some ARM SoCs, the renderer uses OpenGL ES 3.0 or later.
 - `libmpv` runs without its lua scripts. The ytdl hook, stats overlay,
   console, and the other scripts only add threads and memory. Advanced
   mpv tuning uses `OWE_MPV_OPTIONS`, a semicolon separated list such as
@@ -276,7 +287,10 @@ Software decode still uses the GPU display path.
 The guide covers GPU logs, swap failures, and an optional DRM DPMS diagnostic override.
 
 `owed` supervises `owe-render`. A killed or crashed renderer is restarted
-and the current media reloads. The daemon holds a `flock` on
+and the current media reloads. The daemon waits up to 7 seconds for a new
+renderer and logs `owe-render ready after N ms`. If the renderer does not
+create its socket in that time, the daemon stops it and starts it again
+after 30 seconds. The daemon holds a `flock` on
 `$XDG_RUNTIME_DIR/owe/owed.lock`, so a second instance refuses to start.
 
 ## Config
@@ -372,6 +386,41 @@ meson test -C build-sanitize --print-errorlogs
 
 `test/owe-live-test` requires a running test daemon and a video wallpaper.
 To check live playback and IPC, run `build/test/owe-live-test`.
+
+To build and test on arm64 and play video end to end, run:
+
+```bash
+test/e2e/run.sh
+```
+
+The script builds a Debian arm64 image in Docker and mounts the source tree read-only.
+It runs both test suites, then starts a headless sway session with the real `owed`, `owe-render`, and `owe` binaries.
+It plays an H.264 clip and an HEVC clip and reads the output pixels with `grim`.
+It checks colors, motion, pause, the snapshot, `owe-live-test`, the switch between clips, and the shutdown.
+The playback check runs 2 times, first with desktop OpenGL and then with OpenGL ES.
+To test another platform, give it as the argument, for example `test/e2e/run.sh linux/amd64`.
+
+On an x86_64 host, Docker runs the image through QEMU, so the host needs a binfmt rule for arm64.
+Under QEMU, the script skips the `transition` test, because that test counts frames in fixed time windows and emulation is too slow for them.
+The arm64 CI job runs on native hardware, so it runs the `transition` test too.
+The container has no GPU. It uses Mesa llvmpipe and software decode, so it does not test hardware decode on ARM devices.
+
+To run the playback check on a GPU driver, run:
+
+```bash
+test/e2e/run-gpu.sh
+```
+
+The script boots the arm64 test image in a QEMU virtual machine with a virtio GPU.
+QEMU sends the guest's OpenGL calls to the host GPU through virglrenderer, so the frames come from the host GPU and not from llvmpipe.
+QEMU runs in a Docker container that gets only the GPU render node, so the host needs no QEMU packages.
+The check fails if the renderer reports llvmpipe.
+To use a render node other than `/dev/dri/renderD128`, set `OWE_E2E_RENDER_NODE`.
+The script stops the virtual machine after 30 minutes and fails the check.
+To change this limit, set `OWE_E2E_VM_TIMEOUT` to a number of seconds.
+The guest uses the virgl driver, so this run does not test ARM GPU drivers such as V3D, Panfrost, or Freedreno.
+The guest image has the virgl VA-API driver, but QEMU 11.1 does not turn on virglrenderer video decode.
+So the guest gets no decode profile and uses software decode.
 
 Build and install deps: `meson`, `ninja`, `gcc`, `pkgconf`, `wayland`,
 `wayland-protocols`, `libglvnd`, `libepoxy`, `mpv`, `ffmpeg`, `systemd-libs`,

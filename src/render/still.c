@@ -29,6 +29,7 @@ struct still_job {
     uint8_t *rgba;
     int w;
     int h;
+    bool opaque;
     int rc;
     int ready;
     atomic_bool cancelled;
@@ -40,6 +41,8 @@ struct owe_still {
     unsigned int tex;
     int tex_w;
     int tex_h;
+    /* The image has no transparent pixel. */
+    bool opaque;
     int max_w;
     int max_h;
     char path[4096];
@@ -252,9 +255,20 @@ done:
     return rc;
 }
 
+/* Check every alpha byte once in the worker, so the renderer knows when a
+ * frame of this still lets the compositor skip what is below the surface. */
+static bool rgba_opaque(const uint8_t *rgba, int w, int h) {
+    size_t n = (size_t)w * (size_t)h;
+    for (size_t i = 0; i < n; i++) {
+        if (rgba[i * 4 + 3] != 255) return false;
+    }
+    return true;
+}
+
 static void *still_job_main(void *arg) {
     struct still_job *job = arg;
     job->rc = decode_first_frame(job->path, job->max_w, job->max_h, &job->rgba, &job->w, &job->h, &job->cancelled);
+    if (job->rc == 0 && job->rgba) job->opaque = rgba_opaque(job->rgba, job->w, job->h);
     {
         char c = 'x';
         while (write(job->done_fd[1], &c, 1) < 0 && errno == EINTR) {}
@@ -414,6 +428,7 @@ int owe_still_poll(struct owe_still *s) {
     s->tex = tex;
     s->tex_w = job->w;
     s->tex_h = job->h;
+    s->opaque = job->opaque;
     s->fade_started = false;
     s->max_w = job->max_w;
     s->max_h = job->max_h;
@@ -448,16 +463,20 @@ const char *owe_still_path(struct owe_still *s) {
     return s ? s->path : "";
 }
 
-void owe_still_render_output(struct owe_still *s, struct owe_output *out) {
+/* Returns true when the frame is the last frame of the fade. The alpha and the
+ * result come from 1 clock read, so they cannot disagree at the fade end. */
+bool owe_still_render_output(struct owe_still *s, struct owe_output *out) {
     struct timespec now;
     float alpha = 1.0f;
+    bool last = true;
     if (!s || !s->tex || !out) {
-        return;
+        return true;
     }
     if (s->fade_ms > 0) {
         long ms;
         clock_gettime(CLOCK_MONOTONIC, &now);
         ms = elapsed_ms(&s->loaded_at, &now);
+        last = ms >= s->fade_ms;
         if (s->fade_out) {
             alpha = ms < s->fade_ms ? 1.0f - (float)ms / (float)s->fade_ms : 0.0f;
         } else if (ms < s->fade_ms) {
@@ -467,6 +486,7 @@ void owe_still_render_output(struct owe_still *s, struct owe_output *out) {
         alpha = 0.0f;
     }
     owe_egl_draw_texture(s->egl, out, s->tex, alpha, s->tex_w, s->tex_h);
+    return last;
 }
 
 void owe_still_render_opaque(struct owe_still *s, struct owe_output *out) {
@@ -476,12 +496,14 @@ void owe_still_render_opaque(struct owe_still *s, struct owe_output *out) {
     owe_egl_draw_texture(s->egl, out, s->tex, 1.0f, s->tex_w, s->tex_h);
 }
 
-/* Blend a fading still over whatever is already in the framebuffer. */
-void owe_still_render_overlay(struct owe_still *s, struct owe_output *out) {
+/* Blend a fading still over whatever is already in the framebuffer. Returns
+ * true when the frame is the last frame of the fade. */
+bool owe_still_render_overlay(struct owe_still *s, struct owe_output *out) {
     struct timespec now;
     float alpha = 1.0f;
+    bool last = true;
     if (!s || !s->tex || !out) {
-        return;
+        return true;
     }
     /* Decode and output delays must not consume the visible transition. */
     if (!s->fade_started) {
@@ -492,6 +514,7 @@ void owe_still_render_overlay(struct owe_still *s, struct owe_output *out) {
         long ms;
         clock_gettime(CLOCK_MONOTONIC, &now);
         ms = elapsed_ms(&s->loaded_at, &now);
+        last = ms >= s->fade_ms;
         if (s->fade_in) {
             alpha = ms < s->fade_ms ? (float)ms / (float)s->fade_ms : 1.0f;
         } else {
@@ -501,6 +524,7 @@ void owe_still_render_overlay(struct owe_still *s, struct owe_output *out) {
         alpha = s->fade_in ? 1.0f : 0.0f;
     }
     owe_egl_draw_texture_overlay(s->egl, out, s->tex, alpha, s->tex_w, s->tex_h);
+    return last;
 }
 
 void owe_still_set_fade_ms(struct owe_still *s, int ms) {
@@ -557,4 +581,8 @@ bool owe_still_needs_frames(struct owe_still *s) {
     if ((s->fade_out || s->fade_in) && !s->fade_started) return true;
     clock_gettime(CLOCK_MONOTONIC, &now);
     return elapsed_ms(&s->loaded_at, &now) < s->fade_ms;
+}
+
+bool owe_still_opaque(struct owe_still *s) {
+    return s && s->tex && s->opaque;
 }

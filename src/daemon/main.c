@@ -180,9 +180,18 @@ bool owed_app_renderer_expected(void) {
 static int switch_to_shell(void) {
     owed_app_t *app = &g_app;
     int64_t now = monotonic_ms();
+    bool held = false;
     if (now < app->shell_retry_at_ms) return -1;
+    /* The shell call can take seconds, and the renderer parks 2 seconds after
+     * it. Hold the current video frame for that time instead of decoding and
+     * committing new frames under the shell's still. */
+    if (strcmp(app->loaded_kind, "video") == 0 && app->render_paused != 1 && !app->render_feeding &&
+        owed_render_is_alive(app->supervisor) && owed_supervisor_pause(app->supervisor) == 0) {
+        held = true;
+    }
     if (app->shell_enabled != 1 && owed_shell_plugin_set(true) != 0) {
         OWE_WARN("shell handoff failed, keeping the renderer for the still");
+        if (held) owed_supervisor_resume(app->supervisor);
         app->shell_retry_at_ms = now + 30000;
         return -1;
     }
@@ -783,6 +792,8 @@ static void check_media_ready(void) {
 }
 
 static char g_last_skip[1024];
+/* The current renderer has the list in g_last_skip. */
+static bool g_skip_synced;
 
 /* Publish the monitors covered by a fullscreen window. The renderer stops
  * swapping buffers for those outputs, which avoids holding compositor
@@ -794,10 +805,14 @@ static void sync_output_skips(void) {
     char *line = NULL;
     size_t used = 0;
     if (!g_app.hypr || !g_app.supervisor || g_app.engine != OWE_ENGINE_RENDERER) {
+        /* The renderer that takes over next can be a new process, or a warm
+         * one with an old list. It must receive the list again, also when the
+         * list is empty. */
+        g_skip_synced = false;
         return;
     }
     covered = owed_hypr_covered_names(g_app.hypr);
-    if (strcmp(covered, g_last_skip) == 0) {
+    if (g_skip_synced && strcmp(covered, g_last_skip) == 0) {
         return;
     }
     used += (size_t)snprintf(array + used, sizeof(array) - used, "[");
@@ -829,6 +844,7 @@ static void sync_output_skips(void) {
     if (asprintf(&line, "{\"cmd\":\"skip\",\"outputs\":%s}", array) >= 0 &&
         owed_supervisor_send(g_app.supervisor, line, NULL, 0) == 0) {
         copy_path(g_last_skip, sizeof(g_last_skip), covered);
+        g_skip_synced = true;
     }
     free(line);
 }
@@ -995,6 +1011,7 @@ void owed_app_on_renderer_restarted(void) {
     g_app.media_ready = false;
     g_app.transition_from[0] = '\0';
     g_last_skip[0] = '\0';
+    g_skip_synced = false;
     owed_supervisor_fade(g_app.supervisor, g_app.config.fade_ms);
     owed_app_apply_policy();
 }

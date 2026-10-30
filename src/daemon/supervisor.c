@@ -17,6 +17,16 @@
 #include "owe_spawn.h"
 #include "xdg.h"
 
+/* A renderer on a slow ARM board can need more than one second to load the GPU
+ * driver and libmpv. The daemon blocks while it waits, so only a renderer that
+ * never creates its socket costs the full wait. With a 1 second stop before
+ * and after it, a restart request still answers within the 10 second reply
+ * timeout of the owe CLI. */
+#define RENDER_START_MS 7000
+/* After a renderer that never created its socket, wait this long before the
+ * next automatic start, so the daemon keeps serving its clients. */
+#define RENDER_RETRY_MS 30000
+
 struct owed_supervisor {
     pid_t child;
     char socket_path[4096];
@@ -98,7 +108,7 @@ static int spawn_render(struct owed_supervisor *s) {
 }
 
 int owed_supervisor_ensure_running(struct owed_supervisor *s) {
-    int waited = 0;
+    int64_t started;
     if (!s) {
         return -1;
     }
@@ -118,21 +128,21 @@ int owed_supervisor_ensure_running(struct owed_supervisor *s) {
     }
     s->restarts++;
     OWE_INFO("owe-render spawned pid=%d (restart #%d)", (int)s->child, s->restarts);
-    while (waited < 1000) {
+    started = monotonic_ms();
+    while (monotonic_ms() < started + RENDER_START_MS) {
         if (waitpid(s->child, NULL, WNOHANG) == s->child) {
             s->child = 0;
             return -1;
         }
         if (render_socket_ready(s->socket_path)) {
+            OWE_INFO("owe-render ready after %lld ms", (long long)(monotonic_ms() - started));
             return 0;
         }
         usleep(50000);
-        waited += 50;
     }
-    OWE_ERROR("owe-render socket never appeared");
-    int64_t retry_at = s->next_restart;
+    OWE_ERROR("owe-render socket never appeared after %d ms", RENDER_START_MS);
     owed_supervisor_stop(s);
-    s->next_restart = retry_at;
+    s->next_restart = monotonic_ms() + RENDER_RETRY_MS;
     return -1;
 }
 

@@ -28,3 +28,12 @@ jobs:
           cmake -S qml-plugin -B build-qml -DBUILD_TESTING=ON
           cmake --build build-qml
           ctest --test-dir build-qml --output-on-failure
+
+  arm64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v5
+      - name: Build, test and play video on arm64
+        run: test/e2e/run.sh linux/arm64
+        env:
+          OWE_E2E_TIMEOUT_MULTIPLIER: 3

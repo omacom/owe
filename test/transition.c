@@ -237,6 +237,8 @@ int main(void) {
     verify(samples[0][2] > 240 && samples[0][0] < 10 &&
            samples[1][2] > 240 && samples[1][0] < 10,
            "a cold MP4 load displays video without a transition image");
+    verify(samples[0][3] == 255 && samples[1][3] == 255 && outputs[0].opaque && outputs[1].opaque,
+           "video frames are opaque and mark the surface opaque");
 
     uint64_t swaps = outputs[0].swaps;
     if (outputs[0].frame_callback) frame_done(&outputs[0], outputs[0].frame_callback, 0);
@@ -395,6 +397,13 @@ int main(void) {
            samples[0][2] < 10 && owe_still_has_image(app.transition) &&
            owe_still_fade_done(app.transition),
            "the intro final frame fades into a held matching still");
+    /* Frame callbacks keep coming, but the held still must not commit again. */
+    run_ms(100);
+    swaps = outputs[0].swaps;
+    uint64_t held_swaps = outputs[1].swaps;
+    run_ms(300);
+    verify(outputs[0].swaps == swaps && outputs[1].swaps == held_swaps,
+           "a held intro still makes no new commits");
     video(0);
     await_video();
     printf("Loop after intro: ready=%d, paused=%d, eof=%d, position=%.3f\n",
@@ -449,6 +458,21 @@ int main(void) {
     run_ms(100);
     verify(!owe_mpv_has_video(app.mpv) && !owe_still_has_image(app.still) && outputs[0].swaps == swaps,
            "parking unloads decoded media without presenting black");
+
+    /* A fading still lets the compositor blend it. After the fade, the still
+     * has no transparent pixel, so each output marks its surface opaque. */
+    command("{\"cmd\":\"fade\",\"ms\":250}");
+    snprintf(line, sizeof(line), "{\"cmd\":\"load\",\"path\":\"%s/red.png\",\"kind\":\"still\"}", root);
+    command(line);
+    {
+        int64_t deadline = now_ms() + 5000;
+        while (!owe_still_has_image(app.still) && now_ms() < deadline) tick();
+    }
+    run_ms(60);
+    bool fade_opaque = outputs[0].opaque || outputs[1].opaque;
+    run_ms(400);
+    verify(!fade_opaque && outputs[0].opaque && outputs[1].opaque && owe_still_opaque(app.still),
+           "a still marks the surface opaque only after its fade");
 
     close(client);
     owe_render_ipc_free(app.ipc);

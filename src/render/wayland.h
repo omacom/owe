@@ -25,6 +25,13 @@ typedef struct owe_output {
     int frame_ready;
     int skip_render;
     int drm_off;
+    /* The last draw was a frame of a running fade, so the next frame
+     * callback draws again. */
+    int fading;
+    /* The opaque region of the surface, and the size that it covers. */
+    int opaque;
+    int32_t opaque_w;
+    int32_t opaque_h;
     int64_t drm_checked_ms;
     uint64_t swaps;
     uint64_t swap_failures;

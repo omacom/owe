@@ -1,0 +1,15 @@
+# VM host image for test/e2e/run-gpu.sh. QEMU emulates arm64, and its
+# virtio-gpu-gl device draws the guest's OpenGL on the host GPU through
+# virglrenderer. Arch Linux gives a current Mesa for current host GPUs.
+FROM archlinux:latest
+
+# The GL display modules need the base virtio-gpu modules, which the packages
+# do not depend on.
+RUN pacman -Syu --noconfirm --needed \
+        qemu-system-aarch64 \
+        qemu-hw-display-virtio-gpu qemu-hw-display-virtio-gpu-pci \
+        qemu-hw-display-virtio-gpu-gl qemu-hw-display-virtio-gpu-pci-gl \
+        qemu-ui-egl-headless qemu-ui-opengl mesa e2fsprogs \
+    && rm -rf /var/cache/pacman/pkg/*
+
+ENTRYPOINT ["/bin/sh", "/src/test/e2e/vm/host.sh"]

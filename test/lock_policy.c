@@ -145,6 +145,19 @@ int main(void) {
     apply();
     CHECK(renderer.feeding && !renderer.paused);
 
+    /* All monitors off pause the video, also with always-animate. */
+    g_app.always_animate = true;
+    hypr.off = true;
+    owed_policy_recompute(g_app.policy);
+    CHECK(owed_policy_should_pause(g_app.policy));
+    CHECK(strcmp(owed_policy_reason(g_app.policy), "dpms-off") == 0);
+    hypr.off = false;
+    owed_policy_recompute(g_app.policy);
+    CHECK(!owed_policy_should_pause(g_app.policy));
+    CHECK(strcmp(owed_policy_reason(g_app.policy), "always-animate") == 0);
+    g_app.always_animate = false;
+    owed_policy_recompute(g_app.policy);
+
     finish_media("/still.png", "still");
     CHECK(!renderer.feeding && !g_app.render_feeding);
     CHECK(strcmp(g_app.loaded_kind, "still") == 0);
@@ -283,6 +296,26 @@ int main(void) {
     owed_app_apply_policy();
     CHECK(g_app.engine == OWE_ENGINE_SHELL);
 
+    /* A video holds its frame while the shell takes the still, so the renderer
+     * decodes and commits nothing until it parks. A failed handoff resumes it. */
+    for (int fail = 1; fail >= 0; fail--) {
+        g_app.engine = OWE_ENGINE_RENDERER;
+        g_app.shell_enabled = 0;
+        g_app.shell_retry_at_ms = 0;
+        g_app.render_paused = 0;
+        renderer.paused = false;
+        strcpy(g_app.loaded_path, "/retry.mp4");
+        strcpy(g_app.loaded_kind, "video");
+        shell_plugin_fail = fail;
+        owed_app_apply_policy();
+        if (fail) {
+            CHECK(g_app.engine == OWE_ENGINE_RENDERER && !renderer.paused);
+        } else {
+            CHECK(g_app.engine == OWE_ENGINE_SHELL && renderer.paused && g_app.render_paused == -1);
+        }
+    }
+    renderer.paused = false;
+
     /* A new renderer receives feed state and media again. */
     g_app.engine = OWE_ENGINE_RENDERER;
     strcpy(g_app.source_path, "/retry.mp4");
@@ -326,6 +359,23 @@ int main(void) {
     strcpy(covered_names, "DP-1,HDMI-A-1");
     sync_output_skips();
     CHECK(skip_sends == 1 && !strcmp(g_last_skip, covered_names));
+    /* A renderer that takes over after the shell gets the list again, also
+     * when the list did not change. A warm renderer can keep an old list, so
+     * an empty list is sent too. */
+    g_app.engine = OWE_ENGINE_SHELL;
+    sync_output_skips();
+    CHECK(skip_sends == 1 && !g_skip_synced);
+    g_app.engine = OWE_ENGINE_RENDERER;
+    sync_output_skips();
+    CHECK(skip_sends == 2 && g_skip_synced && !strcmp(g_last_skip, covered_names));
+    g_app.engine = OWE_ENGINE_SHELL;
+    sync_output_skips();
+    covered_names[0] = '\0';
+    g_app.engine = OWE_ENGINE_RENDERER;
+    sync_output_skips();
+    CHECK(skip_sends == 3 && !*g_last_skip && strstr(supervisor_last, "\"outputs\":[]"));
+    sync_output_skips();
+    CHECK(skip_sends == 3);
     /* A rejected source still is not mistaken for a failed generated poster. */
     power.battery = true;
     renderer.fail_load = true;
