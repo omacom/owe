@@ -1,3 +1,6 @@
+/* Short limits keep the slow-start cases fast. */
+#define RENDER_START_MS 2000
+#define RENDER_LATE_MS 4500
 #include "../src/daemon/supervisor.c"
 #include <stdio.h>
 #include <sys/socket.h>
@@ -61,15 +64,38 @@ int main(void) {
     unlink(slow.socket_path);
     puts("a renderer that starts in 1.5 seconds is accepted");
 
-    /* A renderer that never creates its socket blocks the daemon for the
-     * full wait. The next automatic start must wait, so the daemon can serve
+    /* A renderer that needs longer than the start wait keeps running. The
+     * daemon gets no commands through to it until it has its socket, and
+     * then uses it without a second spawn. */
+    struct owed_supervisor late = {0};
+    snprintf(late.socket_path, sizeof(late.socket_path), "%s/render.sock", dir);
+    socket_after_ms = 3000;
+    before = spawns;
+    CHECK(owed_supervisor_ensure_running(&late) == 1);
+    CHECK(late.child > 0 && owed_supervisor_starting(&late));
+    CHECK(owed_supervisor_send(&late, "{}", NULL, 0) < 0);
+    int64_t deadline = monotonic_ms() + 3000;
+    while (!owed_supervisor_poll_start(&late) && monotonic_ms() < deadline) usleep(20000);
+    CHECK(!owed_supervisor_starting(&late) && late.child > 0);
+    CHECK(owed_supervisor_ensure_running(&late) == 0 && spawns == before + 1);
+    owed_supervisor_stop(&late);
+    unlink(late.socket_path);
+    puts("a renderer that starts in 3 seconds is used when its socket appears");
+
+    /* A renderer that never creates its socket is stopped when its late
+     * time ends. The next automatic start must wait, so the daemon can serve
      * its clients in between. */
     struct owed_supervisor hung = {0};
     snprintf(hung.socket_path, sizeof(hung.socket_path), "%s/render.sock", dir);
     socket_after_ms = 60000;
     before = spawns;
-    CHECK(owed_supervisor_ensure_running(&hung) != 0);
-    CHECK(hung.child == 0 && spawns == before + 1);
+    CHECK(owed_supervisor_ensure_running(&hung) == 1);
+    CHECK(hung.child > 0 && spawns == before + 1);
+    while (owed_supervisor_starting(&hung)) {
+        CHECK(owed_supervisor_poll_start(&hung) == 0);
+        usleep(20000);
+    }
+    CHECK(hung.child == 0);
     CHECK(hung.next_restart >= monotonic_ms() + RENDER_RETRY_MS - 1000);
     CHECK(owed_supervisor_ensure_running(&hung) != 0 && spawns == before + 1);
     CHECK(rmdir(dir) == 0);

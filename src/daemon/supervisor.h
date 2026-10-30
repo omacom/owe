@@ -7,7 +7,12 @@ struct owed_supervisor;
 struct owed_supervisor *owed_supervisor_new(const char *daemon_socket);
 void owed_supervisor_free(struct owed_supervisor *s);
 
+/* Returns 0 when the renderer has its socket, 1 while a slow renderer still
+ * starts, and -1 on failure. */
 int owed_supervisor_ensure_running(struct owed_supervisor *s);
+/* Returns 1 once a renderer that was still starting has its socket. */
+int owed_supervisor_poll_start(struct owed_supervisor *s);
+bool owed_supervisor_starting(struct owed_supervisor *s);
 void owed_supervisor_reap(struct owed_supervisor *s);
 void owed_supervisor_stop(struct owed_supervisor *s);
 

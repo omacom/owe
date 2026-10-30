@@ -6,7 +6,7 @@
 
 struct owed_power { bool locked; bool sleeping; bool battery; };
 struct owed_hypr { bool locked; bool off; bool fullscreen; };
-struct owed_supervisor { int starts; int stops; bool feeding; bool paused; bool fail_start; bool fail_load; int loads; bool down; bool last_hold; };
+struct owed_supervisor { int starts; int stops; bool feeding; bool paused; bool fail_start; bool fail_load; int loads; bool down; bool last_hold; bool late_ready; };
 static char covered_names[1024];
 static int skip_sends;
 static char supervisor_reply[1024] = "{\"status\":\"ok\"}";
@@ -67,6 +67,12 @@ int owed_supervisor_ensure_running(struct owed_supervisor *s) {
     return 0;
 }
 void owed_supervisor_stop(struct owed_supervisor *s) { s->stops++; }
+int owed_supervisor_poll_start(struct owed_supervisor *s) {
+    bool ready = s->late_ready;
+    s->late_ready = false;
+    return ready;
+}
+bool owed_supervisor_starting(struct owed_supervisor *s) { return s->late_ready; }
 static int intro_show_calls;
 int owed_supervisor_intro_show(struct owed_supervisor *s) { (void)s; intro_show_calls++; return 0; }
 int owed_supervisor_fade(struct owed_supervisor *s, int ms) { (void)s; (void)ms; return 0; }
@@ -769,6 +775,38 @@ int main(void) {
         CHECK(renderer.stops == stops);
         CHECK(!strcmp(g_app.loaded_path, "/return.mp4"));
     }
+
+    /* A warm request whose renderer needed longer than the start wait. When
+     * its socket appears, the shell still keeps the still, so the renderer
+     * gets a warm time and stops when the session locks. */
+    strcpy(g_app.source_path, "/still.png");
+    strcpy(g_app.source_kind, "still");
+    g_app.handoff_pending = false;
+    g_app.engine = OWE_ENGINE_SHELL;
+    g_app.shell_enabled = 1;
+    g_app.shell_stop_at_ms = 0;
+    g_app.renderer_warm_until_ms = 0;
+    g_app.renderer_retry_at_ms = monotonic_ms() + 30000;
+    renderer.late_ready = true;
+    poll_late_renderer();
+    CHECK(g_app.renderer_retry_at_ms == 0);
+    CHECK(g_app.renderer_warm_until_ms > monotonic_ms());
+    {
+        int stops = renderer.stops;
+        hypr.locked = true;
+        process_shell_handoff();
+        CHECK(renderer.stops == stops + 1 && g_app.renderer_warm_until_ms == 0);
+        hypr.locked = false;
+    }
+    /* A late renderer that a video takes gets no warm time. */
+    strcpy(g_app.source_path, "/late.mp4");
+    strcpy(g_app.source_kind, "video");
+    g_app.loaded_path[0] = '\0';
+    g_app.renderer_retry_at_ms = monotonic_ms() + 30000;
+    renderer.late_ready = true;
+    poll_late_renderer();
+    CHECK(g_app.handoff_pending && !strcmp(g_app.loaded_path, "/late.mp4"));
+    CHECK(g_app.renderer_warm_until_ms == 0);
 
     owed_policy_free(g_app.policy);
     puts("lock policy and still transition checks passed");

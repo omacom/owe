@@ -22,6 +22,11 @@ from pathlib import Path
 
 root = Path(os.environ["XDG_RUNTIME_DIR"])
 path = Path(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[1] == "--socket" else root / "owe/render.sock"
+slow_start = root / "slow-start"
+if slow_start.exists():
+    delay = float(slow_start.read_text())
+    slow_start.unlink()
+    time.sleep(delay)
 path.parent.mkdir(parents=True, exist_ok=True)
 path.unlink(missing_ok=True)
 server = socket.socket(socket.AF_UNIX)
@@ -405,6 +410,26 @@ def main():
                 check(not any(load["kind"] == "still" and load["path"].endswith("/still.png") for load in loads),
                       "the shell retains normal still wallpaper ownership")
                 print("daemon still-to-video transition command passed")
+
+                # A renderer that needs longer than the 7 second start wait
+                # keeps running, and the daemon reloads the video on it.
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline and call(daemon_socket, "status")["engine"] != "renderer":
+                    time.sleep(0.05)
+                (root / "slow-start").write_text("8")
+                reply = call(daemon_socket, "render-restart")
+                check(reply.get("status") == "ok" and reply.get("starting") is True,
+                      "a slow renderer restart reports that it still starts", json.dumps(reply))
+                deadline = time.monotonic() + 10
+                restarted = []
+                while time.monotonic() < deadline and not restarted:
+                    restarted = [json.loads(line) for line in commands_path.read_text().splitlines()
+                                 if json.loads(line).get("cmd") == "load"][len(loads):]
+                    time.sleep(0.1)
+                check(restarted and restarted[0]["path"] == str(root / "good.mp4"),
+                      "the daemon reloads the video on the slow renderer", json.dumps(restarted))
+                check("socket never appeared" not in (root / "daemon.log").read_text(),
+                      "the daemon does not stop the slow renderer")
             finally:
                 daemon.send_signal(signal.SIGTERM)
                 try:

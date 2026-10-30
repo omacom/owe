@@ -22,16 +22,29 @@
  * never creates its socket costs the full wait. With a 1 second stop before
  * and after it, a restart request still answers within the 10 second reply
  * timeout of the owe CLI. */
+#ifndef RENDER_START_MS
 #define RENDER_START_MS 7000
+#endif
+/* A renderer without a socket after RENDER_START_MS keeps running, and the
+ * main loop takes it when the socket appears. Software GL in a virtual
+ * machine needs about 11 seconds. The time counts from the spawn. */
+#ifndef RENDER_LATE_MS
+#define RENDER_LATE_MS 30000
+#endif
 /* After a renderer that never created its socket, wait this long before the
  * next automatic start, so the daemon keeps serving its clients. */
 #define RENDER_RETRY_MS 30000
+/* A stopped renderer gets this long to exit after SIGTERM, then SIGKILL. */
+#define RENDER_STOP_MS 1000
 
 struct owed_supervisor {
     pid_t child;
     char socket_path[4096];
     int restarts;
     int64_t next_restart;
+    int64_t started;
+    /* Set while a renderer that missed RENDER_START_MS can still start. */
+    int64_t late_until;
 };
 
 static int64_t monotonic_ms(void) {
@@ -107,18 +120,35 @@ static int spawn_render(struct owed_supervisor *s) {
     return owe_spawn("owe-render", argv, &s->child);
 }
 
+/* Returns 1 when the late renderer has its socket. A renderer that is still
+ * without one at late_until is stopped. */
+static int late_start_ready(struct owed_supervisor *s) {
+    if (render_socket_ready(s->socket_path)) {
+        OWE_INFO("owe-render ready after %lld ms", (long long)(monotonic_ms() - s->started));
+        s->late_until = 0;
+        return 1;
+    }
+    if (monotonic_ms() >= s->late_until) {
+        OWE_ERROR("owe-render socket never appeared after %d ms", RENDER_LATE_MS);
+        owed_supervisor_stop(s);
+        s->next_restart = monotonic_ms() + RENDER_RETRY_MS;
+    }
+    return 0;
+}
+
 int owed_supervisor_ensure_running(struct owed_supervisor *s) {
-    int64_t started;
     if (!s) {
         return -1;
     }
     if (s->child > 0) {
         pid_t w = waitpid(s->child, NULL, WNOHANG);
         if (w == 0) {
-            return 0;
+            if (!s->late_until || late_start_ready(s)) return 0;
+            return s->late_until ? 1 : -1;
         }
         if (w < 0 && errno != ECHILD) return -1;
         s->child = 0;
+        s->late_until = 0;
     }
     if (monotonic_ms() < s->next_restart) return -1;
     s->next_restart = monotonic_ms() + 2000;
@@ -128,22 +158,32 @@ int owed_supervisor_ensure_running(struct owed_supervisor *s) {
     }
     s->restarts++;
     OWE_INFO("owe-render spawned pid=%d (restart #%d)", (int)s->child, s->restarts);
-    started = monotonic_ms();
-    while (monotonic_ms() < started + RENDER_START_MS) {
+    s->started = monotonic_ms();
+    while (monotonic_ms() < s->started + RENDER_START_MS) {
         if (waitpid(s->child, NULL, WNOHANG) == s->child) {
             s->child = 0;
             return -1;
         }
         if (render_socket_ready(s->socket_path)) {
-            OWE_INFO("owe-render ready after %lld ms", (long long)(monotonic_ms() - started));
+            OWE_INFO("owe-render ready after %lld ms", (long long)(monotonic_ms() - s->started));
             return 0;
         }
         usleep(50000);
     }
-    OWE_ERROR("owe-render socket never appeared after %d ms", RENDER_START_MS);
-    owed_supervisor_stop(s);
-    s->next_restart = monotonic_ms() + RENDER_RETRY_MS;
-    return -1;
+    OWE_WARN("owe-render has no socket after %d ms, the main loop waits for it until %d ms",
+             RENDER_START_MS, RENDER_LATE_MS);
+    s->late_until = s->started + RENDER_LATE_MS;
+    return 1;
+}
+
+int owed_supervisor_poll_start(struct owed_supervisor *s) {
+    if (!s || !s->late_until) return 0;
+    if (!owed_render_is_alive(s)) return 0;
+    return late_start_ready(s);
+}
+
+bool owed_supervisor_starting(struct owed_supervisor *s) {
+    return s && s->late_until;
 }
 
 void owed_supervisor_reap(struct owed_supervisor *s) {
@@ -157,25 +197,25 @@ void owed_supervisor_reap(struct owed_supervisor *s) {
     if (w == s->child || (w < 0 && errno == ECHILD)) {
         OWE_WARN("owe-render pid=%d exited status=%d", (int)s->child, status);
         s->child = 0;
+        s->late_until = 0;
     }
 }
 
 void owed_supervisor_stop(struct owed_supervisor *s) {
     if (!s) return;
     s->next_restart = 0;
+    s->late_until = 0;
     if (s->child <= 0) return;
     kill(s->child, SIGTERM);
     {
-        int waited = 0;
-        while (waited < 1000) {
+        int64_t deadline = monotonic_ms() + RENDER_STOP_MS;
+        bool exited = false;
+        while (!exited && monotonic_ms() < deadline) {
             pid_t w = waitpid(s->child, NULL, WNOHANG);
-            if (w == s->child || (w < 0 && errno == ECHILD)) {
-                break;
-            }
-            usleep(50000);
-            waited += 50;
+            exited = w == s->child || (w < 0 && errno == ECHILD);
+            if (!exited) usleep(50000);
         }
-        if (waited >= 1000) {
+        if (!exited) {
             kill(s->child, SIGKILL);
             while (waitpid(s->child, NULL, 0) < 0 && errno == EINTR) {}
         }
@@ -191,8 +231,9 @@ int owed_supervisor_send(struct owed_supervisor *s, const char *line, char *repl
     }
     if (reply && reply_len) reply[0] = '\0';
     /* Only the daemon's restart path may spawn: it also resets loaded-media
-     * and playback state. A send must never silently create an empty renderer. */
-    if (!owed_render_is_alive(s)) {
+     * and playback state. A send must never silently create an empty renderer.
+     * A late renderer gets commands after the main loop has taken it. */
+    if (!owed_render_is_alive(s) || s->late_until) {
         return -1;
     }
     fd = owe_ipc_connect(s->socket_path);
