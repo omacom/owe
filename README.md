@@ -240,7 +240,9 @@ media is silent. Source files remain intact.
   enables the shell background plugin, stops `owe-render`, and keeps only
   the 4 MiB daemon. A video or GIF starts the renderer again.
 - Video renders only when `libmpv` signals a new frame. The render rate
-  tracks the media frame rate, not the display refresh rate.
+  tracks the media frame rate, not the display refresh rate. A fade draws
+  on each frame callback until it ends. A still that stays on screen does
+  not commit again.
 - A switch from a still to a video crossfades. The renderer draws the
   outgoing still over the incoming video and fades it out.
 - Video draws straight into the window framebuffer. No intermediate

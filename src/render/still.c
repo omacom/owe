@@ -448,16 +448,20 @@ const char *owe_still_path(struct owe_still *s) {
     return s ? s->path : "";
 }
 
-void owe_still_render_output(struct owe_still *s, struct owe_output *out) {
+/* Returns true when the frame is the last frame of the fade. The alpha and the
+ * result come from 1 clock read, so they cannot disagree at the fade end. */
+bool owe_still_render_output(struct owe_still *s, struct owe_output *out) {
     struct timespec now;
     float alpha = 1.0f;
+    bool last = true;
     if (!s || !s->tex || !out) {
-        return;
+        return true;
     }
     if (s->fade_ms > 0) {
         long ms;
         clock_gettime(CLOCK_MONOTONIC, &now);
         ms = elapsed_ms(&s->loaded_at, &now);
+        last = ms >= s->fade_ms;
         if (s->fade_out) {
             alpha = ms < s->fade_ms ? 1.0f - (float)ms / (float)s->fade_ms : 0.0f;
         } else if (ms < s->fade_ms) {
@@ -467,6 +471,7 @@ void owe_still_render_output(struct owe_still *s, struct owe_output *out) {
         alpha = 0.0f;
     }
     owe_egl_draw_texture(s->egl, out, s->tex, alpha, s->tex_w, s->tex_h);
+    return last;
 }
 
 void owe_still_render_opaque(struct owe_still *s, struct owe_output *out) {
@@ -476,12 +481,14 @@ void owe_still_render_opaque(struct owe_still *s, struct owe_output *out) {
     owe_egl_draw_texture(s->egl, out, s->tex, 1.0f, s->tex_w, s->tex_h);
 }
 
-/* Blend a fading still over whatever is already in the framebuffer. */
-void owe_still_render_overlay(struct owe_still *s, struct owe_output *out) {
+/* Blend a fading still over whatever is already in the framebuffer. Returns
+ * true when the frame is the last frame of the fade. */
+bool owe_still_render_overlay(struct owe_still *s, struct owe_output *out) {
     struct timespec now;
     float alpha = 1.0f;
+    bool last = true;
     if (!s || !s->tex || !out) {
-        return;
+        return true;
     }
     /* Decode and output delays must not consume the visible transition. */
     if (!s->fade_started) {
@@ -492,6 +499,7 @@ void owe_still_render_overlay(struct owe_still *s, struct owe_output *out) {
         long ms;
         clock_gettime(CLOCK_MONOTONIC, &now);
         ms = elapsed_ms(&s->loaded_at, &now);
+        last = ms >= s->fade_ms;
         if (s->fade_in) {
             alpha = ms < s->fade_ms ? (float)ms / (float)s->fade_ms : 1.0f;
         } else {
@@ -501,6 +509,7 @@ void owe_still_render_overlay(struct owe_still *s, struct owe_output *out) {
         alpha = s->fade_in ? 1.0f : 0.0f;
     }
     owe_egl_draw_texture_overlay(s->egl, out, s->tex, alpha, s->tex_w, s->tex_h);
+    return last;
 }
 
 void owe_still_set_fade_ms(struct owe_still *s, int ms) {

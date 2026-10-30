@@ -395,6 +395,13 @@ int main(void) {
            samples[0][2] < 10 && owe_still_has_image(app.transition) &&
            owe_still_fade_done(app.transition),
            "the intro final frame fades into a held matching still");
+    /* Frame callbacks keep coming, but the held still must not commit again. */
+    run_ms(100);
+    swaps = outputs[0].swaps;
+    uint64_t held_swaps = outputs[1].swaps;
+    run_ms(300);
+    verify(outputs[0].swaps == swaps && outputs[1].swaps == held_swaps,
+           "a held intro still makes no new commits");
     video(0);
     await_video();
     printf("Loop after intro: ready=%d, paused=%d, eof=%d, position=%.3f\n",

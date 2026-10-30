@@ -25,6 +25,9 @@ typedef struct owe_output {
     int frame_ready;
     int skip_render;
     int drm_off;
+    /* The last draw was a frame of a running fade, so the next frame
+     * callback draws again. */
+    int fading;
     int64_t drm_checked_ms;
     uint64_t swaps;
     uint64_t swap_failures;

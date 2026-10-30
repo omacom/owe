@@ -34,6 +34,7 @@ or stalled output stops the draw loop instead of blocking inside the
 graphics driver. An output whose DRM connector reports DPMS off is
 skipped. The daemon also publishes the monitors covered by a fullscreen
 window, and the renderer stops swapping buffers for those outputs.
+A frame callback starts a new draw only while a fade runs.
 `mpv_render_context_render` writes directly into the window
 framebuffer. No intermediate framebuffer or blit exists.
 

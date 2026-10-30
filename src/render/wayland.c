@@ -194,14 +194,14 @@ static const struct wl_callback_listener frame_listener = {
 
 static void frame_done(void *data, struct wl_callback *cb, uint32_t time) {
     owe_output_t *out = data;
-    owe_app_t *app = owe_app_get();
     (void)time;
     wl_callback_destroy(cb);
     out->frame_callback = NULL;
-    /* Animate stills and transition overlays when the compositor is ready.
-     * Outside transitions, mpv controls the video frame rate. */
+    /* Draw the next frame of a running fade when the compositor is ready.
+     * mpv frames and state changes start all other draws, so a still that
+     * stays on screen does not commit again on each callback. */
     out->frame_ready = 1;
-    if (app && (owe_still_has_image(app->still) || owe_still_has_image(app->transition))) {
+    if (out->fading) {
         out->frame_pending = 1;
     }
 }
@@ -622,6 +622,8 @@ void owe_wayland_render_pending(struct owe_wayland *wl) {
             struct wl_callback *cb;
             bool video_drawn = false;
             bool transition_drawn = false;
+            /* The drawn still or overlay is not at the end of its fade yet. */
+            bool fading = false;
             if (!out->configured || !out->frame_pending || !out->egl_surface) {
                 continue;
             }
@@ -646,7 +648,7 @@ void owe_wayland_render_pending(struct owe_wayland *wl) {
                 owe_mpv_render_output(app->mpv, out);
                 video_drawn = true;
             } else if (app->still && owe_still_has_image(app->still)) {
-                owe_still_render_output(app->still, out);
+                fading = !owe_still_render_output(app->still, out);
             } else if (app->mpv && owe_mpv_has_video(app->mpv)) {
                 owe_mpv_render_output(app->mpv, out);
                 video_drawn = true;
@@ -662,9 +664,10 @@ void owe_wayland_render_pending(struct owe_wayland *wl) {
                 owe_egl_clear_output(app->egl, out, 0.0f, 0.0f, 0.0f, 1.0f);
             }
             if (video_drawn && owe_still_has_image(app->transition)) {
-                owe_still_render_overlay(app->transition, out);
+                fading = !owe_still_render_overlay(app->transition, out);
                 transition_drawn = true;
             }
+            out->fading = fading;
             /* Re-read the connector state without the cache. A blank between
              * the check above and this swap would block inside Mesa until the
              * screen returns. */
