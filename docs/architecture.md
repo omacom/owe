@@ -42,6 +42,10 @@ A crossfade over video keeps the region, because the video keeps the
 alpha at 1.
 `mpv_render_context_render` writes directly into the window
 framebuffer. No intermediate framebuffer or blit exists.
+Before the first frame, the render thread reads no mpv property synchronously.
+The core can wait for that thread while it starts a decoder, and such a read
+then stalls both for 200 ms. The video size and `hwdec-current` arrive as
+property events. `time-pos` is read only after the first frame.
 
 The blit shader owns one VAO, one VBO, and one program. Still images
 apply a cover crop in the fragment shader: the visible UV sub-rect is
