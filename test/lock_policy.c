@@ -243,9 +243,14 @@ int main(void) {
     g_app.loaded_kind[0] = '\0';
     int loads_before_handoff = renderer.loads;
     shell_plugin_calls = 0;
+    /* The renderer still holds the frame it paused for the shell. The new
+     * video plays behind the still, so its fade reveals moving frames. */
+    renderer.paused = true;
+    g_app.render_paused = -1;
     owed_app_apply_policy();
     CHECK(g_app.engine == OWE_ENGINE_SHELL && g_app.shell_enabled == 1 && g_app.handoff_pending);
     CHECK(renderer.loads == loads_before_handoff + 1 && shell_plugin_calls == 0);
+    CHECK(!renderer.paused && g_app.render_paused == 0);
     strcpy(supervisor_reply, "{\"status\":\"ok\",\"ready\":false,\"error\":\"\"}");
     check_media_ready();
     CHECK(g_app.engine == OWE_ENGINE_SHELL && g_app.handoff_pending && shell_plugin_calls == 0);

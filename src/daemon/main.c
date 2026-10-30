@@ -139,7 +139,10 @@ static int apply_feed_state(void) {
 static void apply_playback_state(void) {
     owed_app_t *app = &g_app;
     int want;
-    if (!app->supervisor || app->engine != OWE_ENGINE_RENDERER) {
+    /* A video that loads behind the shell's still plays, so its fade reveals
+     * moving frames. A renderer that held its frame for the shell stays paused
+     * until it gets this resume. */
+    if (!app->supervisor || (app->engine != OWE_ENGINE_RENDERER && !app->handoff_pending)) {
         return;
     }
     if (apply_feed_state()) {
