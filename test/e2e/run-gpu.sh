@@ -8,6 +8,8 @@
 #
 # The host needs Docker, a binfmt rule for arm64 and a GPU render node. Set
 # OWE_E2E_RENDER_NODE to use a render node other than /dev/dri/renderD128.
+# The script stops the virtual machine after 1800 seconds. To change this
+# limit, set OWE_E2E_VM_TIMEOUT to a number of seconds.
 # Set OWE_E2E_HWDEC to an mpv hwdec value, such as vaapi, to decode through
 # virgl. The check then fails if mpv does not decode with that value. This
 # needs a QEMU that turns on virglrenderer video decode. QEMU 11.1 does not,
@@ -52,5 +54,5 @@ docker build -t owe-e2e-vm-host -f "$root/test/e2e/vm/Dockerfile.host" "$root/te
 
 guest=$(docker create --platform linux/arm64 owe-e2e-guest:linux-arm64)
 docker export "$guest" | docker run --rm -i --device "$render" \
-    -e OWE_E2E_RENDER_NODE="$render" -e OWE_E2E_TIMEOUT -e OWE_E2E_VM_CPUS -e OWE_E2E_HWDEC \
+    -e OWE_E2E_RENDER_NODE="$render" -e OWE_E2E_TIMEOUT -e OWE_E2E_VM_TIMEOUT -e OWE_E2E_VM_CPUS -e OWE_E2E_HWDEC \
     -v "$root:/src:ro" -v "$work:/owe-bin:ro" owe-e2e-vm-host

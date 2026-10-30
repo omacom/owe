@@ -416,6 +416,8 @@ QEMU sends the guest's OpenGL calls to the host GPU through virglrenderer, so th
 QEMU runs in a Docker container that gets only the GPU render node, so the host needs no QEMU packages.
 The check fails if the renderer reports llvmpipe.
 To use a render node other than `/dev/dri/renderD128`, set `OWE_E2E_RENDER_NODE`.
+The script stops the virtual machine after 30 minutes and fails the check.
+To change this limit, set `OWE_E2E_VM_TIMEOUT` to a number of seconds.
 The guest uses the virgl driver, so this run does not test ARM GPU drivers such as V3D, Panfrost, or Freedreno.
 The guest image has the virgl VA-API driver, but QEMU 11.1 does not turn on virglrenderer video decode.
 So the guest gets no decode profile and uses software decode.

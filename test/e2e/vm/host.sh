@@ -6,6 +6,7 @@ set -eu
 
 render=${OWE_E2E_RENDER_NODE:-/dev/dri/renderD128}
 timeout=${OWE_E2E_TIMEOUT:-300}
+vm_timeout=${OWE_E2E_VM_TIMEOUT:-1800}
 cpus=${OWE_E2E_VM_CPUS:-4}
 hwdec=${OWE_E2E_HWDEC:-}
 
@@ -19,16 +20,29 @@ mkfs.ext4 -q -L owe-root -d /rootfs /rootfs.ext4 "${size}M"
 rm -rf /rootfs
 
 echo "== Boot arm64 virtual machine with a virtio GPU on $render"
-qemu-system-aarch64 \
-    -machine virt -accel tcg,thread=multi -cpu max,pauth-impdef=on -smp "$cpus" -m 4096 \
-    -kernel /vmlinuz -initrd /initrd.img \
-    -append "root=/dev/vda rw console=ttyAMA0 quiet loglevel=3 init=/usr/local/sbin/owe-vm-init owe_timeout=$timeout${hwdec:+ owe_hwdec=$hwdec}" \
-    -drive if=virtio,format=raw,file=/rootfs.ext4 \
-    -virtfs local,path=/src,mount_tag=src,security_model=none,readonly=on \
-    -virtfs local,path=/owe-bin,mount_tag=bin,security_model=none,readonly=on \
-    -device virtio-gpu-gl-pci -display egl-headless,rendernode="$render" \
-    -nodefaults -serial stdio -no-reboot | tee /console.log
+# owe_timeout limits each wait of the guest checks. This limit also stops a
+# guest that hangs at boot or in a GPU call.
+{
+    status=0
+    timeout -k 10 "$vm_timeout" qemu-system-aarch64 \
+        -machine virt -accel tcg,thread=multi -cpu max,pauth-impdef=on -smp "$cpus" -m 4096 \
+        -kernel /vmlinuz -initrd /initrd.img \
+        -append "root=/dev/vda rw console=ttyAMA0 quiet loglevel=3 init=/usr/local/sbin/owe-vm-init owe_timeout=$timeout${hwdec:+ owe_hwdec=$hwdec}" \
+        -drive if=virtio,format=raw,file=/rootfs.ext4 \
+        -virtfs local,path=/src,mount_tag=src,security_model=none,readonly=on \
+        -virtfs local,path=/owe-bin,mount_tag=bin,security_model=none,readonly=on \
+        -device virtio-gpu-gl-pci -display egl-headless,rendernode="$render" \
+        -nodefaults -serial stdio -no-reboot || status=$?
+    echo "$status" > /qemu.status
+} | tee /console.log
 
+case $(cat /qemu.status) in
+    124|137)
+        echo "The virtual machine did not stop within $vm_timeout seconds, so the script stopped it." >&2
+        echo "To allow more time, set OWE_E2E_VM_TIMEOUT to a number of seconds." >&2
+        exit 1
+        ;;
+esac
 result=$(sed -n 's/.*OWE_VM_RESULT=\([0-9]*\).*/\1/p' /console.log | tail -n 1)
 if [ -z "$result" ]; then
     echo "The virtual machine stopped before the playback check ended." >&2
