@@ -187,11 +187,11 @@ and sleep. Reasons in priority order:
 
 1. `manual` pause from `owe pause`.
 2. `sleep` pauses playback before suspend.
-3. `always-animate` bypasses automatic pause rules.
-4. `idle` pause from the `owe-idle` helper.
-5. `locked` follows logind or Hyprland session state.
-6. `dpms-off` applies when every connected monitor reports a known off state.
+3. `dpms-off` applies when every connected monitor reports a known off state.
    Missing DRM data falls back to Hyprland state.
+4. `always-animate` bypasses the automatic pause rules below it.
+5. `idle` pause from the `owe-idle` helper.
+6. `locked` follows logind or Hyprland session state.
 7. `battery` holds or replaces playback while on battery. Off by default.
    Set `battery_mode = "pause"` to hold the current frame, or
    `battery_mode = "poster"` to show a still poster. `battery_poster = true`
@@ -206,7 +206,7 @@ and it sets the idle pause. `owe resume` clears only the manual pause,
 so an idle resume never releases a manual pause.
 
 To bypass automatic pause rules, run `owe always-animate on`.
-Manual pause and sleep still take precedence.
+Manual pause, sleep and DPMS off still take precedence.
 
 A locked session can keep video moving through the muted lock feed instead
 of the desktop layer. The feed honors manual pause, sleep, DPMS, idle,

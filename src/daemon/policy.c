@@ -51,6 +51,12 @@ void owed_policy_recompute(struct owed_policy *p) {
         reason = "sleep";
         goto done;
     }
+    /* No output shows the wallpaper, so always-animate has nothing to show. */
+    if (app->hypr && owed_hypr_all_monitors_off(app->hypr)) {
+        pause = true;
+        reason = "dpms-off";
+        goto done;
+    }
     if (app->always_animate) {
         reason = "always-animate";
         goto done;
@@ -64,11 +70,6 @@ void owed_policy_recompute(struct owed_policy *p) {
         (app->hypr && owed_hypr_locked(app->hypr))) {
         pause = true;
         reason = "locked";
-        goto done;
-    }
-    if (app->hypr && owed_hypr_all_monitors_off(app->hypr)) {
-        pause = true;
-        reason = "dpms-off";
         goto done;
     }
     if (app->power && owed_power_on_battery(app->power)) {

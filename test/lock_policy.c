@@ -145,6 +145,19 @@ int main(void) {
     apply();
     CHECK(renderer.feeding && !renderer.paused);
 
+    /* All monitors off pause the video, also with always-animate. */
+    g_app.always_animate = true;
+    hypr.off = true;
+    owed_policy_recompute(g_app.policy);
+    CHECK(owed_policy_should_pause(g_app.policy));
+    CHECK(strcmp(owed_policy_reason(g_app.policy), "dpms-off") == 0);
+    hypr.off = false;
+    owed_policy_recompute(g_app.policy);
+    CHECK(!owed_policy_should_pause(g_app.policy));
+    CHECK(strcmp(owed_policy_reason(g_app.policy), "always-animate") == 0);
+    g_app.always_animate = false;
+    owed_policy_recompute(g_app.policy);
+
     finish_media("/still.png", "still");
     CHECK(!renderer.feeding && !g_app.render_feeding);
     CHECK(strcmp(g_app.loaded_kind, "still") == 0);
