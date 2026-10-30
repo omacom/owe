@@ -15,6 +15,36 @@ static EGLBoolean test_swap_buffers(EGLDisplay display, EGLSurface surface) {
 #include "../src/render/egl.c"
 #undef eglSwapBuffers
 #include "../src/render/wayland.c"
+
+/* Count the GL fences that mpv holds. */
+static int live_fences;
+static PFNGLFENCESYNCPROC real_fence_sync;
+static PFNGLDELETESYNCPROC real_delete_sync;
+static GLsync test_fence_sync(GLenum condition, GLbitfield flags) {
+    GLsync sync = real_fence_sync(condition, flags);
+    if (sync) live_fences++;
+    return sync;
+}
+static void test_delete_sync(GLsync sync) {
+    if (sync) live_fences--;
+    real_delete_sync(sync);
+}
+static __eglMustCastToProperFunctionPointerType test_get_proc_address(const char *name) {
+    __eglMustCastToProperFunctionPointerType fn = eglGetProcAddress(name);
+    if (!strcmp(name, "glFenceSync")) {
+        real_fence_sync = (PFNGLFENCESYNCPROC)fn;
+        return (__eglMustCastToProperFunctionPointerType)test_fence_sync;
+    }
+    if (!strcmp(name, "glDeleteSync")) {
+        real_delete_sync = (PFNGLDELETESYNCPROC)fn;
+        return (__eglMustCastToProperFunctionPointerType)test_delete_sync;
+    }
+    return fn;
+}
+
+#define eglGetProcAddress test_get_proc_address
+#include "../src/render/mpv.c"
+#undef eglGetProcAddress
 #include "render_ipc.h"
 #include "common_ipc.h"
 #include "owe_spawn.h"
@@ -239,6 +269,14 @@ int main(void) {
            "a cold MP4 load displays video without a transition image");
     verify(samples[0][3] == 255 && samples[1][3] == 255 && outputs[0].opaque && outputs[1].opaque,
            "video frames are opaque and mark the surface opaque");
+    {
+        int fences = live_fences;
+        uint64_t start = outputs[0].swaps + outputs[1].swaps;
+        int64_t deadline = now_ms() + 5000;
+        while (outputs[0].swaps + outputs[1].swaps < start + 20 && now_ms() < deadline) tick();
+        verify(outputs[0].swaps + outputs[1].swaps >= start + 20 && live_fences == fences,
+               "rendered video frames leave no GL fences behind");
+    }
 
     uint64_t swaps = outputs[0].swaps;
     if (outputs[0].frame_callback) frame_done(&outputs[0], outputs[0].frame_callback, 0);
