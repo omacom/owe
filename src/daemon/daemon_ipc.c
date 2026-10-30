@@ -330,9 +330,13 @@ static void handle_command(void *context, struct owe_ipc_client *c, const char *
             return;
         }
         owed_supervisor_stop(app->supervisor);
-        if (owed_supervisor_ensure_running(app->supervisor) == 0) {
+        int started = owed_supervisor_ensure_running(app->supervisor);
+        if (started == 0) {
             owed_app_on_renderer_restarted();
             send_ok(c, NULL);
+        } else if (started > 0) {
+            /* The main loop reloads the media when the socket appears. */
+            send_ok(c, "\"starting\":true");
         } else {
             send_err(c, "render restart failed");
         }

@@ -221,11 +221,14 @@ static int switch_to_shell(void) {
 static int ensure_renderer(void) {
     owed_app_t *app = &g_app;
     int64_t now = monotonic_ms();
+    int rc;
     if (app->renderer_retry_at_ms && now < app->renderer_retry_at_ms) {
         return -1;
     }
-    if (owed_supervisor_ensure_running(app->supervisor) != 0) {
-        OWE_ERROR("renderer start failed");
+    rc = owed_supervisor_ensure_running(app->supervisor);
+    if (rc != 0) {
+        /* The main loop clears the retry when a slow renderer gets its socket. */
+        if (rc < 0) OWE_ERROR("renderer start failed");
         app->renderer_retry_at_ms = now + 30000;
         return -1;
     }
@@ -1346,7 +1349,8 @@ int main(int argc, char **argv) {
         rc = poll(pfds, (nfds_t)n,
                   (g_app.intro_active && g_app.intro_phase == OWE_INTRO_PREPARING) ||
                           g_app.handoff_pending || g_app.transition_release_pending ? 16 :
-                  (have_job || g_app.media_pending || g_app.intro_active) ? 200 : 1000);
+                  (have_job || g_app.media_pending || g_app.intro_active ||
+                   owed_supervisor_starting(g_app.supervisor)) ? 200 : 1000);
         if (rc < 0) {
             if (errno == EINTR) {
                 continue;
@@ -1372,9 +1376,10 @@ int main(int argc, char **argv) {
                 if (g_app.running && g_app.engine == OWE_ENGINE_RENDERER &&
                     !g_app.intro_active && !owed_render_is_alive(g_app.supervisor)) {
                     OWE_WARN("renderer died, restarting");
-                    if (owed_supervisor_ensure_running(g_app.supervisor) == 0) {
+                    int started = owed_supervisor_ensure_running(g_app.supervisor);
+                    if (started == 0) {
                         owed_app_on_renderer_restarted();
-                    } else {
+                    } else if (started < 0) {
                         OWE_ERROR("renderer restart failed");
                     }
                 }
@@ -1393,6 +1398,12 @@ int main(int argc, char **argv) {
         owed_ipc_poll_clients(g_app.ipc);
         if (!g_app.running) break;
         owed_power_poll(g_app.power);
+        /* A renderer that was still starting after the start wait is used
+         * once its socket appears. */
+        if (owed_supervisor_poll_start(g_app.supervisor)) {
+            g_app.renderer_retry_at_ms = 0;
+            if (g_app.engine == OWE_ENGINE_RENDERER) owed_app_on_renderer_restarted();
+        }
         check_media_ready();
         release_held_transition();
         owed_app_poll_intro();
