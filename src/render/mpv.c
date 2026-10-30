@@ -534,16 +534,16 @@ static int render_frame(struct owe_mpv *m, int w, int h, FILE *snapshot) {
     if (glCheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE) {
         rc = owe_mpv_render_fbo(m, (int)fbo, w, h);
         if (rc == 0 && snapshot) {
-            size_t size = (size_t)w * (size_t)h * 3;
-            unsigned char *pixels = malloc(size);
+            /* OpenGL ES guarantees only RGBA reads, so drop the alpha byte for the PPM. */
+            size_t count = (size_t)w * (size_t)h;
+            unsigned char *pixels = malloc(count * 4);
             rc = -1;
             if (pixels) {
                 glBindFramebuffer(GL_FRAMEBUFFER, fbo);
-                glPixelStorei(GL_PACK_ALIGNMENT, 1);
-                glReadPixels(0, 0, w, h, GL_RGB, GL_UNSIGNED_BYTE, pixels);
-                glPixelStorei(GL_PACK_ALIGNMENT, 4);
+                glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+                for (size_t i = 0; i < count; i++) memmove(pixels + i * 3, pixels + i * 4, 3);
                 if (glGetError() == GL_NO_ERROR && fprintf(snapshot, "P6\n%d %d\n255\n", w, h) > 0 &&
-                    fwrite(pixels, 1, size, snapshot) == size) rc = 0;
+                    fwrite(pixels, 1, count * 3, snapshot) == count * 3) rc = 0;
                 free(pixels);
             }
         }

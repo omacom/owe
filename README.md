@@ -250,6 +250,8 @@ media is silent. Source files remain intact.
   output covered by a fullscreen window stops swapping buffers.
 - Hardware decode is on by default (`hwdec=auto-safe`). Override with
   the `OWE_HWDEC` environment variable.
+- The renderer uses desktop OpenGL 3.2 or later. If the driver has no
+  such context, as on some ARM SoCs, the renderer uses OpenGL ES 3.0 or later.
 - `libmpv` runs without its lua scripts. The ytdl hook, stats overlay,
   console, and the other scripts only add threads and memory. Advanced
   mpv tuning uses `OWE_MPV_OPTIONS`, a semicolon separated list such as

@@ -22,6 +22,11 @@ The service executable path identifies the daemon that systemd actually starts.
 The current source build logs the EGL vendor, OpenGL renderer, OpenGL version, and requested hardware decoder.
 It also sends libmpv warnings and errors to the journal.
 
+If the driver has no desktop OpenGL 3.2 context, the log shows `eglCreateContext OpenGL failed`.
+The next OpenGL line then shows an `OpenGL ES` version.
+This is the expected fallback on some ARM SoCs, such as Raspberry Pi V3D and Mali on Panfrost.
+If both APIs fail, the log shows `no OpenGL 3.2 or OpenGL ES 3.0 context is available`.
+
 For NVIDIA reports, include these results:
 
 ```bash

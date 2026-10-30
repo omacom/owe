@@ -1,5 +1,6 @@
 #include "egl.h"
 
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -30,10 +31,16 @@ struct owe_egl {
     EGLConfig config;
     EGLSurface current;
     struct owe_gl_prog blit;
+    bool gles;
 };
 
-static const char *vs_src = "#version 150\n"
-                            "in vec2 pos;\n"
+/* The shader bodies are valid GLSL 1.50 and GLSL ES 3.00. Texture coordinates
+ * need highp, because mediump cannot address each texel of a 4K frame. */
+static const char *glsl_header = "#version 150\n";
+static const char *glsl_es_header = "#version 300 es\n"
+                                    "precision highp float;\n";
+
+static const char *vs_src = "in vec2 pos;\n"
                             "in vec2 uv;\n"
                             "out vec2 vuv;\n"
                             "void main() {\n"
@@ -41,8 +48,7 @@ static const char *vs_src = "#version 150\n"
                             "  gl_Position = vec4(pos, 0.0, 1.0);\n"
                             "}\n";
 
-static const char *fs_src = "#version 150\n"
-                            "in vec2 vuv;\n"
+static const char *fs_src = "in vec2 vuv;\n"
                             "uniform sampler2D tex;\n"
                             "uniform float alpha;\n"
                             "uniform vec2 uv_offset;\n"
@@ -55,11 +61,12 @@ static const char *fs_src = "#version 150\n"
                             "  frag = vec4(c.rgb * a, a);\n"
                             "}\n";
 
-static GLuint compile_shader(GLenum type, const char *src) {
+static GLuint compile_shader(GLenum type, bool gles, const char *src) {
     GLuint sh = glCreateShader(type);
     GLint ok = 0;
+    const char *srcs[] = { gles ? glsl_es_header : glsl_header, src };
     if (!sh) return 0;
-    glShaderSource(sh, 1, &src, NULL);
+    glShaderSource(sh, 2, srcs, NULL);
     glCompileShader(sh);
     glGetShaderiv(sh, GL_COMPILE_STATUS, &ok);
     if (!ok) {
@@ -74,7 +81,7 @@ static GLuint compile_shader(GLenum type, const char *src) {
     return sh;
 }
 
-static int blit_init(struct owe_gl_prog *b) {
+static int blit_init(struct owe_gl_prog *b, bool gles) {
     /* Image row 0 is the top row, which GL treats as v=0. Map v=0 to the top
      * of the quad (y=+1) so stills are not flipped vertically. */
     static const float verts[] = {
@@ -83,8 +90,8 @@ static int blit_init(struct owe_gl_prog *b) {
     };
     GLuint vs;
     GLuint fs;
-    vs = compile_shader(GL_VERTEX_SHADER, vs_src);
-    fs = compile_shader(GL_FRAGMENT_SHADER, fs_src);
+    vs = compile_shader(GL_VERTEX_SHADER, gles, vs_src);
+    fs = compile_shader(GL_FRAGMENT_SHADER, gles, fs_src);
     if (!vs || !fs) {
         if (vs) glDeleteShader(vs);
         if (fs) glDeleteShader(fs);
@@ -139,21 +146,54 @@ static int blit_init(struct owe_gl_prog *b) {
     return 0;
 }
 
+/* Create a desktop OpenGL 3.2 or later context, or an OpenGL ES 3.0 or later
+ * context when gles is set. Logs why the API is not available. */
+static bool create_context(struct owe_egl *e, bool gles) {
+    const char *api = gles ? "OpenGL ES" : "OpenGL";
+    EGLint ncfg = 0;
+    EGLint cfg_attribs[] = {
+        EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
+        EGL_RENDERABLE_TYPE, gles ? EGL_OPENGL_ES3_BIT : EGL_OPENGL_BIT,
+        EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8, EGL_NONE,
+    };
+    static const EGLint gl_versions[][2] = {
+        { 4, 6 }, { 4, 5 }, { 4, 4 }, { 4, 3 }, { 4, 2 }, { 4, 1 }, { 4, 0 },
+        { 3, 3 }, { 3, 2 }, { 0, 0 },
+    };
+    /* EGL returns the newest OpenGL ES version that is compatible with 3.0. */
+    static const EGLint es_versions[][2] = { { 3, 0 }, { 0, 0 } };
+    const EGLint (*versions)[2] = gles ? es_versions : gl_versions;
+    size_t vi;
+    if (!eglBindAPI(gles ? EGL_OPENGL_ES_API : EGL_OPENGL_API)) {
+        OWE_WARN("eglBindAPI %s failed: 0x%x", api, eglGetError());
+        return false;
+    }
+    if (!eglChooseConfig(e->display, cfg_attribs, &e->config, 1, &ncfg) || ncfg < 1) {
+        OWE_WARN("eglChooseConfig %s failed: 0x%x, matches=%d", api, eglGetError(), ncfg);
+        return false;
+    }
+    e->context = EGL_NO_CONTEXT;
+    for (vi = 0; versions[vi][0] > 0; vi++) {
+        EGLint ctx_attribs[] = {
+            EGL_CONTEXT_MAJOR_VERSION, versions[vi][0],
+            EGL_CONTEXT_MINOR_VERSION, versions[vi][1],
+            EGL_NONE,
+        };
+        e->context = eglCreateContext(e->display, e->config, EGL_NO_CONTEXT, ctx_attribs);
+        if (e->context != EGL_NO_CONTEXT) {
+            e->gles = gles;
+            return true;
+        }
+    }
+    OWE_WARN("eglCreateContext %s failed: 0x%x", api, eglGetError());
+    return false;
+}
+
 struct owe_egl *owe_egl_new(struct owe_wayland *wl) {
     struct owe_egl *e;
     struct wl_display *dpy;
     EGLint major = 0;
     EGLint minor = 0;
-    EGLint ncfg = 0;
-    EGLint cfg_attribs[] = {
-        EGL_SURFACE_TYPE, EGL_WINDOW_BIT, EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
-        EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8, EGL_NONE,
-    };
-    static const struct { int major, minor; } gl_versions[] = {
-        { 4, 6 }, { 4, 5 }, { 4, 4 }, { 4, 3 }, { 4, 2 }, { 4, 1 }, { 4, 0 },
-        { 3, 3 }, { 3, 2 }, { 0, 0 },
-    };
-    size_t vi;
     if (!wl) {
         return NULL;
     }
@@ -178,32 +218,10 @@ struct owe_egl *owe_egl_new(struct owe_wayland *wl) {
     }
     const char *vendor = eglQueryString(e->display, EGL_VENDOR);
     OWE_INFO("EGL vendor=%s version=%d.%d", vendor ? vendor : "unknown", major, minor);
-    if (!eglBindAPI(EGL_OPENGL_API)) {
-        OWE_ERROR("eglBindAPI OpenGL failed: 0x%x", eglGetError());
-        eglTerminate(e->display);
-        free(e);
-        return NULL;
-    }
-    if (!eglChooseConfig(e->display, cfg_attribs, &e->config, 1, &ncfg) || ncfg < 1) {
-        OWE_ERROR("eglChooseConfig failed: 0x%x, matches=%d", eglGetError(), ncfg);
-        eglTerminate(e->display);
-        free(e);
-        return NULL;
-    }
-    e->context = EGL_NO_CONTEXT;
-    for (vi = 0; gl_versions[vi].major > 0; vi++) {
-        EGLint ctx_attribs[] = {
-            EGL_CONTEXT_MAJOR_VERSION, gl_versions[vi].major,
-            EGL_CONTEXT_MINOR_VERSION, gl_versions[vi].minor,
-            EGL_NONE,
-        };
-        e->context = eglCreateContext(e->display, e->config, EGL_NO_CONTEXT, ctx_attribs);
-        if (e->context != EGL_NO_CONTEXT) {
-            break;
-        }
-    }
-    if (e->context == EGL_NO_CONTEXT) {
-        OWE_ERROR("eglCreateContext failed: 0x%x", eglGetError());
+    /* Drivers on ARM SoCs, such as Raspberry Pi V3D and Mali on Panfrost, can
+     * expose desktop OpenGL below 3.2 or only OpenGL ES. */
+    if (!create_context(e, false) && !create_context(e, true)) {
+        OWE_ERROR("no OpenGL 3.2 or OpenGL ES 3.0 context is available");
         eglTerminate(e->display);
         free(e);
         return NULL;
@@ -315,10 +333,17 @@ int owe_egl_prepare_output(struct owe_egl *egl, struct owe_output *out) {
          * default framebuffer's draw and read buffers at GL_NONE. NVIDIA keeps
          * that once a window surface is bound, so every frame would be dropped. */
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        glDrawBuffer(GL_BACK);
+        if (egl->gles) {
+            /* OpenGL ES has no glDrawBuffer. Its default framebuffer takes
+             * GL_BACK through glDrawBuffers. */
+            const GLenum back = GL_BACK;
+            glDrawBuffers(1, &back);
+        } else {
+            glDrawBuffer(GL_BACK);
+        }
         glReadBuffer(GL_BACK);
     }
-    if (!egl->blit.ready && blit_init(&egl->blit) != 0) return -1;
+    if (!egl->blit.ready && blit_init(&egl->blit, egl->gles) != 0) return -1;
     owe_output_buffer_size(out, &w, &h);
     if (out->egl_window && (out->egl_w != w || out->egl_h != h)) {
         wl_egl_window_resize((struct wl_egl_window *)out->egl_window, w, h, 0, 0);
