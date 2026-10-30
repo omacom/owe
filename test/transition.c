@@ -271,10 +271,10 @@ int main(void) {
            "video frames are opaque and mark the surface opaque");
     {
         int fences = live_fences;
-        uint64_t renders = outputs[0].swaps + outputs[1].swaps;
-        run_ms(500);
-        renders = outputs[0].swaps + outputs[1].swaps - renders;
-        verify(renders >= 20 && live_fences == fences,
+        uint64_t start = outputs[0].swaps + outputs[1].swaps;
+        int64_t deadline = now_ms() + 5000;
+        while (outputs[0].swaps + outputs[1].swaps < start + 20 && now_ms() < deadline) tick();
+        verify(outputs[0].swaps + outputs[1].swaps >= start + 20 && live_fences == fences,
                "rendered video frames leave no GL fences behind");
     }
 
