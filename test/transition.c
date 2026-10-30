@@ -299,6 +299,30 @@ int main(void) {
     verify(samples[0][2] > 240 && samples[0][0] < 10, "the video replaces the outgoing still");
     verify(!owe_still_has_image(app.transition), "the finished overlay releases its texture");
 
+    /* The shell's still covers the renderer during a handoff, so a held fade
+     * waits for transition-start while the video plays below the still. */
+    still();
+    command("{\"cmd\":\"fade\",\"ms\":250}");
+    memset(blended, 0, sizeof(blended));
+    snprintf(line, sizeof(line),
+             "{\"cmd\":\"load\",\"path\":\"%s/blue.mp4\",\"kind\":\"video\",\"from\":\"%s/red.png\",\"hold\":true}",
+             root, root);
+    command(line);
+    await_video();
+    run_ms(500);
+    verify(owe_mpv_ready(app.mpv) && blended[0] == 0 && samples[0][0] > 240 && samples[0][2] < 10 &&
+           owe_still_has_image(app.transition),
+           "a held transition keeps the still opaque over a ready video");
+    double held_pos = owe_mpv_time_pos(app.mpv);
+    command("{\"cmd\":\"transition-start\"}");
+    run_ms(550);
+    printf("Held transition: %d and %d blended samples, video at %.2f s at release\n",
+           blended[0], blended[1], held_pos);
+    verify(held_pos > 0.2, "the video plays while the transition is held");
+    verify(blended[0] >= 3 && blended[1] >= 3, "transition-start fades the held still");
+    verify(samples[0][2] > 240 && samples[0][0] < 10 && !owe_still_has_image(app.transition),
+           "the released transition ends on the video");
+
     still();
     owe_wayland_set_skipped(&wl, "OWE-TEST-0,OWE-TEST-1");
     video(500);

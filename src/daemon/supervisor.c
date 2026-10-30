@@ -217,7 +217,7 @@ int owed_supervisor_send(struct owed_supervisor *s, const char *line, char *repl
 }
 
 int owed_supervisor_load(struct owed_supervisor *s, const char *path, const char *kind,
-                         const char *from) {
+                         const char *from, bool hold) {
     char *line = NULL;
     char reply[8192];
     char *qp = owe_json_quote(path), *qk = owe_json_quote(kind);
@@ -225,8 +225,8 @@ int owed_supervisor_load(struct owed_supervisor *s, const char *path, const char
     int rc = -1;
     if (qp && qk) {
         if (qf) {
-            if (asprintf(&line, "{\"cmd\":\"load\",\"path\":%s,\"kind\":%s,\"from\":%s}",
-                         qp, qk, qf) >= 0)
+            if (asprintf(&line, "{\"cmd\":\"load\",\"path\":%s,\"kind\":%s,\"from\":%s,\"hold\":%s}",
+                         qp, qk, qf, hold ? "true" : "false") >= 0)
                 rc = owed_supervisor_send(s, line, reply, sizeof(reply));
         } else if (asprintf(&line, "{\"cmd\":\"load\",\"path\":%s,\"kind\":%s,\"async\":true}", qp, qk) >= 0) {
             rc = owed_supervisor_send(s, line, reply, sizeof(reply));

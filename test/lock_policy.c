@@ -6,7 +6,7 @@
 
 struct owed_power { bool locked; bool sleeping; bool battery; };
 struct owed_hypr { bool locked; bool off; bool fullscreen; };
-struct owed_supervisor { int starts; int stops; bool feeding; bool paused; bool fail_start; bool fail_load; int loads; bool down; };
+struct owed_supervisor { int starts; int stops; bool feeding; bool paused; bool fail_start; bool fail_load; int loads; bool down; bool last_hold; };
 static char covered_names[1024];
 static int skip_sends;
 static char supervisor_reply[1024] = "{\"status\":\"ok\"}";
@@ -53,8 +53,9 @@ int owed_supervisor_feed_stop(struct owed_supervisor *s) {
 int owed_supervisor_pause(struct owed_supervisor *s) { s->paused = true; return 0; }
 int owed_supervisor_resume(struct owed_supervisor *s) { s->paused = false; return 0; }
 int owed_supervisor_load(struct owed_supervisor *s, const char *path, const char *kind,
-                         const char *from) {
+                         const char *from, bool hold) {
     s->loads++; (void)path; (void)kind; (void)from;
+    s->last_hold = hold;
     return s->fail_load ? -1 : 0;
 }
 int owed_supervisor_ensure_running(struct owed_supervisor *s) {
@@ -251,6 +252,8 @@ int main(void) {
     CHECK(g_app.engine == OWE_ENGINE_SHELL && g_app.shell_enabled == 1 && g_app.handoff_pending);
     CHECK(renderer.loads == loads_before_handoff + 1 && shell_plugin_calls == 0);
     CHECK(!renderer.paused && g_app.render_paused == 0);
+    /* The shell's still covers the renderer, so the fade waits for it. */
+    CHECK(renderer.last_hold);
     strcpy(supervisor_reply, "{\"status\":\"ok\",\"ready\":false,\"error\":\"\"}");
     check_media_ready();
     CHECK(g_app.engine == OWE_ENGINE_SHELL && g_app.handoff_pending && shell_plugin_calls == 0);
@@ -267,6 +270,7 @@ int main(void) {
     CHECK(g_app.handoff_pending && renderer.loads == loads_before_handoff + 2);
     check_media_ready();
     CHECK(g_app.engine == OWE_ENGINE_RENDERER && g_app.shell_enabled == 0 && !g_app.handoff_pending);
+    CHECK(strstr(supervisor_last, "transition-start"));
     strcpy(supervisor_reply, "{\"status\":\"ok\"}");
 
     /* Going back to a still while the video loads keeps the shell and stops
@@ -332,6 +336,8 @@ int main(void) {
     int starts = renderer.starts, loads = renderer.loads;
     owed_app_on_renderer_restarted();
     CHECK(renderer.starts == starts + 1 && renderer.loads == loads + 1);
+    /* No shell still covers a renderer that is the engine, so it never holds. */
+    CHECK(!renderer.last_hold);
     CHECK(g_app.render_feeding && !*g_last_skip && g_app.media_pending);
     /* Poster setup failures must not poison the playable source on AC. */
     power.locked = false;

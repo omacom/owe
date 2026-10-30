@@ -50,6 +50,8 @@ struct owe_still {
     bool fade_out;
     bool fade_in;
     bool fade_started;
+    /* The still stays opaque over the video and its fade does not start. */
+    bool held;
     struct timespec requested_at;
     struct timespec loaded_at;
     struct still_job *job;
@@ -458,6 +460,7 @@ void owe_still_unload(struct owe_still *s) {
     s->fade_out = false;
     s->fade_in = false;
     s->fade_started = false;
+    s->held = false;
     s->path[0] = '\0';
 }
 
@@ -511,6 +514,10 @@ bool owe_still_render_overlay(struct owe_still *s, struct owe_output *out) {
     if (!s || !s->tex || !out) {
         return true;
     }
+    if (s->held) {
+        owe_egl_draw_texture_overlay(s->egl, out, s->tex, 1.0f, s->tex_w, s->tex_h);
+        return true;
+    }
     /* Decode and output delays must not consume the visible transition. */
     if (!s->fade_started) {
         clock_gettime(CLOCK_MONOTONIC, &s->loaded_at);
@@ -546,8 +553,17 @@ void owe_still_set_fade_out(struct owe_still *s, int ms) {
         s->fade_out = true;
         s->fade_in = false;
         s->fade_started = false;
+        s->held = false;
         s->fade_ms = ms;
         clock_gettime(CLOCK_MONOTONIC, &s->requested_at);
+    }
+}
+
+/* Keep the still opaque over the video while another surface still covers the
+ * renderer. The fade starts at the first draw after the release. */
+void owe_still_set_held(struct owe_still *s, bool held) {
+    if (s) {
+        s->held = held;
     }
 }
 
@@ -581,7 +597,7 @@ bool owe_still_fades_out(struct owe_still *s) {
 
 bool owe_still_needs_frames(struct owe_still *s) {
     struct timespec now;
-    if (!s || !s->tex || s->fade_ms <= 0) {
+    if (!s || !s->tex || s->fade_ms <= 0 || s->held) {
         return false;
     }
     if ((s->fade_out || s->fade_in) && !s->fade_started) return true;

@@ -70,6 +70,9 @@ Readiness requires the reported path and kind to match the accepted request.
 The renderer uploads one texture, presents the fade, and stops frame requests after the fully opaque final frame.
 
 The outgoing transition image can upload through any available output surface.
+While the shell's still covers the renderer, the daemon loads the video with
+`hold`. The renderer then draws the still opaque over the playing video, and
+the fade starts at `transition-start`, after the daemon suspends the shell.
 Video waits at most one second for that optional image.
 If the image is not ready, the renderer cancels the transition and continues video playback.
 The event loop discards a cancelled image when its worker completes.

@@ -79,7 +79,8 @@ static int load_if_needed(const char *path, const char *kind) {
         return 0;
     }
     if (owed_supervisor_load(app->supervisor, path, kind,
-                             strcmp(kind, "video") == 0 ? app->transition_from : NULL) != 0) {
+                             strcmp(kind, "video") == 0 ? app->transition_from : NULL,
+                             app->handoff_pending) != 0) {
         OWE_ERROR("renderer load failed: %s", path);
         /* The renderer keeps its previous media after a rejected load, so
          * loaded_path stays as the last successful media to keep policy in
@@ -784,6 +785,9 @@ static void check_media_ready(void) {
                 return;
             }
             app->handoff_pending = false;
+            /* The renderer held the outgoing still while the shell covered
+             * it. Now the fade is on screen. */
+            owed_supervisor_send(app->supervisor, "{\"cmd\":\"transition-start\"}", NULL, 0);
             OWE_INFO("engine: renderer");
         }
         app->media_pending = false;
