@@ -359,6 +359,23 @@ int main(void) {
     strcpy(covered_names, "DP-1,HDMI-A-1");
     sync_output_skips();
     CHECK(skip_sends == 1 && !strcmp(g_last_skip, covered_names));
+    /* A renderer that takes over after the shell gets the list again, also
+     * when the list did not change. A warm renderer can keep an old list, so
+     * an empty list is sent too. */
+    g_app.engine = OWE_ENGINE_SHELL;
+    sync_output_skips();
+    CHECK(skip_sends == 1 && !g_skip_synced);
+    g_app.engine = OWE_ENGINE_RENDERER;
+    sync_output_skips();
+    CHECK(skip_sends == 2 && g_skip_synced && !strcmp(g_last_skip, covered_names));
+    g_app.engine = OWE_ENGINE_SHELL;
+    sync_output_skips();
+    covered_names[0] = '\0';
+    g_app.engine = OWE_ENGINE_RENDERER;
+    sync_output_skips();
+    CHECK(skip_sends == 3 && !*g_last_skip && strstr(supervisor_last, "\"outputs\":[]"));
+    sync_output_skips();
+    CHECK(skip_sends == 3);
     /* A rejected source still is not mistaken for a failed generated poster. */
     power.battery = true;
     renderer.fail_load = true;
