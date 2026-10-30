@@ -180,9 +180,18 @@ bool owed_app_renderer_expected(void) {
 static int switch_to_shell(void) {
     owed_app_t *app = &g_app;
     int64_t now = monotonic_ms();
+    bool held = false;
     if (now < app->shell_retry_at_ms) return -1;
+    /* The shell call can take seconds, and the renderer parks 2 seconds after
+     * it. Hold the current video frame for that time instead of decoding and
+     * committing new frames under the shell's still. */
+    if (strcmp(app->loaded_kind, "video") == 0 && app->render_paused != 1 && !app->render_feeding &&
+        owed_render_is_alive(app->supervisor) && owed_supervisor_pause(app->supervisor) == 0) {
+        held = true;
+    }
     if (app->shell_enabled != 1 && owed_shell_plugin_set(true) != 0) {
         OWE_WARN("shell handoff failed, keeping the renderer for the still");
+        if (held) owed_supervisor_resume(app->supervisor);
         app->shell_retry_at_ms = now + 30000;
         return -1;
     }

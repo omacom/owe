@@ -236,9 +236,10 @@ media is silent. Source files remain intact.
 
 ## Performance design
 
-- Stills never start the renderer. While a still background shows, `owed`
-  enables the shell background plugin, stops `owe-render`, and keeps only
-  the 4 MiB daemon. A video or GIF starts the renderer again.
+- A still background does not keep the renderer. `owed` enables the shell
+  background plugin, parks `owe-render` 2 seconds later, and stops it after
+  1 more minute. Then only the 4 MiB daemon runs. During the switch, the
+  video holds its current frame. A video or GIF starts the renderer again.
 - Video renders only when `libmpv` signals a new frame. The render rate
   tracks the media frame rate, not the display refresh rate. A fade draws
   on each frame callback until it ends. A still that stays on screen does

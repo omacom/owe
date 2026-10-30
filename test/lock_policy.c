@@ -283,6 +283,26 @@ int main(void) {
     owed_app_apply_policy();
     CHECK(g_app.engine == OWE_ENGINE_SHELL);
 
+    /* A video holds its frame while the shell takes the still, so the renderer
+     * decodes and commits nothing until it parks. A failed handoff resumes it. */
+    for (int fail = 1; fail >= 0; fail--) {
+        g_app.engine = OWE_ENGINE_RENDERER;
+        g_app.shell_enabled = 0;
+        g_app.shell_retry_at_ms = 0;
+        g_app.render_paused = 0;
+        renderer.paused = false;
+        strcpy(g_app.loaded_path, "/retry.mp4");
+        strcpy(g_app.loaded_kind, "video");
+        shell_plugin_fail = fail;
+        owed_app_apply_policy();
+        if (fail) {
+            CHECK(g_app.engine == OWE_ENGINE_RENDERER && !renderer.paused);
+        } else {
+            CHECK(g_app.engine == OWE_ENGINE_SHELL && renderer.paused && g_app.render_paused == -1);
+        }
+    }
+    renderer.paused = false;
+
     /* A new renderer receives feed state and media again. */
     g_app.engine = OWE_ENGINE_RENDERER;
     strcpy(g_app.source_path, "/retry.mp4");
