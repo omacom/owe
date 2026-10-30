@@ -334,6 +334,26 @@ static void process_shell_handoff(void) {
     }
 }
 
+/* A renderer that was still starting after the start wait is used once its
+ * socket appears. When the shell keeps the background and nothing uses the
+ * renderer, it gets the warm time of a parked renderer, so it still stops. */
+static void poll_late_renderer(void) {
+    owed_app_t *app = &g_app;
+    if (!owed_supervisor_poll_start(app->supervisor)) {
+        return;
+    }
+    app->renderer_retry_at_ms = 0;
+    if (app->engine == OWE_ENGINE_RENDERER) {
+        owed_app_on_renderer_restarted();
+        return;
+    }
+    owed_app_apply_policy();
+    if (app->engine == OWE_ENGINE_SHELL && !app->handoff_pending && !app->intro_active &&
+        !app->renderer_warm_until_ms) {
+        app->renderer_warm_until_ms = monotonic_ms() + RENDERER_WARM_MS;
+    }
+}
+
 static bool render_status_flags(const char *reply, bool *ready, bool *error, bool *eof,
                                 bool *has_transition, bool *transition_busy,
                                 bool *transition_done) {
@@ -1398,12 +1418,7 @@ int main(int argc, char **argv) {
         owed_ipc_poll_clients(g_app.ipc);
         if (!g_app.running) break;
         owed_power_poll(g_app.power);
-        /* A renderer that was still starting after the start wait is used
-         * once its socket appears. */
-        if (owed_supervisor_poll_start(g_app.supervisor)) {
-            g_app.renderer_retry_at_ms = 0;
-            if (g_app.engine == OWE_ENGINE_RENDERER) owed_app_on_renderer_restarted();
-        }
+        poll_late_renderer();
         check_media_ready();
         release_held_transition();
         owed_app_poll_intro();
