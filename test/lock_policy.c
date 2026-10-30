@@ -281,6 +281,13 @@ int main(void) {
     supervisor_fail_cmd = NULL;
     release_held_transition();
     CHECK(strstr(supervisor_last, "transition-start") && !g_app.transition_release_pending);
+    /* Once the shell owns the background again, nothing shows the held still,
+     * and the daemon returns to its idle poll. */
+    g_app.transition_release_pending = true;
+    g_app.engine = OWE_ENGINE_SHELL;
+    release_held_transition();
+    CHECK(!g_app.transition_release_pending);
+    g_app.engine = OWE_ENGINE_RENDERER;
     strcpy(supervisor_reply, "{\"status\":\"ok\"}");
 
     /* Going back to a still while the video loads keeps the shell and stops

@@ -281,8 +281,13 @@ static void cancel_handoff(const char *reason) {
 static void release_held_transition(void) {
     owed_app_t *app = &g_app;
     char reply[1024];
-    if (!app->transition_release_pending || app->engine != OWE_ENGINE_RENDERER ||
-        !owed_render_is_alive(app->supervisor)) {
+    if (!app->transition_release_pending) {
+        return;
+    }
+    if (app->engine != OWE_ENGINE_RENDERER || !owed_render_is_alive(app->supervisor)) {
+        /* No renderer shows the held still any more. A pending release would
+         * keep the main loop on its 16 ms poll. */
+        app->transition_release_pending = false;
         return;
     }
     if (owed_supervisor_send(app->supervisor, "{\"cmd\":\"transition-start\"}", reply, sizeof(reply)) == 0 &&
