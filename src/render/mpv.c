@@ -95,6 +95,15 @@ static void log_startup_failure(mpv_handle *handle) {
     }
 }
 
+/* libmpv starts every hwdec interop with the render context. The CUDA
+ * interop calls cuInit even when GL runs on Intel or AMD, where that interop
+ * never works. cuInit wakes an NVIDIA GPU, and with libcuda but no NVIDIA GPU
+ * it can take seconds. On Intel and AMD only the VA-API interop works. */
+static bool vaapi_interop_only(const char *vendor, const char *renderer) {
+    return vendor && renderer &&
+           (strstr(vendor, "Intel") || strstr(vendor, "AMD") || strstr(renderer, "radeonsi"));
+}
+
 static void set_extra_options(mpv_handle *h) {
     const char *extra = getenv("OWE_MPV_OPTIONS");
     char *copy;
@@ -224,6 +233,10 @@ struct owe_mpv *owe_mpv_new(struct owe_wayland *wl) {
     set_opt(m->handle, "hwdec-extra-frames", "3");
     /* Audio and video stay in step. A silent file uses the default clock. */
     set_opt(m->handle, "video-sync", "audio");
+    if (vaapi_interop_only((const char *)glGetString(GL_VENDOR),
+                           (const char *)glGetString(GL_RENDERER))) {
+        set_opt(m->handle, "gpu-hwdec-interop", "vaapi");
+    }
     set_extra_options(m->handle);
     rc = mpv_initialize(m->handle);
     if (rc < 0) {
