@@ -287,7 +287,10 @@ Software decode still uses the GPU display path.
 The guide covers GPU logs, swap failures, and an optional DRM DPMS diagnostic override.
 
 `owed` supervises `owe-render`. A killed or crashed renderer is restarted
-and the current media reloads. The daemon holds a `flock` on
+and the current media reloads. The daemon waits up to 7 seconds for a new
+renderer and logs `owe-render ready after N ms`. If the renderer does not
+create its socket in that time, the daemon stops it and starts it again
+after 30 seconds. The daemon holds a `flock` on
 `$XDG_RUNTIME_DIR/owe/owed.lock`, so a second instance refuses to start.
 
 ## Config
