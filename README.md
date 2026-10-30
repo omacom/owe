@@ -387,6 +387,39 @@ meson test -C build-sanitize --print-errorlogs
 `test/owe-live-test` requires a running test daemon and a video wallpaper.
 To check live playback and IPC, run `build/test/owe-live-test`.
 
+To build and test on arm64 and play video end to end, run:
+
+```bash
+test/e2e/run.sh
+```
+
+The script builds a Debian arm64 image in Docker and mounts the source tree read-only.
+It runs both test suites, then starts a headless sway session with the real `owed`, `owe-render`, and `owe` binaries.
+It plays an H.264 clip and an HEVC clip and reads the output pixels with `grim`.
+It checks colors, motion, pause, the snapshot, `owe-live-test`, the switch between clips, and the shutdown.
+The playback check runs 2 times, first with desktop OpenGL and then with OpenGL ES.
+To test another platform, give it as the argument, for example `test/e2e/run.sh linux/amd64`.
+
+On an x86_64 host, Docker runs the image through QEMU, so the host needs a binfmt rule for arm64.
+Under QEMU, the script skips the `transition` test, because that test counts frames in fixed time windows and emulation is too slow for them.
+The arm64 CI job runs on native hardware, so it runs the `transition` test too.
+The container has no GPU. It uses Mesa llvmpipe and software decode, so it does not test hardware decode on ARM devices.
+
+To run the playback check on a GPU driver, run:
+
+```bash
+test/e2e/run-gpu.sh
+```
+
+The script boots the arm64 test image in a QEMU virtual machine with a virtio GPU.
+QEMU sends the guest's OpenGL calls to the host GPU through virglrenderer, so the frames come from the host GPU and not from llvmpipe.
+QEMU runs in a Docker container that gets only the GPU render node, so the host needs no QEMU packages.
+The check fails if the renderer reports llvmpipe.
+To use a render node other than `/dev/dri/renderD128`, set `OWE_E2E_RENDER_NODE`.
+The guest uses the virgl driver, so this run does not test ARM GPU drivers such as V3D, Panfrost, or Freedreno.
+The guest image has the virgl VA-API driver, but QEMU 11.1 does not turn on virglrenderer video decode.
+So the guest gets no decode profile and uses software decode.
+
 Build and install deps: `meson`, `ninja`, `gcc`, `pkgconf`, `wayland`,
 `wayland-protocols`, `libglvnd`, `libepoxy`, `mpv`, `ffmpeg`, `systemd-libs`,
 `socat`, `python`, `cmake`, `qt6-declarative`.
