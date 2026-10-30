@@ -96,6 +96,9 @@ static int load_if_needed(const char *path, const char *kind) {
     copy_path(app->restore_path, sizeof(app->restore_path), app->last_good_path);
     copy_path(app->restore_kind, sizeof(app->restore_kind), app->last_good_kind);
     app->transition_from[0] = '\0';
+    /* The load replaces the held still, so an old release must not start the
+     * fade of a new hold. */
+    app->transition_release_pending = false;
     copy_path(app->loaded_path, sizeof(app->loaded_path), path);
     copy_path(app->loaded_kind, sizeof(app->loaded_kind), kind);
     app->media_ready = false;
@@ -271,6 +274,21 @@ static void cancel_handoff(const char *reason) {
         owed_supervisor_stop(app->supervisor);
     }
     OWE_INFO("renderer handoff cancelled (%s), the shell keeps the still", reason);
+}
+
+/* A lost transition-start would leave the held still over the playing video,
+ * so the main loop sends it again until the renderer accepts it. */
+static void release_held_transition(void) {
+    owed_app_t *app = &g_app;
+    char reply[1024];
+    if (!app->transition_release_pending || app->engine != OWE_ENGINE_RENDERER ||
+        !owed_render_is_alive(app->supervisor)) {
+        return;
+    }
+    if (owed_supervisor_send(app->supervisor, "{\"cmd\":\"transition-start\"}", reply, sizeof(reply)) == 0 &&
+        owe_json_ok(reply)) {
+        app->transition_release_pending = false;
+    }
 }
 
 static void clear_prepared_intro(void) {
@@ -787,7 +805,8 @@ static void check_media_ready(void) {
             app->handoff_pending = false;
             /* The renderer held the outgoing still while the shell covered
              * it. Now the fade is on screen. */
-            owed_supervisor_send(app->supervisor, "{\"cmd\":\"transition-start\"}", NULL, 0);
+            app->transition_release_pending = true;
+            release_held_transition();
             OWE_INFO("engine: renderer");
         }
         app->media_pending = false;
@@ -1017,6 +1036,7 @@ void owed_app_on_renderer_restarted(void) {
     g_app.media_pending = false;
     g_app.media_ready = false;
     g_app.transition_from[0] = '\0';
+    g_app.transition_release_pending = false;
     g_last_skip[0] = '\0';
     g_skip_synced = false;
     owed_supervisor_fade(g_app.supervisor, g_app.config.fade_ms);
@@ -1313,7 +1333,7 @@ int main(int argc, char **argv) {
          * delays the switch. */
         rc = poll(pfds, (nfds_t)n,
                   (g_app.intro_active && g_app.intro_phase == OWE_INTRO_PREPARING) ||
-                          g_app.handoff_pending ? 16 :
+                          g_app.handoff_pending || g_app.transition_release_pending ? 16 :
                   (have_job || g_app.media_pending || g_app.intro_active) ? 200 : 1000);
         if (rc < 0) {
             if (errno == EINTR) {
@@ -1362,6 +1382,7 @@ int main(int argc, char **argv) {
         if (!g_app.running) break;
         owed_power_poll(g_app.power);
         check_media_ready();
+        release_held_transition();
         owed_app_poll_intro();
         sync_output_skips();
         process_shell_handoff();

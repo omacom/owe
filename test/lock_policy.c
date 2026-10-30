@@ -12,6 +12,8 @@ static int skip_sends;
 static char supervisor_reply[1024] = "{\"status\":\"ok\"}";
 static char supervisor_last[2048];
 static bool supervisor_fails;
+/* Sends of lines that contain this text fail. */
+static const char *supervisor_fail_cmd;
 const char *owed_hypr_covered_names(struct owed_hypr *h) { (void)h; return covered_names; }
 int owed_supervisor_send(struct owed_supervisor *s, const char *line, char *reply,
                          unsigned long reply_len) {
@@ -22,7 +24,7 @@ int owed_supervisor_send(struct owed_supervisor *s, const char *line, char *repl
     CHECK(doc);
     yyjson_doc_free(doc);
     skip_sends++;
-    if (supervisor_fails) {
+    if (supervisor_fails || (supervisor_fail_cmd && strstr(line, supervisor_fail_cmd))) {
         return -1;
     }
     if (reply && reply_len > 0) {
@@ -268,9 +270,17 @@ int main(void) {
     g_app.renderer_retry_at_ms = 0;
     owed_app_apply_policy();
     CHECK(g_app.handoff_pending && renderer.loads == loads_before_handoff + 2);
+    /* A lost transition-start would leave the still over the video, so it is
+     * sent again until the renderer accepts it. */
+    supervisor_fail_cmd = "transition-start";
     check_media_ready();
     CHECK(g_app.engine == OWE_ENGINE_RENDERER && g_app.shell_enabled == 0 && !g_app.handoff_pending);
-    CHECK(strstr(supervisor_last, "transition-start"));
+    CHECK(strstr(supervisor_last, "transition-start") && g_app.transition_release_pending);
+    release_held_transition();
+    CHECK(g_app.transition_release_pending);
+    supervisor_fail_cmd = NULL;
+    release_held_transition();
+    CHECK(strstr(supervisor_last, "transition-start") && !g_app.transition_release_pending);
     strcpy(supervisor_reply, "{\"status\":\"ok\"}");
 
     /* Going back to a still while the video loads keeps the shell and stops
