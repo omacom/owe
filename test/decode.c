@@ -124,6 +124,22 @@ int main(void) {
         skipped++;
         printf("avif fixture unavailable, skip avif\n");
     }
+    /* These demuxers name the codec when they open the file, so the decoder
+     * skips the stream probe. Each must still give the full image size. */
+    {
+        static const char *const names[] = {"still.webp", "still.bmp", "still.tiff", "still.jxl"};
+        for (size_t n = 0; n < sizeof(names) / sizeof(names[0]); n++) {
+            int w = 0, h = 0;
+            if (generate(names[n], "64x48") != 0) {
+                skipped++;
+                printf("%s fixture unavailable, skip it\n", names[n]);
+                continue;
+            }
+            check_decode(names[n], &w, &h);
+            CHECK(w == 64 && h == 48);
+            printf("%s decoded %dx%d\n", names[n], w, h);
+        }
+    }
 
     {
         int w = 0, h = 0;

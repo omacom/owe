@@ -106,14 +106,20 @@ static int decode_first_frame(const char *path, int max_w, int max_h, uint8_t **
         OWE_ERROR("avformat_open_input failed: %s", path);
         return -1;
     }
-    if (avformat_find_stream_info(fmt, NULL) < 0) {
-        avformat_close_input(&fmt);
-        return -1;
-    }
-    for (i = 0; i < fmt->nb_streams; i++) {
-        if (fmt->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
-            video_stream = (int)i;
-            break;
+    /* Image demuxers name the codec when they open the file. The stream probe
+     * decodes the whole image once more, so it runs only when the codec is
+     * still unknown. */
+    for (int probe = 0; probe < 2 && video_stream < 0; probe++) {
+        if (probe == 1 && avformat_find_stream_info(fmt, NULL) < 0) {
+            avformat_close_input(&fmt);
+            return -1;
+        }
+        for (i = 0; i < fmt->nb_streams; i++) {
+            if (fmt->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO &&
+                fmt->streams[i]->codecpar->codec_id != AV_CODEC_ID_NONE) {
+                video_stream = (int)i;
+                break;
+            }
         }
     }
     if (video_stream < 0) {
