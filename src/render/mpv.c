@@ -40,6 +40,8 @@ struct owe_mpv {
     bool eof;
     char error[256];
     int wakeup_pipe[2];
+    /* See no_fence_sync. */
+    bool drop_fences;
 };
 
 static void on_mpv_wakeup(void *data) {
@@ -116,9 +118,37 @@ static void set_extra_options(mpv_handle *h) {
     free(copy);
 }
 
+/* mpv 0.40 and 0.41 make a GL fence for each rendered frame and free it only
+ * on a buffer swap. The render API never swaps, so each frame leaks its
+ * fence: 0.2 kB on Intel and about 11 kB on NVIDIA. mpv commit f74adc4243
+ * fixes this upstream. mpv skips a fence that it gets as 0. Its only other
+ * fences guard direct rendering, which needs MPV_RENDER_PARAM_ADVANCED_CONTROL. */
+static GLsync GLAPIENTRY no_fence_sync(GLenum condition, GLbitfield flags) {
+    (void)condition;
+    (void)flags;
+    return NULL;
+}
+
 static void *get_proc_address(void *ctx, const char *name) {
-    (void)ctx;
+    struct owe_mpv *m = ctx;
+    if (m->drop_fences && strcmp(name, "glFenceSync") == 0) {
+        return (void *)no_fence_sync;
+    }
     return (void *)eglGetProcAddress(name);
+}
+
+static void check_fence_leak(struct owe_mpv *m) {
+    char *version = mpv_get_property_string(m->handle, "mpv-version");
+    int major = -1;
+    int minor = -1;
+    if (version && sscanf(version, "mpv v%d.%d", &major, &minor) != 2) {
+        sscanf(version, "mpv %d.%d", &major, &minor);
+    }
+    if (major == 0 && (minor == 40 || minor == 41)) {
+        m->drop_fences = true;
+        OWE_INFO("%s leaks a GL fence per frame, frame fences are off", version);
+    }
+    mpv_free(version);
 }
 
 struct owe_mpv *owe_mpv_new(struct owe_wayland *wl) {
@@ -136,6 +166,7 @@ struct owe_mpv *owe_mpv_new(struct owe_wayland *wl) {
         return NULL;
     }
     m->wl = wl;
+    gl_params.get_proc_address_ctx = m;
     if (pipe2(m->wakeup_pipe, O_NONBLOCK | O_CLOEXEC) != 0) {
         free(m);
         return NULL;
@@ -207,6 +238,7 @@ struct owe_mpv *owe_mpv_new(struct owe_wayland *wl) {
     char *hwdec = mpv_get_property_string(m->handle, "hwdec");
     OWE_INFO("mpv requested hwdec=%s", hwdec ? hwdec : "unknown");
     mpv_free(hwdec);
+    check_fence_leak(m);
     rparams[nparams].type = MPV_RENDER_PARAM_API_TYPE;
     rparams[nparams].data = (void *)MPV_RENDER_API_TYPE_OPENGL;
     nparams++;

@@ -91,7 +91,7 @@ render_feed_test = executable('owe-render-feed-test',
 test('render-feed', render_feed_test)
 
 transition_test = executable('owe-transition-test',
-  files('transition.c', '../src/render/mpv.c', '../src/render/still.c',
+  files('transition.c', '../src/render/still.c',
     '../src/render/render_ipc.c', '../src/render/feed.c') + common_sources + yyjson_sources +
     [layer_shell_client_h, layer_shell_c, xdg_shell_c, viewporter_client_h, viewporter_c,
      fractional_scale_client_h, fractional_scale_c],
