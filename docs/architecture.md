@@ -170,7 +170,7 @@ The daemon tracks what the renderer currently shows. A load is sent only
 when the target path or kind changes. Pause and resume are sent only on
 state transitions. A video load reply means the renderer accepted the
 request, so the daemon polls the renderer status until the first frame
-presents. A video that fails to decode, or that never presents a frame
+presents. While the shell's still waits for that frame, it polls every 16 ms. A video that fails to decode, or that never presents a frame
 within five seconds, falls back to the last media that proved it plays.
 The renderer child is reaped on `SIGCHLD` and restarted with the current
 media when it dies. Only the daemon restart path spawns a replacement;
