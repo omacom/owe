@@ -35,6 +35,11 @@ graphics driver. An output whose DRM connector reports DPMS off is
 skipped. The daemon also publishes the monitors covered by a fullscreen
 window, and the renderer stops swapping buffers for those outputs.
 A frame callback starts a new draw only while a fade runs.
+Each commit sets an opaque region that covers the surface when the frame
+has no transparent pixel: a video frame, or a still with no transparent
+pixel after its fade. While a still fades in, the opaque region is empty.
+A crossfade over video keeps the region, because the video keeps the
+alpha at 1.
 `mpv_render_context_render` writes directly into the window
 framebuffer. No intermediate framebuffer or blit exists.
 

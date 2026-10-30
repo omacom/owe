@@ -31,3 +31,4 @@ void owe_still_set_fade_in(struct owe_still *s, int ms);
 bool owe_still_fade_done(struct owe_still *s);
 bool owe_still_fades_out(struct owe_still *s);
 bool owe_still_needs_frames(struct owe_still *s);
+bool owe_still_opaque(struct owe_still *s);

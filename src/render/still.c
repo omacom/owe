@@ -29,6 +29,7 @@ struct still_job {
     uint8_t *rgba;
     int w;
     int h;
+    bool opaque;
     int rc;
     int ready;
     atomic_bool cancelled;
@@ -40,6 +41,8 @@ struct owe_still {
     unsigned int tex;
     int tex_w;
     int tex_h;
+    /* The image has no transparent pixel. */
+    bool opaque;
     int max_w;
     int max_h;
     char path[4096];
@@ -252,9 +255,20 @@ done:
     return rc;
 }
 
+/* Check every alpha byte once in the worker, so the renderer knows when a
+ * frame of this still lets the compositor skip what is below the surface. */
+static bool rgba_opaque(const uint8_t *rgba, int w, int h) {
+    size_t n = (size_t)w * (size_t)h;
+    for (size_t i = 0; i < n; i++) {
+        if (rgba[i * 4 + 3] != 255) return false;
+    }
+    return true;
+}
+
 static void *still_job_main(void *arg) {
     struct still_job *job = arg;
     job->rc = decode_first_frame(job->path, job->max_w, job->max_h, &job->rgba, &job->w, &job->h, &job->cancelled);
+    if (job->rc == 0 && job->rgba) job->opaque = rgba_opaque(job->rgba, job->w, job->h);
     {
         char c = 'x';
         while (write(job->done_fd[1], &c, 1) < 0 && errno == EINTR) {}
@@ -414,6 +428,7 @@ int owe_still_poll(struct owe_still *s) {
     s->tex = tex;
     s->tex_w = job->w;
     s->tex_h = job->h;
+    s->opaque = job->opaque;
     s->fade_started = false;
     s->max_w = job->max_w;
     s->max_h = job->max_h;
@@ -566,4 +581,8 @@ bool owe_still_needs_frames(struct owe_still *s) {
     if ((s->fade_out || s->fade_in) && !s->fade_started) return true;
     clock_gettime(CLOCK_MONOTONIC, &now);
     return elapsed_ms(&s->loaded_at, &now) < s->fade_ms;
+}
+
+bool owe_still_opaque(struct owe_still *s) {
+    return s && s->tex && s->opaque;
 }

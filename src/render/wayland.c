@@ -589,6 +589,32 @@ void owe_wayland_skipped_list(struct owe_wayland *wl, char *out, size_t out_len)
     }
 }
 
+/* Tell the compositor when the next commit has no transparent pixel, so it can
+ * skip what is below the surface and draw it without blending. The surface
+ * keeps its alpha channel for still fades. A NULL region marks no pixel as
+ * opaque. The commit after this call applies the region. */
+static void output_set_opaque(owe_output_t *out, bool opaque) {
+    struct wl_compositor *compositor = out->owner ? out->owner->compositor : NULL;
+    struct wl_region *region = NULL;
+    if (out->opaque == opaque &&
+        (!opaque || (out->opaque_w == out->width && out->opaque_h == out->height))) {
+        return;
+    }
+    if (compositor && out->surface) {
+        if (opaque) {
+            region = wl_compositor_create_region(compositor);
+            if (!region) return;
+            wl_region_add(region, 0, 0, out->width, out->height);
+        }
+        wl_surface_set_opaque_region(out->surface, region);
+        if (region) wl_region_destroy(region);
+        OWE_INFO("opaque region %s for %s", opaque ? "on" : "off", out->name);
+    }
+    out->opaque = opaque;
+    out->opaque_w = out->width;
+    out->opaque_h = out->height;
+}
+
 void owe_wayland_render_pending(struct owe_wayland *wl) {
     owe_app_t *app;
     owe_output_t *out;
@@ -624,6 +650,9 @@ void owe_wayland_render_pending(struct owe_wayland *wl) {
             bool transition_drawn = false;
             /* The drawn still or overlay is not at the end of its fade yet. */
             bool fading = false;
+            /* mpv writes opaque video frames, and a still that fades over
+             * them keeps the alpha at 1. */
+            bool opaque = true;
             if (!out->configured || !out->frame_pending || !out->egl_surface) {
                 continue;
             }
@@ -634,12 +663,14 @@ void owe_wayland_render_pending(struct owe_wayland *wl) {
             if (app->intro_waiting && app->transition &&
                 owe_still_has_image(app->transition)) {
                 owe_still_render_opaque(app->transition, out);
+                opaque = owe_still_opaque(app->transition);
             } else if (want_video && !owe_mpv_has_frame(app->mpv)) {
                 /* Until mpv has decoded a frame, drawing the video renders
                  * black. Hold the outgoing still, or leave the surface as it
                  * is: a new one stays unmapped over the shell's still. */
                 if (app->transition && owe_still_has_image(app->transition)) {
                     owe_still_render_opaque(app->transition, out);
+                    opaque = owe_still_opaque(app->transition);
                 } else {
                     out->frame_pending = 1;
                     continue;
@@ -649,6 +680,7 @@ void owe_wayland_render_pending(struct owe_wayland *wl) {
                 video_drawn = true;
             } else if (app->still && owe_still_has_image(app->still)) {
                 fading = !owe_still_render_output(app->still, out);
+                opaque = !fading && owe_still_opaque(app->still) && !owe_still_fades_out(app->still);
             } else if (app->mpv && owe_mpv_has_video(app->mpv)) {
                 owe_mpv_render_output(app->mpv, out);
                 video_drawn = true;
@@ -656,6 +688,7 @@ void owe_wayland_render_pending(struct owe_wayland *wl) {
                 /* The prepared outgoing still is the renderer's first buffer
                  * while the intro decoder is still producing its first frame. */
                 owe_still_render_opaque(app->transition, out);
+                opaque = owe_still_opaque(app->transition);
             } else if (out->swaps == 0) {
                 /* Leave a new surface unmapped until it has content. A black
                  * first buffer would fade in over the shell's still. */
@@ -689,6 +722,7 @@ void owe_wayland_render_pending(struct owe_wayland *wl) {
                 }
                 out->frame_ready = 0;
             }
+            output_set_opaque(out, opaque);
             if (owe_egl_swap_output(app->egl, out) != 0) {
                 out->swap_failures++;
                 /* A failed swap cannot deliver the callback that gates the next frame. */

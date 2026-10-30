@@ -250,6 +250,12 @@ media is silent. Source files remain intact.
 - Video redraws wait for the compositor's frame callback. A blanked
   output stops the draw loop instead of stalling the event loop, and an
   output covered by a fullscreen window stops swapping buffers.
+- A commit marks the surface opaque when the frame has no transparent
+  pixel. This covers video frames, and a still with no transparent pixel
+  after its fade. The compositor can then skip what is below the wallpaper
+  and draw it without blending. While a still fades in, the surface has no
+  opaque region, so the compositor blends it. A crossfade over video keeps
+  the opaque region, because the video below it keeps the alpha at 1.
 - Hardware decode is on by default (`hwdec=auto-safe`). Override with
   the `OWE_HWDEC` environment variable.
 - The renderer uses desktop OpenGL 3.2 or later. If the driver has no
