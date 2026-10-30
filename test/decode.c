@@ -86,6 +86,78 @@ static int generate(const char *name, const char *size) {
     return run(argv);
 }
 
+/* A flat 0x3080c0 frame stored as YUV with the given matrix and range tags. */
+static int generate_tagged(const char *name, const char *matrix, const char *colorspace,
+                           const char *range) {
+    char path[1024];
+    char filter[128];
+    char *argv[] = {"ffmpeg", "-y", "-v", "error", "-nostdin", "-f", "lavfi", "-i",
+                    "color=c=0x3080c0:size=64x48", "-frames:v", "1", "-vf", filter, "-pix_fmt",
+                    "yuv444p", "-colorspace", (char *)colorspace, "-color_range", (char *)range,
+                    "-c:v", "ffv1", path, NULL};
+    path_for(path, sizeof(path), name);
+    snprintf(filter, sizeof(filter), "scale=out_color_matrix=%s:out_range=%s", matrix, range);
+    return run(argv);
+}
+
+static void check_colour(const char *name) {
+    char path[1024];
+    uint8_t *rgba = NULL;
+    const uint8_t *px;
+    int w = 0, h = 0;
+    path_for(path, sizeof(path), name);
+    CHECK(decode_first_frame(path, 0, 0, &rgba, &w, &h, NULL) == 0);
+    px = rgba + ((size_t)(h / 2) * w + w / 2) * 4;
+    printf("%s decoded %d,%d,%d\n", name, px[0], px[1], px[2]);
+    /* Swscale defaults (BT.601, limited) put these 5 to 11 levels off. */
+    CHECK(abs(px[0] - 0x30) <= 3 && abs(px[1] - 0x80) <= 3 && abs(px[2] - 0xc0) <= 3);
+    free(rgba);
+}
+
+/* An untagged flat lossy WebP, decoded the way libwebp does (BT.601 limited
+ * with accurate rounding and full chroma interpolation), so the still can be
+ * compared with that reference rather than with the lossily coded source. */
+static int generate_webp(const char *name, const char *ref) {
+    char path[1024];
+    char ref_path[1024];
+    char *encode[] = {"ffmpeg", "-y", "-v", "error", "-nostdin", "-f", "lavfi", "-i",
+                      "color=c=0x3080c0:size=64x48", "-frames:v", "1", "-c:v", "libwebp",
+                      "-pix_fmt", "yuv420p", path, NULL};
+    char *decode[] = {"ffmpeg", "-y", "-v", "error", "-nostdin", "-i", path, "-vf",
+                      "scale=flags=accurate_rnd+full_chroma_int,format=rgba", "-f", "rawvideo",
+                      ref_path, NULL};
+    path_for(path, sizeof(path), name);
+    path_for(ref_path, sizeof(ref_path), ref);
+    if (run(encode) != 0) return -1;
+    /* Only a missing encoder skips the check; a failed reference decode fails it. */
+    CHECK(run(decode) == 0);
+    return 0;
+}
+
+static void check_webp(const char *name, const char *ref) {
+    char path[1024];
+    uint8_t *rgba = NULL;
+    uint8_t expected[64 * 48 * 4];
+    FILE *f;
+    double sum = 0;
+    int w = 0, h = 0;
+    int i;
+    path_for(path, sizeof(path), ref);
+    f = fopen(path, "rb");
+    CHECK(f && fread(expected, 1, sizeof(expected), f) == sizeof(expected));
+    fclose(f);
+    path_for(path, sizeof(path), name);
+    CHECK(decode_first_frame(path, 0, 0, &rgba, &w, &h, NULL) == 0);
+    CHECK(w == 64 && h == 48);
+    for (i = 0; i < w * h * 4; i++) {
+        if (i % 4 != 3) sum += abs(rgba[i] - expected[i]);
+    }
+    printf("%s mean difference from reference %.3f\n", name, sum / (w * h * 3));
+    /* Swscale's fast rounding is about 1.4 levels off, green the most. */
+    CHECK(sum / (w * h * 3) <= 0.5);
+    free(rgba);
+}
+
 static void check_decode(const char *name, int *w, int *h) {
     char path[1024];
     uint8_t *rgba = NULL;
@@ -153,6 +225,17 @@ int main(void) {
         CHECK(w == 4000 && h == 3000);
         check_decode("portrait.jpg", &w, &h);
         CHECK(w == 1200 && h == 2400);
+    }
+
+    CHECK(generate_tagged("bt709.mkv", "bt709", "bt709", "tv") == 0);
+    check_colour("bt709.mkv");
+    CHECK(generate_tagged("full.mkv", "bt601", "smpte170m", "pc") == 0);
+    check_colour("full.mkv");
+    if (generate_webp("flat.webp", "flat.rgba") == 0) {
+        check_webp("flat.webp", "flat.rgba");
+    } else {
+        skipped++;
+        printf("libwebp encoder unavailable, skip webp colour\n");
     }
 
     {

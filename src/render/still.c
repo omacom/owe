@@ -13,6 +13,7 @@
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/imgutils.h>
+#include <libavutil/pixdesc.h>
 #include <libswscale/swscale.h>
 
 #include "egl.h"
@@ -87,6 +88,39 @@ void owe_still_free(struct owe_still *s) {
 static int decode_cancelled(void *opaque) {
     const atomic_bool *cancelled = opaque;
     return cancelled && atomic_load(cancelled);
+}
+
+/* Convert with the image's own matrix and range. swscale otherwise assumes
+ * its defaults, and with its fast rounding a lossy WebP comes out about a
+ * level darker than libwebp, the shell, or mpv show the same image, so a
+ * still fading over them visibly shifts colour. */
+static void set_colorspace(struct SwsContext *sws, const AVFrame *frame) {
+    const AVPixFmtDescriptor *desc = av_pix_fmt_desc_get(frame->format);
+    int *inv_table;
+    int *table;
+    int src_range;
+    int dst_range;
+    int brightness;
+    int contrast;
+    int saturation;
+    if (!desc || (desc->flags & AV_PIX_FMT_FLAG_RGB)) {
+        return;
+    }
+    if (sws_getColorspaceDetails(sws, &inv_table, &src_range, &table, &dst_range, &brightness,
+                                 &contrast, &saturation) < 0) {
+        OWE_WARN("still colourspace not applied, using swscale defaults");
+        return;
+    }
+    if (frame->colorspace != AVCOL_SPC_UNSPECIFIED) {
+        inv_table = (int *)sws_getCoefficients(frame->colorspace);
+    }
+    if (frame->color_range != AVCOL_RANGE_UNSPECIFIED) {
+        src_range = frame->color_range == AVCOL_RANGE_JPEG;
+    }
+    if (sws_setColorspaceDetails(sws, inv_table, src_range, table, dst_range, brightness,
+                                 contrast, saturation) < 0) {
+        OWE_WARN("still colourspace not applied, using swscale defaults");
+    }
 }
 
 static int decode_first_frame(const char *path, int max_w, int max_h, uint8_t **rgba_out,
@@ -209,10 +243,12 @@ static int decode_first_frame(const char *path, int max_w, int max_h, uint8_t **
             }
         }
         sws = sws_getContext(frame->width, frame->height, frame->format, tw, th, AV_PIX_FMT_RGBA,
-                             SWS_BILINEAR, NULL, NULL, NULL);
+                             SWS_BILINEAR | SWS_ACCURATE_RND | SWS_FULL_CHR_H_INT, NULL, NULL,
+                             NULL);
         if (!sws) {
             goto done;
         }
+        set_colorspace(sws, frame);
         rgb->format = AV_PIX_FMT_RGBA;
         rgb->width = tw;
         rgb->height = th;
