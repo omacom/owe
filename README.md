@@ -267,6 +267,9 @@ media is silent. Source files remain intact.
   console, and the other scripts only add threads and memory. Advanced
   mpv tuning uses `OWE_MPV_OPTIONS`, a semicolon separated list such as
   `demuxer-max-bytes=16MiB;hwdec-extra-frames=1`.
+- Video larger than the output is shrunk with mpv's `hermite` filter and
+  `correct-downscaling`, so thin lines match the same picture as a still
+  instead of the harsher look of plain bilinear sampling.
 - Stills decode once at the size the cover crop needs, upload one texture,
   and then stop the frame loop. Paused video stops the loop too.
 - Layer surfaces use `wp_fractional_scale_v1` and `wp_viewporter` when the
