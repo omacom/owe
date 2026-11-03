@@ -1446,8 +1446,12 @@ int main(int argc, char **argv) {
         /* The shell draws its still a few frames after it answers. Stopping
          * the renderer before then leaves the screen empty in between, which
          * a logout showed as a black flash. */
-        if (owed_shell_plugin_set(true) == 0 && owed_render_is_alive(g_app.supervisor)) {
-            usleep(SHUTDOWN_HANDBACK_MS * 1000);
+        if (owed_shell_plugin_set(true) == 0) {
+            /* A signal cuts a sleep short, so wait out the whole allowance. */
+            int64_t until = monotonic_ms() + SHUTDOWN_HANDBACK_MS;
+            int64_t left;
+            while ((left = until - monotonic_ms()) > 0 && owed_render_is_alive(g_app.supervisor))
+                usleep((useconds_t)left * 1000);
         }
     }
     if (g_app.job) {
