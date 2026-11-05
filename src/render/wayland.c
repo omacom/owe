@@ -733,7 +733,9 @@ void owe_wayland_render_pending(struct owe_wayland *wl) {
                 continue;
             }
             out->swaps++;
-            out->composition_swapped = app->composition_id;
+            // The outgoing cover is not the requested opening video frame.
+            if (video_drawn && owe_mpv_ready(app->mpv))
+                out->composition_swapped = app->composition_id;
             if (video_drawn) rendered_video = 1;
             if (transition_drawn) rendered_transition = true;
         }

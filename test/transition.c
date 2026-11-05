@@ -42,9 +42,17 @@ static __eglMustCastToProperFunctionPointerType test_get_proc_address(const char
     return fn;
 }
 
+#include <mpv/render.h>
+static unsigned int video_render_calls;
+static int counted_video_render(mpv_render_context *ctx, mpv_render_param *params) {
+    video_render_calls++;
+    return mpv_render_context_render(ctx, params);
+}
+#define mpv_render_context_render counted_video_render
 #define eglGetProcAddress test_get_proc_address
 #include "../src/render/mpv.c"
 #undef eglGetProcAddress
+#undef mpv_render_context_render
 #include "render_ipc.h"
 #include "common_ipc.h"
 #include "owe_spawn.h"
@@ -453,6 +461,11 @@ int main(void) {
     verify(app.intro_waiting && owe_still_has_image(app.transition) &&
            samples[0][0] > 240 && samples[0][2] < 10,
            "a prepared intro holds the outgoing still before handoff");
+    snprintf(line, sizeof(line), "{\"cmd\":\"source-rects\",\"media_id\":%llu,\"outputs\":[{\"name\":\"OWE-TEST-0\",\"x\":0,\"y\":0,\"width\":0.5,\"height\":1},{\"name\":\"OWE-TEST-1\",\"x\":0.5,\"y\":0,\"width\":0.5,\"height\":1}]}", (unsigned long long)app.media_id);
+    command(line);
+    run_ms(100);
+    verify(outputs[0].composition_swapped != app.composition_id && outputs[1].composition_swapped != app.composition_id,
+           "the outgoing still cannot acknowledge an opening video composition");
     memset(blended, 0, sizeof(blended));
     memset(dark_frames, 0, sizeof(dark_frames));
     command("{\"cmd\":\"intro-show\"}");
@@ -569,6 +582,11 @@ int main(void) {
            "composition readiness follows swaps on both outputs");
     verify(owe_mpv_is_paused(app.mpv) && owe_mpv_time_pos(app.mpv) < 0.04,
            "a framed intro holds its opening frame until the covering client reveals it");
+    unsigned int calls_before_frame = video_render_calls;
+    CHECK(owe_mpv_rewind(app.mpv) == 0);
+    await_video();
+    verify(video_render_calls - calls_before_frame == 1,
+           "both outputs sample one shared libmpv render for a new video frame");
     snprintf(line, sizeof(line), "{\"cmd\":\"source-rects-release\",\"media_id\":%llu,\"composition_id\":%llu}",
              (unsigned long long)app.media_id, (unsigned long long)app.composition_id);
     command(line);

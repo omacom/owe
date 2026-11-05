@@ -46,6 +46,7 @@ struct owe_mpv {
     bool drop_fences;
     GLuint crop_fbo, crop_texture;
     int crop_w, crop_h;
+    bool crop_dirty;
 };
 
 static void on_mpv_wakeup(void *data) {
@@ -326,6 +327,7 @@ int owe_mpv_load(struct owe_mpv *m, const char *path) {
     m->ready = false;
     m->file_loaded = false;
     m->rewinding = false;
+    m->crop_dirty = true;
     m->has_frame = false;
     m->eof = false;
     return 0;
@@ -335,6 +337,7 @@ int owe_mpv_rewind(struct owe_mpv *m) {
     const char *cmd[] = {"seek", "0", "absolute+exact", NULL};
     if (!m || mpv_command_async(m->handle, 0, cmd) < 0) return -1;
     m->rewinding = true;
+    m->crop_dirty = true;
     m->ready = m->has_frame = m->eof = false;
     return 0;
 }
@@ -356,6 +359,7 @@ void owe_mpv_stop(struct owe_mpv *m) {
     m->ready = false;
     m->file_loaded = false;
     m->rewinding = false;
+    m->crop_dirty = true;
     m->has_frame = false;
     m->eof = false;
     m->error[0] = '\0';
@@ -484,6 +488,7 @@ bool owe_mpv_process_updates(struct owe_mpv *m) {
     }
     owe_egl_make_current(owe_app_get()->egl);
     flags = mpv_render_context_update(m->ctx);
+    if (flags & MPV_RENDER_UPDATE_FRAME) m->crop_dirty = true;
     if ((flags & MPV_RENDER_UPDATE_FRAME) && m->file_loaded && !m->rewinding) m->has_frame = true;
     return (flags & MPV_RENDER_UPDATE_FRAME) != 0;
 }
@@ -556,9 +561,14 @@ void owe_mpv_render_output(struct owe_mpv *m, struct owe_output *out) {
                 return;
             }
             m->crop_w = vw; m->crop_h = vh;
+            m->crop_dirty = true;
         }
-        if (owe_mpv_render_fbo(m, m->crop_fbo, vw, vh) == 0)
-            owe_egl_draw_texture(app->egl, out, m->crop_texture, 1.0f, vw, vh);
+        // Outputs sample one shared source frame, not separate libmpv renders.
+        if (m->crop_dirty) {
+            if (owe_mpv_render_fbo(m, m->crop_fbo, vw, vh) != 0) return;
+            m->crop_dirty = false;
+        }
+        owe_egl_draw_texture(app->egl, out, m->crop_texture, 1.0f, vw, vh);
         return;
     }
     fbo.fbo = 0;
@@ -613,6 +623,8 @@ int owe_mpv_render_fbo(struct owe_mpv *m, int fbo, int w, int h) {
         return -1;
     }
     if (m->file_loaded) m->ready = true;
+    // A feed/snapshot can also render a newer frame outside the output loop.
+    m->crop_dirty = true;
     return 0;
 }
 
