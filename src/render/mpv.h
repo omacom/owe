@@ -15,6 +15,7 @@ void owe_mpv_set_paused(struct owe_mpv *m, bool paused);
 void owe_mpv_set_muted(struct owe_mpv *m, bool muted);
 void owe_mpv_set_loop(struct owe_mpv *m, bool loop);
 bool owe_mpv_eof(struct owe_mpv *m);
+int owe_mpv_rewind(struct owe_mpv *m);
 
 bool owe_mpv_has_video(struct owe_mpv *m);
 bool owe_mpv_is_paused(struct owe_mpv *m);

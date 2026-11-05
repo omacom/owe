@@ -1,6 +1,7 @@
 #include "render_ipc.h"
 
 #include <errno.h>
+#include <math.h>
 #include <fcntl.h>
 #include <limits.h>
 #include <inttypes.h>
@@ -83,10 +84,12 @@ static void handle_status(struct owe_render_ipc *ipc, struct owe_ipc_client *c) 
     int mh = 0;
     uint64_t swaps = 0;
     uint64_t swap_failures = 0;
+    bool composition_ready = app && app->composition_id > 0;
     if (app && app->wl) {
         owe_wayland_outputs_max_size(app->wl, &mw, &mh);
         owe_wayland_skipped_list(app->wl, skipped, sizeof(skipped));
         for (owe_output_t *out = owe_wayland_outputs(app->wl); out; out = out->next) {
+            if (!out->skip_render && out->composition_swapped != app->composition_id) composition_ready = false;
             swaps += out->swaps;
             swap_failures += out->swap_failures;
         }
@@ -100,6 +103,7 @@ static void handle_status(struct owe_render_ipc *ipc, struct owe_ipc_client *c) 
     }
     if (asprintf(&line,
              "{\"status\":\"ok\",\"path\":%s,\"kind\":\"%s\",\"paused\":%s,\"ready\":%s,\"outputs\":%d,"
+             "\"source_rects\":1,\"media_id\":%" PRIu64 ",\"composition_id\":%" PRIu64 ",\"composition_ready\":%s,\"composition_held\":%s,"
              "\"max_width\":%d,\"max_height\":%d,\"has_video\":%s,\"has_still\":%s,"
              "\"has_transition\":%s,\"transition_busy\":%s,\"transition_done\":%s,"
              "\"time_pos\":%.3f,\"hwdec\":%s,\"error\":%s,\"skipped\":%s,"
@@ -108,6 +112,7 @@ static void handle_status(struct owe_render_ipc *ipc, struct owe_ipc_client *c) 
              app && app->paused ? "true" : "false",
              ready ? "true" : "false",
              app && app->wl ? owe_wayland_output_count(app->wl) : 0,
+             app ? app->media_id : 0, app ? app->composition_id : 0, composition_ready ? "true" : "false", app && app->composition_hold_until ? "true" : "false",
              mw, mh, app && app->mpv && owe_mpv_has_video(app->mpv) ? "true" : "false",
              app && app->still && owe_still_has_image(app->still) ? "true" : "false",
              app && app->transition && owe_still_has_image(app->transition) ? "true" : "false",
@@ -150,6 +155,73 @@ static void stop_feed(owe_app_t *app) {
     }
 }
 
+static void reset_composition(owe_app_t *app) {
+    app->composition_hold_until = 0;
+    owe_mpv_set_paused(app->mpv, app->paused);
+    app->composition_id++;
+    for (owe_output_t *out = owe_wayland_outputs(app->wl); out; out = out->next)
+        out->source_rect = false;
+}
+
+/* A whole set is validated before changing any output. The media generation
+ * prevents a delayed client from framing a newer playback of the same path. */
+static void handle_source_rects(struct owe_ipc_client *c, yyjson_val *root) {
+    owe_app_t *app = owe_app_get();
+    yyjson_val *rects = yyjson_obj_get(root, "outputs");
+    yyjson_val *media = yyjson_obj_get(root, "media_id");
+    struct { owe_output_t *out; double v[4]; } pending[16];
+    size_t count = yyjson_arr_size(rects);
+    if (!app || !(app->intro || app->preparing) || !yyjson_is_uint(media) ||
+        yyjson_get_uint(media) != app->media_id || !yyjson_is_arr(rects) || count == 0 || count > 16) {
+        send_err(c, "invalid or superseded composition"); return;
+    }
+    for (size_t i = 0; i < count; i++) {
+        yyjson_val *row = yyjson_arr_get(rects, i);
+        const char *name = yyjson_get_str(yyjson_obj_get(row, "name"));
+        pending[i].out = NULL;
+        for (owe_output_t *out = owe_wayland_outputs(app->wl); out; out = out->next)
+            if (name && strcmp(name, out->name) == 0) pending[i].out = out;
+        if (!pending[i].out) { send_err(c, "unknown output"); return; }
+        for (size_t j = 0; j < i; j++)
+            if (pending[j].out == pending[i].out) { send_err(c, "duplicate output"); return; }
+        const char *keys[] = {"x", "y", "width", "height"};
+        for (int j = 0; j < 4; j++) {
+            yyjson_val *n = yyjson_obj_get(row, keys[j]);
+            double v = yyjson_get_num(n);
+            if (!yyjson_is_num(n) || !isfinite(v) || v < 0 || v > 1 || (j >= 2 && v <= 0)) {
+                send_err(c, "invalid source rectangle"); return;
+            }
+            pending[i].v[j] = v;
+        }
+        if (pending[i].v[0] + pending[i].v[2] > 1.000001 ||
+            pending[i].v[1] + pending[i].v[3] > 1.000001) {
+            send_err(c, "source rectangle outside image"); return;
+        }
+    }
+    bool framed = false;
+    for (owe_output_t *out = owe_wayland_outputs(app->wl); out; out = out->next)
+        if (out->source_rect) framed = true;
+    bool hold = yyjson_get_bool(yyjson_obj_get(root, "hold")) && app->intro && !owe_mpv_eof(app->mpv);
+    if (hold && !framed && owe_mpv_rewind(app->mpv) != 0) {
+        send_err(c, "cannot rewind intro"); return;
+    }
+    reset_composition(app);
+    if (hold) {
+        app->composition_hold_until = owe_ipc_now_ms() + 2000;
+        owe_mpv_set_paused(app->mpv, true);
+    }
+    for (size_t i = 0; i < count; i++) {
+        owe_output_t *out = pending[i].out;
+        out->source_rect = true;
+        out->source_x = pending[i].v[0]; out->source_y = pending[i].v[1];
+        out->source_w = pending[i].v[2]; out->source_h = pending[i].v[3];
+    }
+    owe_app_request_render();
+    char result[96];
+    snprintf(result, sizeof(result), "\"composition_id\":%" PRIu64, app->composition_id);
+    send_ok(c, result);
+}
+
 static void handle_load(struct owe_render_ipc *ipc, struct owe_ipc_client *c, yyjson_val *root) {
     owe_app_t *app = owe_app_get();
     yyjson_val *vpath;
@@ -187,6 +259,8 @@ static void handle_load(struct owe_render_ipc *ipc, struct owe_ipc_client *c, yy
             send_err(c, "video load failed");
             return;
         }
+        app->media_id++;
+        reset_composition(app);
         owe_mpv_set_loop(app->mpv, !once && !prepare);
         ipc->load_error[0] = '\0';
         owe_mpv_set_muted(app->mpv, mute || app->feeding);
@@ -238,6 +312,8 @@ static void handle_load(struct owe_render_ipc *ipc, struct owe_ipc_client *c, yy
             send_err(c, "still load failed");
             return;
         }
+        reset_composition(app);
+        app->media_id++;
         pending_reply(ipc, 0, "load superseded");
         ipc->load_error[0] = '\0';
         bool async = yyjson_get_bool(yyjson_obj_get(root, "async"));
@@ -304,7 +380,17 @@ static void handle_command(void *context, struct owe_ipc_client *c, const char *
     root = yyjson_doc_get_root(doc);
     vcmd = root ? yyjson_obj_get(root, "cmd") : NULL;
     cmd = vcmd && yyjson_is_str(vcmd) ? yyjson_get_str(vcmd) : "";
-    if (strcmp(cmd, "hello") == 0) {
+    if (strcmp(cmd, "source-rects-release") == 0) {
+        if (app && yyjson_get_uint(yyjson_obj_get(root, "media_id")) == app->media_id &&
+            yyjson_get_uint(yyjson_obj_get(root, "composition_id")) == app->composition_id && app->composition_hold_until) {
+            app->composition_hold_until = 0;
+            owe_mpv_set_paused(app->mpv, app->paused);
+            owe_app_request_render();
+            send_ok(c, NULL);
+        } else send_err(c, "composition no longer held");
+    } else if (strcmp(cmd, "source-rects") == 0) {
+        handle_source_rects(c, root);
+    } else if (strcmp(cmd, "hello") == 0) {
         send_ok(c, "\"version\":1");
     } else if (strcmp(cmd, "load") == 0) {
         handle_load(ipc, c, root);
@@ -513,6 +599,12 @@ void owe_render_ipc_accept(struct owe_render_ipc *ipc) {
 void owe_render_ipc_poll_clients(struct owe_render_ipc *ipc) {
     if (!ipc) return;
     int64_t now = owe_ipc_now_ms();
+    owe_app_t *app = owe_app_get();
+    if (app && app->composition_hold_until && now >= app->composition_hold_until) {
+        app->composition_hold_until = 0;
+        owe_mpv_set_paused(app->mpv, app->paused);
+        owe_app_request_render();
+    }
     for (int i = 0; i < MAX_CLIENTS; i++) {
         owe_ipc_client_poll(&ipc->clients[i], now, handle_command, ipc);
     }

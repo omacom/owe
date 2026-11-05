@@ -317,7 +317,17 @@ static void handle_command(void *context, struct owe_ipc_client *c, const char *
         } else {
             char reply[8192];
             if (owed_supervisor_send(app->supervisor, "{\"cmd\":\"status\"}", reply, sizeof(reply)) == 0) {
-                owe_ipc_client_send(c, reply);
+                // The renderer may decode an opened /proc/fd while a staged
+                // theme moves. Publish the selected intro's stable identity too.
+                char *intro_path = owe_json_quote(app->intro_active ? app->intro_path : "");
+                char *status = NULL;
+                size_t len = strlen(reply);
+                if (intro_path && len && reply[len - 1] == '}' &&
+                    asprintf(&status, "%.*s,\"intro_path\":%s}", (int)len - 1, reply, intro_path) >= 0)
+                    owe_ipc_client_send(c, status);
+                else owe_ipc_client_send(c, reply);
+                free(status);
+                free(intro_path);
             } else {
                 send_err(c, "render unreachable");
             }

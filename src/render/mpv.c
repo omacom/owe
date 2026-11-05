@@ -17,6 +17,7 @@
 #include "egl.h"
 #include "log.h"
 #include "render.h"
+#include <math.h>
 #include "wayland.h"
 
 struct owe_mpv {
@@ -38,10 +39,13 @@ struct owe_mpv {
      * the render thread can wait 200 ms while the core waits for this thread. */
     char hwdec_current[64];
     bool eof;
+    bool rewinding;
     char error[256];
     int wakeup_pipe[2];
     /* See no_fence_sync. */
     bool drop_fences;
+    GLuint crop_fbo, crop_texture;
+    int crop_w, crop_h;
 };
 
 static void on_mpv_wakeup(void *data) {
@@ -289,6 +293,8 @@ void owe_mpv_free(struct owe_mpv *m) {
     }
     if (m->ctx) {
         owe_egl_make_current(owe_app_get()->egl);
+        if (m->crop_fbo) glDeleteFramebuffers(1, &m->crop_fbo);
+        if (m->crop_texture) glDeleteTextures(1, &m->crop_texture);
         mpv_render_context_set_update_callback(m->ctx, NULL, NULL);
         mpv_render_context_free(m->ctx);
     }
@@ -319,8 +325,17 @@ int owe_mpv_load(struct owe_mpv *m, const char *path) {
     m->pause_known = false;
     m->ready = false;
     m->file_loaded = false;
+    m->rewinding = false;
     m->has_frame = false;
     m->eof = false;
+    return 0;
+}
+
+int owe_mpv_rewind(struct owe_mpv *m) {
+    const char *cmd[] = {"seek", "0", "absolute+exact", NULL};
+    if (!m || mpv_command_async(m->handle, 0, cmd) < 0) return -1;
+    m->rewinding = true;
+    m->ready = m->has_frame = m->eof = false;
     return 0;
 }
 
@@ -330,10 +345,17 @@ void owe_mpv_stop(struct owe_mpv *m) {
         return;
     }
     mpv_command(m->handle, cmd);
+    if (owe_egl_make_current(owe_app_get()->egl) == 0) {
+        if (m->crop_fbo) glDeleteFramebuffers(1, &m->crop_fbo);
+        if (m->crop_texture) glDeleteTextures(1, &m->crop_texture);
+        m->crop_fbo = m->crop_texture = 0;
+        m->crop_w = m->crop_h = 0;
+    }
     m->has_video = false;
     m->path[0] = '\0';
     m->ready = false;
     m->file_loaded = false;
+    m->rewinding = false;
     m->has_frame = false;
     m->eof = false;
     m->error[0] = '\0';
@@ -430,11 +452,13 @@ bool owe_mpv_process_updates(struct owe_mpv *m) {
             m->error[0] = '\0';
         } else if (event->event_id == MPV_EVENT_FILE_LOADED) {
             m->file_loaded = true;
+        } else if (event->event_id == MPV_EVENT_PLAYBACK_RESTART) {
+            m->rewinding = false;
         } else if (event->event_id == MPV_EVENT_PROPERTY_CHANGE) {
             mpv_event_property *property = event->data;
             if (property && property->format == MPV_FORMAT_FLAG && property->data &&
                 strcmp(property->name, "eof-reached") == 0) {
-                m->eof = *(int *)property->data != 0;
+                if (!m->rewinding) m->eof = *(int *)property->data != 0;
             } else if (property && strcmp(property->name, "dwidth") == 0) {
                 m->video_w = property_size(property);
             } else if (property && strcmp(property->name, "dheight") == 0) {
@@ -460,7 +484,7 @@ bool owe_mpv_process_updates(struct owe_mpv *m) {
     }
     owe_egl_make_current(owe_app_get()->egl);
     flags = mpv_render_context_update(m->ctx);
-    if ((flags & MPV_RENDER_UPDATE_FRAME) && m->file_loaded) m->has_frame = true;
+    if ((flags & MPV_RENDER_UPDATE_FRAME) && m->file_loaded && !m->rewinding) m->has_frame = true;
     return (flags & MPV_RENDER_UPDATE_FRAME) != 0;
 }
 
@@ -504,6 +528,37 @@ void owe_mpv_render_output(struct owe_mpv *m, struct owe_output *out) {
     }
     owe_output_buffer_size(out, &w, &h);
     if (w <= 0 || h <= 0) {
+        return;
+    }
+    if (out->source_rect) {
+        int vw, vh;
+        if (owe_mpv_video_size(m, &vw, &vh) != 0) return;
+        GLint max_size;
+        glGetIntegerv(GL_MAX_TEXTURE_SIZE, &max_size);
+        int limit = max_size < 8192 ? max_size : 8192;
+        double scale = 1.0;
+        if (vw > limit) scale = (double)limit / vw;
+        if (vh * scale > limit) scale = (double)limit / vh;
+        vw = (int)(vw * scale); vh = (int)(vh * scale);
+        if (!m->crop_fbo || m->crop_w != vw || m->crop_h != vh) {
+            if (!m->crop_fbo) glGenFramebuffers(1, &m->crop_fbo);
+            if (!m->crop_texture) glGenTextures(1, &m->crop_texture);
+            glBindTexture(GL_TEXTURE_2D, m->crop_texture);
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, vw, vh, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+            glBindFramebuffer(GL_FRAMEBUFFER, m->crop_fbo);
+            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m->crop_texture, 0);
+            if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+                snprintf(m->error, sizeof(m->error), "source rectangle framebuffer unavailable");
+                return;
+            }
+            m->crop_w = vw; m->crop_h = vh;
+        }
+        if (owe_mpv_render_fbo(m, m->crop_fbo, vw, vh) == 0)
+            owe_egl_draw_texture(app->egl, out, m->crop_texture, 1.0f, vw, vh);
         return;
     }
     fbo.fbo = 0;

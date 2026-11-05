@@ -441,6 +441,10 @@ void owe_egl_draw_texture(struct owe_egl *egl, struct owe_output *out, unsigned 
         off_u = (1.0f - scale_u) * 0.5f;
         off_v = (1.0f - scale_v) * 0.5f;
     }
+    if (out->source_rect) {
+        off_u = out->source_x; off_v = out->source_y;
+        scale_u = out->source_w; scale_v = out->source_h;
+    }
     b = &egl->blit;
     glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT);
@@ -489,6 +493,10 @@ void owe_egl_draw_texture_overlay(struct owe_egl *egl, struct owe_output *out, u
         }
         off_u = (1.0f - scale_u) * 0.5f;
         off_v = (1.0f - scale_v) * 0.5f;
+    }
+    if (out->source_rect) {
+        off_u = out->source_x; off_v = out->source_y;
+        scale_u = out->source_w; scale_v = out->source_h;
     }
     b = &egl->blit;
     glDisable(GL_DEPTH_TEST);

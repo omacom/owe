@@ -253,6 +253,14 @@ static void make_media(void) {
     char *mp4[] = {"ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=blue:s=128x72:r=30:d=3",
                    "-c:v", "libx264", "-threads", "1", "-pix_fmt", "yuv420p", path, NULL};
     CHECK(owe_spawn_capture("ffmpeg", mp4, log, sizeof(log), 10000) == 0);
+    const char *pattern = "color=black:s=128x72:r=30:d=1,drawbox=x=0:y=0:w=64:h=36:color=red:t=fill,drawbox=x=64:y=36:w=64:h=36:color=blue:t=fill";
+    snprintf(path, sizeof(path), "%s/quadrants.mp4", root);
+    mp4[6] = (char *)pattern;
+    CHECK(owe_spawn_capture("ffmpeg", mp4, log, sizeof(log), 10000) == 0);
+    snprintf(path, sizeof(path), "%s/quadrants.png", root);
+    png[6] = (char *)pattern;
+    CHECK(owe_spawn_capture("ffmpeg", png, log, sizeof(log), 10000) == 0);
+
 }
 
 int main(void) {
@@ -542,6 +550,62 @@ int main(void) {
     run_ms(400);
     verify(!fade_opaque && outputs[0].opaque && outputs[1].opaque && owe_still_opaque(app.still),
            "a still marks the surface opaque only after its fade");
+
+    // The same normalized crops select opposite corners of a real video and
+    // the held final still. This checks vertical orientation as well as span.
+    snprintf(line, sizeof(line), "{\"cmd\":\"load\",\"path\":\"%s/quadrants.mp4\",\"kind\":\"video\",\"once\":true}", root);
+    command(line);
+    await_video();
+    snprintf(line, sizeof(line), "{\"cmd\":\"source-rects\",\"hold\":true,\"media_id\":%llu,\"outputs\":[{\"name\":\"OWE-TEST-0\",\"x\":0,\"y\":0,\"width\":0.5,\"height\":0.5},{\"name\":\"OWE-TEST-1\",\"x\":0.5,\"y\":0.5,\"width\":0.5,\"height\":0.5}]}", (unsigned long long)app.media_id);
+    char framed_request[1024];
+    snprintf(framed_request, sizeof(framed_request), "%s", line);
+    command(line);
+    int64_t framed_deadline = now_ms() + 1500;
+    while ((outputs[0].composition_swapped != app.composition_id ||
+            outputs[1].composition_swapped != app.composition_id) && now_ms() < framed_deadline) tick();
+    verify(samples[0][0] > 240 && samples[0][2] < 10 && samples[1][2] > 240 && samples[1][0] < 10,
+           "intro source rectangles select distinct video regions without flipping them");
+    verify(outputs[0].composition_swapped == app.composition_id && outputs[1].composition_swapped == app.composition_id,
+           "composition readiness follows swaps on both outputs");
+    verify(owe_mpv_is_paused(app.mpv) && owe_mpv_time_pos(app.mpv) < 0.04,
+           "a framed intro holds its opening frame until the covering client reveals it");
+    snprintf(line, sizeof(line), "{\"cmd\":\"source-rects-release\",\"media_id\":%llu,\"composition_id\":%llu}",
+             (unsigned long long)app.media_id, (unsigned long long)app.composition_id);
+    command(line);
+    await_position(0.1);
+    verify(!owe_mpv_is_paused(app.mpv) && !app.composition_hold_until,
+           "releasing the matching composition starts its full animation");
+    command(framed_request);
+    verify(app.composition_hold_until && owe_mpv_is_paused(app.mpv),
+           "an updated composition may hold the current position without a second rewind");
+    app.composition_hold_until = owe_ipc_now_ms() - 1;
+    run_ms(80);
+    verify(!app.composition_hold_until && !owe_mpv_is_paused(app.mpv),
+           "an abandoned composition hold expires and playback resumes");
+    uint64_t accepted_composition = app.composition_id;
+    snprintf(line, sizeof(line), "{\"cmd\":\"source-rects\",\"media_id\":%llu,\"outputs\":[{\"name\":\"OWE-TEST-0\",\"x\":0,\"y\":0,\"width\":1,\"height\":1},{\"name\":\"OWE-TEST-1\",\"x\":0.8,\"y\":0,\"width\":0.5,\"height\":1}]}", (unsigned long long)app.media_id);
+    CHECK(owe_ipc_send_line(client, line) == 0);
+    tick();
+    char bad_reply[1024];
+    CHECK(owe_ipc_recv_line(client, bad_reply, sizeof(bad_reply)) == 0);
+    verify(strstr(bad_reply, "error") && app.composition_id == accepted_composition && outputs[0].source_w == 0.5f,
+           "an invalid later rectangle cannot partially replace a valid composition");
+    snprintf(line, sizeof(line), "{\"cmd\":\"source-rects\",\"media_id\":%llu,\"outputs\":[]}", (unsigned long long)app.media_id - 1);
+    CHECK(owe_ipc_send_line(client, line) == 0);
+    tick();
+    CHECK(owe_ipc_recv_line(client, bad_reply, sizeof(bad_reply)) == 0);
+    verify(strstr(bad_reply, "error") && app.composition_id == accepted_composition,
+           "a superseded media generation cannot replace the active composition");
+    await_eof();
+    snprintf(line, sizeof(line), "{\"cmd\":\"intro-finish\",\"path\":\"%s/quadrants.png\",\"ms\":250}", root);
+    command(line);
+    run_ms(550);
+    verify(samples[0][0] > 240 && samples[0][2] < 10 && samples[1][2] > 240 && samples[1][0] < 10,
+           "final still keeps the video's source rectangles through the EOF fade");
+    video(0);
+    await_video();
+    verify(!outputs[0].source_rect && !outputs[1].source_rect,
+           "a new media load discards the previous intro composition");
 
     close(client);
     owe_render_ipc_free(app.ipc);

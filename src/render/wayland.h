@@ -43,6 +43,9 @@ typedef struct owe_output {
     void *egl_surface;
     int egl_w;
     int egl_h;
+    bool source_rect;
+    float source_x, source_y, source_w, source_h;
+    uint64_t composition_swapped;
     struct owe_output *next;
 } owe_output_t;
 

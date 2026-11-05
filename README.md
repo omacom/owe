@@ -154,6 +154,9 @@ Commands:
 - `{"cmd":"status"}` reports the path, kind, pause state, outputs, `time_pos`, `hwdec`, and playback `error`.
 - `{"cmd":"fade","ms":250}` — set the still fade length.
 - `{"cmd":"transition-start"}` — start the fade of a held transition still.
+- `{"cmd":"source-rects","media_id":7,"outputs":[{"name":"DP-1","x":0,"y":0,"width":0.5,"height":1}]}` — set normalized, top-left source rectangles for an intro or prepared intro. The whole request is validated atomically (at most 16 unique, existing outputs). Rectangles must be finite and inside the source. Omitted outputs use the normal cover crop. A new media load resets the rectangles; `intro-finish` preserves them for the final still. With `"hold":true`, a first composition rewinds and holds the intro at its cropped opening frame. Later framing updates hold the current position. The hold expires in two seconds if the covering client disappears. The response includes `composition_id`; wait for the same ID and `composition_ready:true` in renderer status before uncovering it. The media generation prevents a late request from framing a newer clip, including a replay of the same file.
+- `{"cmd":"source-rects-release","media_id":7,"composition_id":2}` — resume a held composition after its covering surface has yielded. Both IDs must still match.
+- Renderer status advertises `source_rects:1`, `media_id`, `composition_id`, `composition_ready`, and `composition_held`. Read `intro_path` through daemon `render-status` for the selected clip: the renderer's decode `path` may be an opened `/proc/fd` while a staged theme moves.
 - `{"cmd":"intro-show"}` — reveal a loaded intro once its outgoing still is ready.
 - `{"cmd":"intro-start"}` — resume a prepared intro and play it once.
 - `{"cmd":"intro-finish","path":"/abs/still.png","ms":750}` — fade the final intro frame into a still and hold it for the shell handoff.

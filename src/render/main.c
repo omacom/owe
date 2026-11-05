@@ -243,6 +243,7 @@ int main(int argc, char **argv) {
         n += owe_render_ipc_pollfds(g_app.ipc, &pfds[n]);
         n += owe_feed_pollfds(g_app.feed, &pfds[n]);
         rc = poll(pfds, (nfds_t)n,
+                  g_app.composition_hold_until ? 100 :
                   (owe_still_busy(g_app.still) || owe_still_busy(g_app.transition)) ? 200 : 1000);
         if (rc < 0) {
             if (errno == EINTR) {

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stdint.h>
 
 struct owe_wayland;
 struct owe_egl;
@@ -24,6 +25,9 @@ typedef struct owe_app {
     bool intro_waiting;
     bool preparing;
     int fade_ms;
+    uint64_t media_id;
+    uint64_t composition_id;
+    int64_t composition_hold_until;
     char current_path[4096];
     char current_kind[16];
 } owe_app_t;
