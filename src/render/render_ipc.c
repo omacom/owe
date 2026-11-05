@@ -103,7 +103,7 @@ static void handle_status(struct owe_render_ipc *ipc, struct owe_ipc_client *c) 
     }
     if (asprintf(&line,
              "{\"status\":\"ok\",\"path\":%s,\"kind\":\"%s\",\"paused\":%s,\"ready\":%s,\"outputs\":%d,"
-             "\"source_rects\":1,\"media_id\":%" PRIu64 ",\"composition_id\":%" PRIu64 ",\"composition_ready\":%s,\"composition_held\":%s,"
+             "\"composition_handoff\":1,\"composition_handoff_pending\":%s,\"source_rects\":1,\"media_id\":%" PRIu64 ",\"composition_id\":%" PRIu64 ",\"composition_ready\":%s,\"composition_held\":%s,"
              "\"max_width\":%d,\"max_height\":%d,\"has_video\":%s,\"has_still\":%s,"
              "\"has_transition\":%s,\"transition_busy\":%s,\"transition_done\":%s,"
              "\"time_pos\":%.3f,\"hwdec\":%s,\"error\":%s,\"skipped\":%s,"
@@ -112,6 +112,8 @@ static void handle_status(struct owe_render_ipc *ipc, struct owe_ipc_client *c) 
              app && app->paused ? "true" : "false",
              ready ? "true" : "false",
              app && app->wl ? owe_wayland_output_count(app->wl) : 0,
+             app && app->intro && owe_mpv_eof(app->mpv) && app->composition_handoff && !app->composition_finished && app->transition &&
+                 !owe_still_fades_out(app->transition) && owe_still_has_image(app->transition) && owe_still_fade_done(app->transition) ? "true" : "false",
              app ? app->media_id : 0, app ? app->composition_id : 0, composition_ready ? "true" : "false", app && app->composition_hold_until ? "true" : "false",
              mw, mh, app && app->mpv && owe_mpv_has_video(app->mpv) ? "true" : "false",
              app && app->still && owe_still_has_image(app->still) ? "true" : "false",
@@ -157,6 +159,7 @@ static void stop_feed(owe_app_t *app) {
 
 static void reset_composition(owe_app_t *app) {
     app->composition_hold_until = 0;
+    app->composition_handoff = app->composition_finished = false;
     owe_mpv_set_paused(app->mpv, app->paused);
     app->composition_id++;
     for (owe_output_t *out = owe_wayland_outputs(app->wl); out; out = out->next)
@@ -206,6 +209,7 @@ static void handle_source_rects(struct owe_ipc_client *c, yyjson_val *root) {
         send_err(c, "cannot rewind intro"); return;
     }
     reset_composition(app);
+    app->composition_handoff = yyjson_get_bool(yyjson_obj_get(root, "handoff"));
     if (hold) {
         app->composition_hold_until = owe_ipc_now_ms() + 2000;
         owe_mpv_set_paused(app->mpv, true);
@@ -380,7 +384,15 @@ static void handle_command(void *context, struct owe_ipc_client *c, const char *
     root = yyjson_doc_get_root(doc);
     vcmd = root ? yyjson_obj_get(root, "cmd") : NULL;
     cmd = vcmd && yyjson_is_str(vcmd) ? yyjson_get_str(vcmd) : "";
-    if (strcmp(cmd, "source-rects-release") == 0) {
+    if (strcmp(cmd, "source-rects-finish") == 0) {
+        if (app && app->intro && owe_mpv_eof(app->mpv) && app->composition_handoff &&
+            !owe_still_fades_out(app->transition) && yyjson_get_uint(yyjson_obj_get(root, "media_id")) == app->media_id &&
+            yyjson_get_uint(yyjson_obj_get(root, "composition_id")) == app->composition_id &&
+            owe_still_has_image(app->transition) && owe_still_fade_done(app->transition)) {
+            app->composition_finished = true;
+            send_ok(c, NULL);
+        } else send_err(c, "composition not awaiting handoff");
+    } else if (strcmp(cmd, "source-rects-release") == 0) {
         if (app && yyjson_get_uint(yyjson_obj_get(root, "media_id")) == app->media_id &&
             yyjson_get_uint(yyjson_obj_get(root, "composition_id")) == app->composition_id && app->composition_hold_until) {
             app->composition_hold_until = 0;

@@ -556,7 +556,7 @@ int main(void) {
     snprintf(line, sizeof(line), "{\"cmd\":\"load\",\"path\":\"%s/quadrants.mp4\",\"kind\":\"video\",\"once\":true}", root);
     command(line);
     await_video();
-    snprintf(line, sizeof(line), "{\"cmd\":\"source-rects\",\"hold\":true,\"media_id\":%llu,\"outputs\":[{\"name\":\"OWE-TEST-0\",\"x\":0,\"y\":0,\"width\":0.5,\"height\":0.5},{\"name\":\"OWE-TEST-1\",\"x\":0.5,\"y\":0.5,\"width\":0.5,\"height\":0.5}]}", (unsigned long long)app.media_id);
+    snprintf(line, sizeof(line), "{\"cmd\":\"source-rects\",\"hold\":true,\"handoff\":true,\"media_id\":%llu,\"outputs\":[{\"name\":\"OWE-TEST-0\",\"x\":0,\"y\":0,\"width\":0.5,\"height\":0.5},{\"name\":\"OWE-TEST-1\",\"x\":0.5,\"y\":0.5,\"width\":0.5,\"height\":0.5}]}", (unsigned long long)app.media_id);
     char framed_request[1024];
     snprintf(framed_request, sizeof(framed_request), "%s", line);
     command(line);
@@ -602,6 +602,12 @@ int main(void) {
     run_ms(550);
     verify(samples[0][0] > 240 && samples[0][2] < 10 && samples[1][2] > 240 && samples[1][0] < 10,
            "final still keeps the video's source rectangles through the EOF fade");
+    verify(app.composition_handoff && !app.composition_finished,
+           "a framed final still waits for the client's return acknowledgment");
+    snprintf(line, sizeof(line), "{\"cmd\":\"source-rects-finish\",\"media_id\":%llu,\"composition_id\":%llu}",
+             (unsigned long long)app.media_id, (unsigned long long)app.composition_id);
+    command(line);
+    verify(app.composition_finished, "only the matching final handoff may release the stock background");
     video(0);
     await_video();
     verify(!outputs[0].source_rect && !outputs[1].source_rect,

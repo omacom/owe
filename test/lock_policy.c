@@ -461,6 +461,11 @@ int main(void) {
     owed_app_poll_intro();
     CHECK(owed_app_intro_active() && g_app.intro_phase == OWE_INTRO_FINISHING);
     CHECK(strstr(supervisor_last, "\"cmd\":\"intro-finish\"") != NULL);
+    strcpy(supervisor_reply, "{\"status\":\"ok\",\"ready\":true,\"error\":\"\",\"eof\":true,\"has_transition\":true,\"transition_busy\":false,\"transition_done\":true,\"composition_handoff_pending\":true}");
+    owed_app_poll_intro();
+    CHECK(owed_app_intro_active() && g_app.intro_phase == OWE_INTRO_FINISHING);
+    CHECK(g_app.engine == OWE_ENGINE_RENDERER && !shell_plugin_enabled);
+    CHECK(shell_plugin_calls == 1); // No stock wallpaper before the client presents.
     strcpy(supervisor_reply, "{\"status\":\"ok\",\"ready\":true,\"error\":\"\",\"eof\":true,\"has_transition\":true,\"transition_busy\":false,\"transition_done\":true}");
     owed_app_poll_intro();
     CHECK(!owed_app_intro_active());
@@ -534,9 +539,10 @@ int main(void) {
     owed_app_poll_intro();
     CHECK(g_app.intro_phase == OWE_INTRO_FINISHING);
     CHECK(strstr(supervisor_last, "\"cmd\":\"intro-finish\"") != NULL);
-    strcpy(supervisor_reply, "{\"status\":\"ok\",\"ready\":true,\"error\":\"\",\"eof\":true,\"has_transition\":true,\"transition_busy\":false,\"transition_done\":true}");
+    strcpy(supervisor_reply, "{\"status\":\"ok\",\"ready\":true,\"error\":\"\",\"eof\":true,\"has_transition\":true,\"transition_busy\":false,\"transition_done\":true,\"composition_handoff_pending\":true}");
+    g_app.intro_phase_deadline_ms = monotonic_ms() - 1;
     owed_app_poll_intro();
-    CHECK(!owed_app_intro_active() && strcmp(owed_app_intro_result(), "ok") == 0);
+    CHECK(!owed_app_intro_active() && strcmp(owed_app_intro_result(), "error") == 0);
     CHECK(g_app.engine == OWE_ENGINE_SHELL && shell_plugin_enabled);
 
     /* A renderer covered by the shell restarts without preparing the target still. */

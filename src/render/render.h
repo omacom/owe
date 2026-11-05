@@ -28,6 +28,8 @@ typedef struct owe_app {
     uint64_t media_id;
     uint64_t composition_id;
     int64_t composition_hold_until;
+    bool composition_handoff;
+    bool composition_finished;
     char current_path[4096];
     char current_kind[16];
 } owe_app_t;

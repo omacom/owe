@@ -741,7 +741,14 @@ void owed_app_poll_intro(void) {
     }
     if (app->intro_phase == OWE_INTRO_FINISHING) {
         if (transition_done) {
-            intro_finish(NULL);
+            // A framing client restores its own surface above the stock layer.
+            // Keep our matching still and the stock layer suspended until that
+            // surface has been presented. The existing deadline bounds a lost client.
+            yyjson_doc *status = yyjson_read(reply, strlen(reply), 0);
+            bool waiting = status && yyjson_get_bool(yyjson_obj_get(yyjson_doc_get_root(status), "composition_handoff_pending"));
+            if (status) yyjson_doc_free(status);
+            if (!waiting) intro_finish(NULL);
+            else if (now >= app->intro_phase_deadline_ms) intro_finish("composition handoff timed out");
         } else if (!has_transition && !transition_busy) {
             intro_finish("intro finish still failed");
         } else if (now >= app->intro_phase_deadline_ms) {
