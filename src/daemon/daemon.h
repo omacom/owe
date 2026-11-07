@@ -57,6 +57,9 @@ typedef struct owed_app {
     off_t intro_prepared_size;
     struct timespec intro_prepared_mtime;
     struct timespec intro_prepared_ctime;
+    /* A login intro prepared at startup: until this time the shell keeps the
+     * still it draws by itself, without a handoff the intro would undo. */
+    int64_t login_intro_until_ms;
 
     char source_path[4096];
     char source_kind[16];

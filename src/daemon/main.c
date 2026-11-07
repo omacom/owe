@@ -54,6 +54,10 @@ static bool battery_poster_active(void) {
 #define INTRO_FINISH_TIMEOUT_MS 5000
 #define INTRO_FADE_OUT_MS 750
 #define RENDERER_WARM_MS 60000
+/* How long a prepared login intro waits for the shell to ask for it. The
+ * shell starts it once its own QML has loaded, which can trail this daemon by
+ * seconds on a slow login; past this the ordinary handoff runs. */
+#define LOGIN_INTRO_WAIT_MS 15000
 
 static int64_t monotonic_ms(void) {
     struct timespec now;
@@ -304,6 +308,21 @@ static void clear_prepared_intro(void) {
     g_app.intro_prepared = false;
 }
 
+/* The shell draws the current still by itself as it starts, so a login whose
+ * intro is prepared needs no handoff of it first: taking the still and giving
+ * it back would put two IPC round trips to a shell still building its desktop
+ * in front of the intro. The wait ends with the prepared intro, a new
+ * background, or the deadline, and the ordinary handoff then runs. */
+static bool login_intro_waiting(void) {
+    owed_app_t *app = &g_app;
+    if (!app->login_intro_until_ms) return false;
+    if (app->intro_prepared && app->engine == OWE_ENGINE_NONE &&
+        monotonic_ms() < app->login_intro_until_ms) return true;
+    app->login_intro_until_ms = 0;
+    OWE_INFO("login intro wait over, handing the still to the shell");
+    return false;
+}
+
 static void process_shell_handoff(void) {
     owed_app_t *app = &g_app;
     if (app->shell_stop_at_ms && monotonic_ms() >= app->shell_stop_at_ms) {
@@ -543,9 +562,14 @@ int owed_app_start_intro(const char *path, bool from_still) {
     char *line = NULL;
     int rc;
     bool prepared;
+    bool shell_has_still;
     if (!path || !*path || !app->supervisor || app->intro_active) {
         return -1;
     }
+    /* A waiting login intro is answered once, played or not. */
+    shell_has_still = (app->engine == OWE_ENGINE_SHELL && app->shell_enabled == 1) ||
+                      login_intro_waiting();
+    app->login_intro_until_ms = 0;
     /* A one-shot intro pairs with a still background. A video or GIF already
      * owns the renderer and needs no intro. */
     if (strcmp(app->source_kind, "still") != 0) {
@@ -557,14 +581,14 @@ int owed_app_start_intro(const char *path, bool from_still) {
         (app->hypr && owed_hypr_any_fullscreen(app->hypr))) {
         return -1;
     }
-    prepared = !from_still && app->engine == OWE_ENGINE_SHELL && app->shell_enabled == 1 && prepared_intro_matches(path);
+    prepared = !from_still && shell_has_still && prepared_intro_matches(path);
     /* Starting on the first frame relies on a renderer surface that is still
      * unmapped. A renderer already on screen, such as one that kept the still
      * when the shell could not take it back, would clear that still to black
      * first. Recreate it when the shell already covers it; otherwise the
      * intro must start from its still. */
     if (!prepared && !from_still && renderer_on_screen()) {
-        if (app->engine == OWE_ENGINE_SHELL && app->shell_enabled == 1) {
+        if (shell_has_still) {
             /* The shell covers the old renderer. Recreate its unmapped
              * surfaces so first-frame mode does not prepare the target still. */
             owed_supervisor_stop(app->supervisor);
@@ -935,6 +959,9 @@ void owed_app_apply_policy(void) {
     if (shell_engine) {
         cancel_handoff("the background is a still again");
         if (app->engine != OWE_ENGINE_SHELL) {
+            if (login_intro_waiting()) {
+                return;
+            }
             if (switch_to_shell() == 0) {
                 OWE_INFO("engine: shell");
                 return;
@@ -1099,6 +1126,11 @@ void owed_app_on_background_changed(const char *resolved_path) {
     if (app->job) {
         owed_async_job_free(app->job);
         app->job = NULL;
+    }
+    /* The login intro was prepared for the still this replaces. */
+    if (app->login_intro_until_ms && *app->source_path) {
+        app->login_intro_until_ms = 0;
+        clear_prepared_intro();
     }
     /* A still that is on screen becomes the wipe source when the next
      * background is a video. */
@@ -1309,10 +1341,13 @@ int main(int argc, char **argv) {
     owed_policy_recompute(g_app.policy);
 
     if (owed_watch_resolve_current(resolved, sizeof(resolved)) == 0) {
-        /* Decode offscreen while Quickshell builds its desktop. The usual
-         * shell handoff and first-frame intro still gate presentation. */
+        /* Decode offscreen while Quickshell builds its desktop. The shell
+         * keeps its own still until the intro's first frame is drawn. */
         if (startup_intro && *startup_intro && owe_kind_from_path(resolved) == OWE_KIND_STILL) {
-            if (prepare_intro(startup_intro, true) != 0)
+            if (prepare_intro(startup_intro, true) == 0) {
+                g_app.login_intro_until_ms = monotonic_ms() + LOGIN_INTRO_WAIT_MS;
+                OWE_INFO("login intro prepared, the shell keeps the still until it asks");
+            } else
                 OWE_WARN("startup intro preparation failed: %s", startup_intro);
         }
         owed_app_on_background_changed(resolved);

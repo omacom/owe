@@ -10,7 +10,20 @@ import time
 from daemon import MOCK, call
 
 binary = Path(sys.argv[1]).resolve()
-for selected, intro in [('still.png', 'intro.mp4'), ('still.png', ''), ('still.png', 'missing.mp4'), ('video.mp4', 'intro.mp4')]:
+
+
+def wait(condition, seconds, message):
+    deadline = time.monotonic() + seconds
+    while not condition():
+        assert time.monotonic() < deadline, message()
+        time.sleep(.01)
+
+
+# What happens after startup: nothing (the shell never asks for the intro),
+# the shell asking for it, or a new still chosen before it asks.
+cases = [('still.png', 'intro.mp4', 'request'), ('still.png', 'intro.mp4', 'switch'), ('still.png', 'intro.mp4', 'unasked'),
+         ('still.png', '', None), ('still.png', 'missing.mp4', None), ('video.mp4', 'intro.mp4', None)]
+for selected, intro, then in cases:
     with tempfile.TemporaryDirectory(prefix='owe-start-') as directory:
         root = Path(directory)
         shutil.copy2(binary, root / 'owed')
@@ -18,38 +31,89 @@ for selected, intro in [('still.png', 'intro.mp4'), ('still.png', ''), ('still.p
         (root / 'owe-render').chmod(0o755)
         current = root / 'omarchy/current'
         current.mkdir(parents=True)
-        for name in ('still.png', 'video.mp4', 'intro.mp4'):
+        for name in ('still.png', 'other.png', 'video.mp4', 'intro.mp4'):
             (root / name).write_bytes(b'clip')
         (current / 'background').symlink_to(root / selected)
         (root / 'bin').mkdir()
         helper = root / 'bin/omarchy-shell'
-        helper.write_text('#!/bin/bash\ntouch "$XDG_RUNTIME_DIR/handoff"\nwhile [[ ! -e $XDG_RUNTIME_DIR/release ]]; do sleep 0.01; done\n')
+        # A shell that is still starting: it takes each request and answers only once released.
+        helper.write_text('#!/bin/bash\necho "$*" >>"$XDG_RUNTIME_DIR/shell.log"\ntouch "$XDG_RUNTIME_DIR/handoff"\n'
+                          'while [[ ! -e $XDG_RUNTIME_DIR/release ]]; do sleep 0.01; done\n')
         helper.chmod(0o755)
         env = os.environ.copy()
         env.update(XDG_RUNTIME_DIR=str(root), XDG_STATE_HOME=str(root), XDG_CONFIG_HOME=str(root), XDG_CACHE_HOME=str(root),
                    DBUS_SYSTEM_BUS_ADDRESS=f'unix:path={root}/no-system-bus', OWE_DRM_DPMS='0', PATH=str(root / 'bin') + ':' + env['PATH'])
         env.pop('HYPRLAND_INSTANCE_SIGNATURE', None)
         env.pop('OMARCHY_PATH', None)
-        with (root / 'daemon.log').open('w') as log:
+        log_path = root / 'daemon.log'
+        commands = root / 'commands.jsonl'
+        shell_log = root / 'shell.log'
+
+        def sent():
+            return [json.loads(line) for line in commands.read_text().splitlines()] if commands.exists() else []
+
+        def shell_calls():
+            return shell_log.read_text().splitlines() if shell_log.exists() else []
+
+        with log_path.open('w') as log:
             process = subprocess.Popen([str(root / 'owed'), '--prepare-intro', str(root / intro) if intro else ''], env=env, stdout=log, stderr=log)
             try:
-                deadline = time.monotonic() + 4
-                while not (root / 'handoff').exists():
-                    assert process.poll() is None and time.monotonic() < deadline, (root / 'daemon.log').read_text()
-                    time.sleep(.01)
-                commands = root / 'commands.jsonl'
-                loads = [json.loads(line) for line in commands.read_text().splitlines() if json.loads(line)['cmd'] == 'load'] if commands.exists() else []
                 preparing = selected == 'still.png' and intro == 'intro.mp4'
-                assert bool(loads) == preparing, loads
                 if preparing:
-                    assert any(command.get('prepare') is True and command.get('mute') is True for command in loads), loads
-                    assert not any(command['cmd'] == 'intro-start' for command in loads), loads
-                (root / 'release').touch()
-                status = call(root / 'owe/owed.sock', 'status')
-                assert status['status'] == 'ok', status
-                if selected == 'still.png':
-                    assert status['engine'] == 'shell', status
-                print(f'prepared startup respects pending handoff and falls back: {selected}, {intro!r}')
+                    # The shell draws the still by itself at login. The daemon
+                    # answers at once, without first asking the shell for it.
+                    wait(lambda: (root / 'owe/owed.sock').exists(), 4, lambda: log_path.read_text())
+                    status = call(root / 'owe/owed.sock', 'status')
+                    assert status['status'] == 'ok' and status['engine'] == 'none', status
+                    loads = [command for command in sent() if command['cmd'] == 'load']
+                    assert len(loads) == 1 and loads[0].get('prepare') is True and loads[0].get('mute') is True, loads
+                    assert not any(command['cmd'] == 'intro-start' for command in sent()), sent()
+                    assert not shell_calls(), shell_calls()
+                    if then == 'request':
+                        reply = call(root / 'owe/owed.sock', 'intro', path=str(root / intro), start='first-frame')
+                        assert reply['status'] == 'ok', reply
+                        # It resumes the prepared decoder rather than loading the clip again.
+                        assert any(command['cmd'] == 'intro-start' for command in sent()), sent()
+                        assert not any(command.get('once') for command in sent()), sent()
+                        # The shell lets go of its still once the intro's
+                        # first frame is drawn, and is asked nothing else first.
+                        wait(lambda: (root / 'handoff').exists(), 4, lambda: log_path.read_text())
+                        assert shell_calls() == ['background setSuspended true'], shell_calls()
+                        (root / 'release').touch()
+                        wait(lambda: not call(root / 'owe/owed.sock', 'intro-status')['running'], 4, lambda: log_path.read_text())
+                        assert call(root / 'owe/owed.sock', 'intro-status')['result'] == 'ok', log_path.read_text()
+                        # The intro ends on the still, which goes back to the shell.
+                        wait(lambda: call(root / 'owe/owed.sock', 'status')['engine'] == 'shell', 4, lambda: log_path.read_text())
+                        assert shell_calls()[-1] == 'background setSuspended false', shell_calls()
+                    elif then == 'switch':
+                        (current / 'background').unlink()
+                        (current / 'background').symlink_to(root / 'other.png')
+                        wait(lambda: (root / 'handoff').exists(), 4, lambda: log_path.read_text())
+                        assert shell_calls() == ['background setSuspended false'], shell_calls()
+                        (root / 'release').touch()
+                        wait(lambda: call(root / 'owe/owed.sock', 'status')['engine'] == 'shell', 4, lambda: log_path.read_text())
+                        reply = call(root / 'owe/owed.sock', 'intro', path=str(root / intro), start='first-frame')
+                        assert reply['status'] == 'ok', reply
+                        assert any(command.get('once') for command in sent()), sent()
+                        assert not any(command['cmd'] == 'intro-start' for command in sent()), sent()
+                    else:
+                        # A login that never asks, such as a restart of this
+                        # daemon in a running session, hands the still over.
+                        time.sleep(12)
+                        assert not shell_calls(), shell_calls()
+                        wait(lambda: (root / 'handoff').exists(), 6, lambda: log_path.read_text())
+                        assert shell_calls() == ['background setSuspended false'], shell_calls()
+                        (root / 'release').touch()
+                        wait(lambda: call(root / 'owe/owed.sock', 'status')['engine'] == 'shell', 4, lambda: log_path.read_text())
+                else:
+                    wait(lambda: (root / 'handoff').exists(), 4, lambda: log_path.read_text())
+                    assert not [command for command in sent() if command['cmd'] == 'load'], sent()
+                    (root / 'release').touch()
+                    status = call(root / 'owe/owed.sock', 'status')
+                    assert status['status'] == 'ok', status
+                    if selected == 'still.png':
+                        assert status['engine'] == 'shell', status
+                print(f'startup with {selected}, intro {intro!r}, then {then}: ok')
             finally:
                 (root / 'release').touch()
                 process.terminate()

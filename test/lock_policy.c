@@ -671,6 +671,21 @@ int main(void) {
         CHECK(prepare_intro(prepared, true) == 0);
         CHECK(g_app.engine == OWE_ENGINE_NONE && g_app.shell_enabled == -1);
         CHECK(g_app.intro_prepared && !g_app.intro_active);
+        /* A prepared login intro leaves the still with the shell until the
+         * prepared clip is gone, here released by a lock. */
+        shell_plugin_calls = 0;
+        g_app.login_intro_until_ms = monotonic_ms() + LOGIN_INTRO_WAIT_MS;
+        owed_app_apply_policy();
+        CHECK(g_app.engine == OWE_ENGINE_NONE && shell_plugin_calls == 0);
+        hypr.locked = true;
+        process_shell_handoff();
+        hypr.locked = false;
+        CHECK(!g_app.intro_prepared);
+        owed_app_apply_policy();
+        CHECK(g_app.engine == OWE_ENGINE_SHELL && shell_plugin_calls == 1 && !g_app.login_intro_until_ms);
+        g_app.engine = OWE_ENGINE_NONE;
+        g_app.shell_enabled = -1;
+        CHECK(prepare_intro(prepared, true) == 0);
         CHECK(switch_to_shell() == 0);
         CHECK(g_app.intro_prepared);
         CHECK(owed_app_prepare_intro(prepared) == 0);

@@ -64,7 +64,7 @@ test('uninstall', find_program('bash'),
 
 test('startup', find_program('python3'),
   args : [files('startup.py'), owed.full_path()],
-  depends : owed, timeout : 30)
+  depends : owed, timeout : 60)
 
 test('daemon', find_program('python3'),
   args : [files('daemon.py'), owed.full_path(), owe_cli.full_path()],
