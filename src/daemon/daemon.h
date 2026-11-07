@@ -60,6 +60,7 @@ typedef struct owed_app {
     /* A login intro prepared at startup: until this time the shell keeps the
      * still it draws by itself, without a handoff the intro would undo. */
     int64_t login_intro_until_ms;
+    char login_intro_still[4096];
 
     char source_path[4096];
     char source_kind[16];

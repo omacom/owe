@@ -317,6 +317,7 @@ static bool login_intro_waiting(void) {
     owed_app_t *app = &g_app;
     if (!app->login_intro_until_ms) return false;
     if (app->intro_prepared && app->engine == OWE_ENGINE_NONE &&
+        owed_render_is_alive(app->supervisor) &&
         monotonic_ms() < app->login_intro_until_ms) return true;
     app->login_intro_until_ms = 0;
     OWE_INFO("login intro wait over, handing the still to the shell");
@@ -1156,8 +1157,9 @@ void owed_app_on_background_changed(const char *resolved_path) {
     }
     /* The login intro was prepared for the still this replaces. The shell
      * still draws that still, so it takes it over before the new background
-     * loads, as it would have at startup. */
-    if (app->login_intro_until_ms && *app->source_path) {
+     * loads, as it would have at startup. A refresh has cleared source_path,
+     * so the still is compared with the one the intro was prepared for. */
+    if (app->login_intro_until_ms && strcmp(resolved_path, app->login_intro_still) != 0) {
         app->login_intro_until_ms = 0;
         clear_prepared_intro();
         if (app->engine == OWE_ENGINE_NONE && switch_to_shell() == 0) {
@@ -1378,6 +1380,7 @@ int main(int argc, char **argv) {
         if (startup_intro && *startup_intro && owe_kind_from_path(resolved) == OWE_KIND_STILL) {
             if (prepare_intro(startup_intro, true) == 0) {
                 g_app.login_intro_until_ms = monotonic_ms() + LOGIN_INTRO_WAIT_MS;
+                copy_path(g_app.login_intro_still, sizeof(g_app.login_intro_still), resolved);
                 OWE_INFO("login intro prepared, the shell keeps the still until it asks");
             } else
                 OWE_WARN("startup intro preparation failed: %s", startup_intro);

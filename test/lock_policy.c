@@ -692,6 +692,30 @@ int main(void) {
         g_app.engine = OWE_ENGINE_NONE;
         g_app.shell_enabled = -1;
         CHECK(prepare_intro(prepared, true) == 0);
+        /* A refresh to another still, which clears source_path first, and a
+         * renderer lost before the request each end the wait with a handoff. */
+        strcpy(g_app.source_path, "/still.png");
+        strcpy(g_app.login_intro_still, "/still.png");
+        g_app.login_intro_until_ms = monotonic_ms() + LOGIN_INTRO_WAIT_MS;
+        shell_plugin_calls = 0;
+        g_app.source_path[0] = '\0';
+        owed_app_on_background_changed("/still.png");
+        CHECK(g_app.engine == OWE_ENGINE_NONE && g_app.intro_prepared && shell_plugin_calls == 0);
+        g_app.source_path[0] = '\0';
+        owed_app_on_background_changed("/other.png");
+        CHECK(g_app.engine == OWE_ENGINE_SHELL && !g_app.intro_prepared && !g_app.login_intro_until_ms);
+        CHECK(shell_plugin_calls == 1 && shell_plugin_enabled);
+        g_app.engine = OWE_ENGINE_NONE;
+        g_app.shell_enabled = -1;
+        CHECK(prepare_intro(prepared, true) == 0);
+        g_app.login_intro_until_ms = monotonic_ms() + LOGIN_INTRO_WAIT_MS;
+        renderer.down = true;
+        owed_app_apply_policy();
+        CHECK(g_app.engine == OWE_ENGINE_SHELL && !g_app.login_intro_until_ms);
+        renderer.down = false;
+        g_app.engine = OWE_ENGINE_NONE;
+        g_app.shell_enabled = -1;
+        CHECK(prepare_intro(prepared, true) == 0);
         /* Asked for, the login intro first lets the shell go, then resumes
          * the prepared decoder, with nothing sent to the renderer between. */
         g_app.login_intro_until_ms = monotonic_ms() + LOGIN_INTRO_WAIT_MS;
