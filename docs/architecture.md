@@ -100,10 +100,13 @@ a shell that leaves its background empty for the intro, as at login.
 At login the daemon prepares the intro before the shell has loaded and does not
 hand the shell its still first: the shell draws it by itself as it starts, and
 taking it only to give it back would put two IPC round trips to a busy shell in
-front of the intro. The first IPC the shell then sees is the release after the
-intro's first frame. A new background, a lock or sleep that drops the prepared
-clip, or 15 seconds without an intro request ends that wait with the ordinary
-handoff. A
+front of the intro. When the shell asks for the intro, the daemon has it let go
+of its still first and resumes the prepared clip once it has answered: the
+login cover hides the desktop until the intro moves, and a clip resumed while
+the shell is still busy would play its opening under that cover. A new
+background (also through a refresh), a lost renderer, a lock or sleep that drops
+the prepared clip, or 15 seconds without an intro request ends that wait with
+the ordinary handoff. A
 renderer that is already on screen starts the intro from its still instead.
 The intro still fades into the still at EOF.
 After an intro the daemon returns the engine to the shell. `intro-status`

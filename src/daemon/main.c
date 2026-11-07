@@ -1376,7 +1376,7 @@ int main(int argc, char **argv) {
 
     if (owed_watch_resolve_current(resolved, sizeof(resolved)) == 0) {
         /* Decode offscreen while Quickshell builds its desktop. The shell
-         * keeps its own still until the intro's first frame is drawn. */
+         * keeps its own still until it asks for the intro. */
         if (startup_intro && *startup_intro && owe_kind_from_path(resolved) == OWE_KIND_STILL) {
             if (prepare_intro(startup_intro, true) == 0) {
                 g_app.login_intro_until_ms = monotonic_ms() + LOGIN_INTRO_WAIT_MS;
