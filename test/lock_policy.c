@@ -678,11 +678,31 @@ int main(void) {
         owed_app_apply_policy();
         CHECK(g_app.engine == OWE_ENGINE_NONE && shell_plugin_calls == 0);
         hypr.locked = true;
-        process_shell_handoff();
+        {
+            int stops = renderer.stops;
+            process_shell_handoff();
+            CHECK(renderer.stops == stops + 1);
+        }
         hypr.locked = false;
         CHECK(!g_app.intro_prepared);
+        renderer.down = true;
         owed_app_apply_policy();
+        renderer.down = false;
         CHECK(g_app.engine == OWE_ENGINE_SHELL && shell_plugin_calls == 1 && !g_app.login_intro_until_ms);
+        g_app.engine = OWE_ENGINE_NONE;
+        g_app.shell_enabled = -1;
+        CHECK(prepare_intro(prepared, true) == 0);
+        /* Asked for, the login intro first lets the shell go, then resumes
+         * the prepared decoder, with nothing sent to the renderer between. */
+        g_app.login_intro_until_ms = monotonic_ms() + LOGIN_INTRO_WAIT_MS;
+        shell_plugin_calls = 0;
+        supervisor_last[0] = '\0';
+        CHECK(owed_app_start_intro(prepared, false) == 0);
+        CHECK(supervisor_last[0] == '\0' && shell_plugin_calls == 0 && !g_app.login_intro_until_ms);
+        owed_app_poll_intro();
+        CHECK(shell_plugin_calls == 1 && !shell_plugin_enabled && g_app.engine == OWE_ENGINE_RENDERER);
+        CHECK(strstr(supervisor_last, "intro-start") != NULL);
+        owed_app_stop_intro("intro cancelled");
         g_app.engine = OWE_ENGINE_NONE;
         g_app.shell_enabled = -1;
         CHECK(prepare_intro(prepared, true) == 0);

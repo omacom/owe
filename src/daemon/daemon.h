@@ -89,6 +89,7 @@ typedef struct owed_app {
     int intro_active; /* 1 while a one-shot intro video owns the renderer */
     int intro_phase;
     int intro_from_still; /* 1 when the intro starts from the shell's still */
+    int intro_release_first; /* 1 while a login intro waits for the shell to let go */
     char intro_path[4096];
     dev_t intro_still_dev; /* the still file the intro started from and ends on */
     ino_t intro_still_ino;

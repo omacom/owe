@@ -20,8 +20,9 @@ def wait(condition, seconds, message):
 
 
 # What happens after startup: nothing (the shell never asks for the intro),
-# the shell asking for it, or a new still chosen before it asks.
-cases = [('still.png', 'intro.mp4', 'request'), ('still.png', 'intro.mp4', 'switch'), ('still.png', 'intro.mp4', 'unasked'),
+# the shell asking for it, or a new still or a video chosen before it asks.
+cases = [('still.png', 'intro.mp4', 'request'), ('still.png', 'intro.mp4', 'switch'), ('still.png', 'intro.mp4', 'video'),
+         ('still.png', 'intro.mp4', 'unasked'),
          ('still.png', '', None), ('still.png', 'missing.mp4', None), ('video.mp4', 'intro.mp4', None)]
 for selected, intro, then in cases:
     with tempfile.TemporaryDirectory(prefix='owe-start-') as directory:
@@ -72,14 +73,16 @@ for selected, intro, then in cases:
                     if then == 'request':
                         reply = call(root / 'owe/owed.sock', 'intro', path=str(root / intro), start='first-frame')
                         assert reply['status'] == 'ok', reply
-                        # It resumes the prepared decoder rather than loading the clip again.
-                        assert any(command['cmd'] == 'intro-start' for command in sent()), sent()
-                        assert not any(command.get('once') for command in sent()), sent()
-                        # The shell lets go of its still once the intro's
-                        # first frame is drawn, and is asked nothing else first.
+                        # The shell's cover hides the login, so the shell lets go of its
+                        # still first, is asked nothing else, and the clip starts after.
                         wait(lambda: (root / 'handoff').exists(), 4, lambda: log_path.read_text())
                         assert shell_calls() == ['background setSuspended true'], shell_calls()
+                        time.sleep(.2)
+                        assert not any(command['cmd'] == 'intro-start' for command in sent()), sent()
                         (root / 'release').touch()
+                        # It resumes the prepared decoder rather than loading the clip again.
+                        wait(lambda: any(command['cmd'] == 'intro-start' for command in sent()), 4, lambda: log_path.read_text())
+                        assert not any(command.get('once') for command in sent()), sent()
                         wait(lambda: not call(root / 'owe/owed.sock', 'intro-status')['running'], 4, lambda: log_path.read_text())
                         assert call(root / 'owe/owed.sock', 'intro-status')['result'] == 'ok', log_path.read_text()
                         # The intro ends on the still, which goes back to the shell.
@@ -96,6 +99,18 @@ for selected, intro, then in cases:
                         assert reply['status'] == 'ok', reply
                         assert any(command.get('once') for command in sent()), sent()
                         assert not any(command['cmd'] == 'intro-start' for command in sent()), sent()
+                    elif then == 'video':
+                        # A video still loads behind the shell's still and
+                        # fades in from it, so the shell is handed the still first.
+                        (current / 'background').unlink()
+                        (current / 'background').symlink_to(root / 'video.mp4')
+                        wait(lambda: (root / 'handoff').exists(), 4, lambda: log_path.read_text())
+                        assert shell_calls() == ['background setSuspended false'], shell_calls()
+                        (root / 'release').touch()
+                        wait(lambda: call(root / 'owe/owed.sock', 'status')['engine'] == 'renderer', 4, lambda: log_path.read_text())
+                        assert shell_calls() == ['background setSuspended false', 'background setSuspended true'], shell_calls()
+                        video = [command for command in sent() if command.get('path') == str(root / 'video.mp4')]
+                        assert len(video) == 1 and video[0].get('from') == str(root / 'still.png') and video[0].get('hold') is True, sent()
                     else:
                         # A login that never asks, such as a restart of this
                         # daemon in a running session, hands the still over.
