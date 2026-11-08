@@ -491,6 +491,66 @@ int main(void) {
     verify(owe_mpv_ready(app.mpv) && !owe_still_busy(app.transition) && samples[0][2] > 240,
            "an unavailable optional transition image does not reject a video");
 
+    /* A loop plays as copies of the file. A path with the separators of mpv's
+     * EDL syntax still loads, and the position stays within one copy, so it
+     * falls back to the start at each wrap the way a single looped file does. */
+    {
+        char odd[256], log[1024];
+        snprintf(odd, sizeof(odd), "%s/a;b%%1,c.mp4", root);
+        snprintf(line, sizeof(line), "%s/blue.mp4", root);
+        char *copy[] = {"cp", "--", line, odd, NULL};
+        CHECK(owe_spawn_capture("cp", copy, log, sizeof(log), 5000) == 0);
+        snprintf(line, sizeof(line), "{\"cmd\":\"load\",\"path\":\"%s\",\"kind\":\"video\"}", odd);
+        command(line);
+        await_video();
+        double last = 0.0, highest = 0.0;
+        bool wrapped = false;
+        int64_t deadline = now_ms() + 15000;
+        while (!wrapped && now_ms() < deadline) {
+            tick();
+            double pos = owe_mpv_time_pos(app.mpv);
+            if (pos > highest) highest = pos;
+            if (pos >= 0 && last > 2.0 && pos < 1.0) wrapped = true;
+            if (pos >= 0) last = pos;
+        }
+        verify(owe_mpv_ready(app.mpv) && !owe_mpv_eof(app.mpv) && wrapped && highest < 3.05 &&
+               owe_mpv_loop_copies(app.mpv) > 1,
+               "a looping video at a path with ; % and , plays as copies and wraps inside one copy");
+        unlink(odd);
+
+        /* A file whose timestamps start later would lose its tail on every
+         * copy, so it loops on its own. */
+        char late[256];
+        snprintf(late, sizeof(late), "%s/late.mp4", root);
+        char *mp4[] = {"ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=blue:s=128x72:r=30:d=3",
+                       "-c:v", "libx264", "-threads", "1", "-pix_fmt", "yuv420p",
+                       "-output_ts_offset", "0.2", late, NULL};
+        CHECK(owe_spawn_capture("ffmpeg", mp4, log, sizeof(log), 10000) == 0);
+        snprintf(line, sizeof(line), "{\"cmd\":\"load\",\"path\":\"%s\",\"kind\":\"video\"}", late);
+        command(line);
+        await_video();
+        await_position(0.5);
+        verify(owe_mpv_ready(app.mpv) && owe_mpv_loop_copies(app.mpv) == 1 && owe_mpv_time_pos(app.mpv) > 0.5,
+               "a looping video whose timestamps start after 0 plays on its own");
+        unlink(late);
+
+        /* Audio that ends before the video would rush the video's tail on
+         * every copy, so a file with sound loops on its own too. */
+        char sound[256];
+        snprintf(sound, sizeof(sound), "%s/sound.mp4", root);
+        char *av[] = {"ffmpeg", "-v", "error", "-f", "lavfi", "-i", "color=blue:s=128x72:r=30:d=3",
+                      "-f", "lavfi", "-i", "sine=d=2", "-c:v", "libx264", "-threads", "1",
+                      "-pix_fmt", "yuv420p", "-c:a", "aac", sound, NULL};
+        CHECK(owe_spawn_capture("ffmpeg", av, log, sizeof(log), 10000) == 0);
+        snprintf(line, sizeof(line), "{\"cmd\":\"load\",\"path\":\"%s\",\"kind\":\"video\",\"mute\":true}", sound);
+        command(line);
+        await_video();
+        await_position(0.5);
+        verify(owe_mpv_ready(app.mpv) && owe_mpv_loop_copies(app.mpv) == 1 && owe_mpv_time_pos(app.mpv) > 0.5,
+               "a looping video with an audio track plays on its own");
+        unlink(sound);
+    }
+
     command("{\"cmd\":\"park\"}");
     swaps = outputs[0].swaps;
     snprintf(line, sizeof(line), "{\"cmd\":\"load\",\"path\":\"%s/blue.mp4\",\"kind\":\"video\",\"prepare\":true,\"mute\":true}", root);

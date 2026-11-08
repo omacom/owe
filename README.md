@@ -246,6 +246,13 @@ media is silent. Source files remain intact.
   tracks the media frame rate, not the display refresh rate. A fade draws
   on each frame callback until it ends. A still that stays on screen does
   not commit again.
+- A looping video plays as a list of copies of the file (an mpv EDL), so
+  its last frame runs into its first like any other frame. mpv's own file
+  loop holds the last frame about one frame too long and then cuts the
+  first one short. The file is opened once for all copies, and the
+  reported position stays within one copy. Only MP4/MOV and Matroska/WebM
+  files without audio, whose timestamps start at 0 and whose length is
+  known, play this way; other files loop on their own as before.
 - A switch from a still to a video crossfades. The renderer draws the
   outgoing still over the incoming video and fades it out.
 - Video draws straight into the window framebuffer. No intermediate
