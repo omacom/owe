@@ -54,6 +54,9 @@ static bool battery_poster_active(void) {
 #define INTRO_FINISH_TIMEOUT_MS 5000
 #define INTRO_FADE_OUT_MS 750
 #define RENDERER_WARM_MS 60000
+/* How long an intro held on its first frame waits to be asked to play. */
+#define INTRO_HOLD_TIMEOUT_MS 3000
+
 /* How long a prepared login intro waits for the shell to ask for it. The
  * shell starts it once its own QML has loaded, which can trail this daemon by
  * seconds on a slow login; past this the ordinary handoff runs. */
@@ -426,6 +429,8 @@ static void intro_finish(const char *error) {
     clear_prepared_intro();
     app->intro_active = 0;
     app->intro_release_first = 0;
+    app->intro_hold = 0;
+    app->intro_hold_until_ms = 0;
     app->intro_phase = OWE_INTRO_IDLE;
     app->intro_deadline_ms = 0;
     app->intro_phase_deadline_ms = 0;
@@ -558,7 +563,7 @@ int owed_app_prepare_intro(const char *path) {
     return prepare_intro(path, false);
 }
 
-int owed_app_start_intro(const char *path, bool from_still) {
+int owed_app_start_intro(const char *path, bool from_still, bool hold) {
     owed_app_t *app = &g_app;
     char reply[8192] = "";
     char *quoted = NULL;
@@ -641,6 +646,10 @@ int owed_app_start_intro(const char *path, bool from_still) {
     }
     app->intro_active = 1;
     app->intro_release_first = prepared && login;
+    /* Only a login intro released first can wait on its first frame: anything
+     * else is already moving by the time it shows. */
+    app->intro_hold = hold && prepared && login;
+    app->intro_hold_until_ms = 0;
     app->intro_phase = OWE_INTRO_PREPARING;
     app->intro_from_still = from_still;
     {
@@ -665,6 +674,28 @@ fail:
         owed_supervisor_stop(app->supervisor);
     }
     return -1;
+}
+
+/* Plays an intro held on its first frame: 0 when it plays or will once the
+ * shell lets go, 1 when nothing is held, -1 when the renderer refused. */
+int owed_app_play_intro(void) {
+    owed_app_t *app = &g_app;
+    char reply[8192];
+    if (!app->intro_active || !app->intro_hold) return 1;
+    if (app->intro_release_first) {
+        /* Not shown yet: start it as soon as the shell has let go. */
+        app->intro_hold = 0;
+        return 0;
+    }
+    app->intro_hold = 0;
+    app->intro_hold_until_ms = 0;
+    if (owed_supervisor_send(app->supervisor, "{\"cmd\":\"intro-start\"}", reply, sizeof(reply)) != 0 ||
+        !owe_json_ok(reply)) {
+        intro_finish("intro start failed");
+        return -1;
+    }
+    OWE_INFO("intro playing: %s", app->intro_path);
+    return 0;
 }
 
 static int intro_begin_finish(void) {
@@ -726,7 +757,10 @@ void owed_app_poll_intro(void) {
             return;
         }
         app->intro_release_first = 0;
-        if (owed_supervisor_send(app->supervisor, "{\"cmd\":\"intro-start\"}", reply, sizeof(reply)) != 0 ||
+        /* A held intro shows its first frame, paused, until the shell has
+         * finished covering the login and asks it to play. */
+        if (owed_supervisor_send(app->supervisor, app->intro_hold ? "{\"cmd\":\"intro-hold\"}" : "{\"cmd\":\"intro-start\"}",
+                                 reply, sizeof(reply)) != 0 ||
             !owe_json_ok(reply)) {
             intro_finish("intro start failed");
             return;
@@ -759,10 +793,20 @@ void owed_app_poll_intro(void) {
             }
             app->intro_phase = OWE_INTRO_PLAYING;
             app->intro_phase_deadline_ms = 0;
-            OWE_INFO("intro playing: %s", app->intro_path);
+            if (app->intro_hold) {
+                app->intro_hold_until_ms = now + INTRO_HOLD_TIMEOUT_MS;
+                OWE_INFO("intro holding its first frame: %s", app->intro_path);
+            } else {
+                OWE_INFO("intro playing: %s", app->intro_path);
+            }
         } else if (now >= app->intro_phase_deadline_ms) {
             intro_finish("intro start timed out");
         }
+        return;
+    }
+    if (app->intro_hold && app->intro_hold_until_ms && now >= app->intro_hold_until_ms) {
+        OWE_WARN("intro held too long, playing it");
+        owed_app_play_intro();
         return;
     }
     if (app->intro_phase == OWE_INTRO_PREPARING) {

@@ -321,12 +321,15 @@ static void handle_command(void *context, struct owe_ipc_client *c, const char *
         } else send_err(c, "no exposed video frame");
     } else if (strcmp(cmd, "intro-finish") == 0) {
         handle_intro_finish(c, root);
-    } else if (strcmp(cmd, "intro-start") == 0) {
-        if (app && app->preparing && strcmp(app->current_kind, "video") == 0) {
+    } else if (strcmp(cmd, "intro-start") == 0 || strcmp(cmd, "intro-hold") == 0) {
+        /* intro-hold shows the prepared first frame and stays paused; a later
+         * intro-start plays on from it. */
+        bool hold = strcmp(cmd, "intro-hold") == 0;
+        if (app && strcmp(app->current_kind, "video") == 0 && (app->preparing || (app->intro && app->paused && !hold))) {
             app->preparing = false;
             app->intro = true;
-            app->paused = false;
-            owe_mpv_set_paused(app->mpv, false);
+            app->paused = hold;
+            owe_mpv_set_paused(app->mpv, hold);
             owe_app_request_render();
             send_ok(c, NULL);
         } else send_err(c, "no prepared intro");

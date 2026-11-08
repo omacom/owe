@@ -106,7 +106,10 @@ login cover hides the desktop until the intro moves, and a clip resumed while
 the shell is still busy would play its opening under that cover. A new
 background (also through a refresh), a lost renderer, a lock or sleep that drops
 the prepared clip, or 15 seconds without an intro request ends that wait with
-the ordinary handoff. A
+the ordinary handoff. With `--hold` that released clip shows its first frame,
+paused, and plays only on `intro-play`, which the shell sends as its cover
+starts to lift, so the reveal opens on the clip's first frame. A held clip
+that is never asked for plays after 3 seconds. A
 renderer that is already on screen starts the intro from its still instead.
 The intro still fades into the still at EOF.
 After an intro the daemon returns the engine to the shell. `intro-status`

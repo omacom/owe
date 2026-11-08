@@ -75,6 +75,8 @@ owe warm                  # Keep an idle decoder/GPU context ready for one minut
 owe intro-prepare <video> # Decode one intro offscreen and pause at its opening frame
 owe intro <video>         # Play a one-shot intro video and wait
 owe intro --start first-frame <video> # Start the intro on its own first frame
+owe intro --start first-frame --hold <video> # At login, hold it on its first frame until intro-play
+owe intro-play            # Play an intro held on its first frame
 owe status                # Daemon status as JSON
 owe config                # Effective config as JSON
 owe render-status         # Renderer status as JSON
@@ -127,7 +129,8 @@ Commands:
 - `{"cmd":"reload-config"}` — reload `~/.config/owe/config.toml`.
 - `{"cmd":"render-status"}` — proxy the renderer status reply.
 - `{"cmd":"render-restart"}` — restart `owe-render` and reload current media. The reply has `"starting":true` when the new renderer needs more than 7 seconds. The daemon reloads the media when that renderer creates its socket.
-- `{"cmd":"intro","path":"/abs/file.mp4"}` — play a one-shot intro video over a still background, muted. Reply means it started. Cancel with `intro-stop`. `"start":"first-frame"` starts it on its own first frame instead of from the still; `"start":"still"` is the default, and any other value is rejected. `"refresh":true` synchronizes the background symlink before starting.
+- `{"cmd":"intro","path":"/abs/file.mp4"}` — play a one-shot intro video over a still background, muted. Reply means it started. Cancel with `intro-stop`. `"start":"first-frame"` starts it on its own first frame instead of from the still; `"start":"still"` is the default, and any other value is rejected. `"refresh":true` synchronizes the background symlink before starting. `"hold":true` keeps a prepared login intro on its first frame, paused, once the shell has let go, until `intro-play`, or for at most 3 seconds; any other intro ignores it.
+- `{"cmd":"intro-play"}` — play an intro held on its first frame.
 - `{"cmd":"warm"}` — keep the covered renderer ready for one minute.
 - `{"cmd":"intro-prepare","path":"/abs/video.mp4"}` — prepare one paused intro offscreen.
 - `{"cmd":"intro-status"}` — reply `{"running":bool,"result":"running|ok|error"}`.
