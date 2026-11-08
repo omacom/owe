@@ -24,6 +24,8 @@ avutil_dep = dependency('libavutil')
 swscale_dep = dependency('libswscale')
 libsystemd_dep = dependency('libsystemd')
 threads_dep = dependency('threads')
+# fmod in the renderer; glibc keeps it in libm, which some linkers want named.
+m_dep = cc.find_library('m', required : false)
 
 wayland_scanner = find_program('wayland-scanner')
 wayland_protos = dependency('wayland-protocols', required : false)
