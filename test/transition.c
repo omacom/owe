@@ -518,6 +518,43 @@ int main(void) {
                "a looping video at a path with ; % and , plays as copies and wraps inside one copy");
         unlink(odd);
 
+        /* Across a copy boundary the last frame (green) goes straight to the
+         * first (red), and both stay up like any other frame: at 10 fps a
+         * frame covers several draws. loop-file held the last frame a frame
+         * too long and then passed the first in a few milliseconds. */
+        char seam[256];
+        snprintf(seam, sizeof(seam), "%s/seam.mp4", root);
+        char *clip[] = {"ffmpeg", "-v", "error", "-f", "lavfi", "-i",
+                        "color=red:s=128x72:r=10:d=0.1[a];color=blue:s=128x72:r=10:d=0.8[b];"
+                        "color=green:s=128x72:r=10:d=0.1[c];[a][b][c]concat=n=3",
+                        "-c:v", "libx264", "-threads", "1", "-pix_fmt", "yuv420p", seam, NULL};
+        CHECK(owe_spawn_capture("ffmpeg", clip, log, sizeof(log), 10000) == 0);
+        snprintf(line, sizeof(line), "{\"cmd\":\"load\",\"path\":\"%s\",\"kind\":\"video\"}", seam);
+        command(line);
+        await_video();
+        /* Runs of the same colour at the centre: 'r', 'g', 'b'. */
+        char colour[512];
+        int length[512], runs = 0;
+        int64_t seam_deadline = now_ms() + 8000;
+        while (runs < 500 && now_ms() < seam_deadline) {
+            tick();
+            char c = samples[0][0] > 150 && samples[0][1] < 100 ? 'r' :
+                     samples[0][1] > 80 && samples[0][0] < 100 && samples[0][2] < 100 ? 'g' :
+                     samples[0][2] > 150 && samples[0][0] < 100 ? 'b' : '?';
+            if (runs > 0 && colour[runs - 1] == c) length[runs - 1]++;
+            else { colour[runs] = c; length[runs] = 1; runs++; }
+            if (runs >= 6 && colour[runs - 1] == 'b' && colour[runs - 2] == 'r' && colour[runs - 3] == 'g' &&
+                colour[runs - 4] == 'b') break;
+        }
+        /* Compared with each other, so a slow machine drawing less often
+         * scales both: loop-file gave the last frame 9 draws and the first 4. */
+        bool seam_ok = runs >= 4 && colour[runs - 3] == 'g' && colour[runs - 2] == 'r' &&
+                       length[runs - 3] >= 2 && length[runs - 2] * 4 >= length[runs - 3] * 3;
+        printf("Seam: last frame %d draws, first frame %d draws\n", runs >= 3 ? length[runs - 3] : 0,
+               runs >= 2 ? length[runs - 2] : 0);
+        verify(seam_ok, "a looping video goes from its last frame straight to its first, each shown like any other frame");
+        unlink(seam);
+
         /* A file whose timestamps start later would lose its tail on every
          * copy, so it loops on its own. */
         char late[256];
