@@ -100,8 +100,10 @@ transition_test = executable('owe-transition-test',
                   avformat_dep, avcodec_dep, avutil_dep, swscale_dep, threads_dep, m_dep],
   c_args : ['-ffunction-sections', '-fdata-sections'],
   link_args : ['-Wl,--gc-sections'])
+# The null audio output keeps the clip with sound off the machine's audio
+# devices, which a CI container does not have.
 test('transition', transition_test, timeout : 90,
-  env : ['LIBGL_ALWAYS_SOFTWARE=1', 'OWE_HWDEC=no', 'OWE_MPV_OPTIONS='])
+  env : ['LIBGL_ALWAYS_SOFTWARE=1', 'OWE_HWDEC=no', 'OWE_MPV_OPTIONS=ao=null'])
 
 # This test needs an explicitly started daemon and a video wallpaper.
 executable('owe-live-test', files('live.c') + common_sources + yyjson_sources,

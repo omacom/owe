@@ -240,6 +240,8 @@ static void video(int fade) {
 
 static void verify(bool condition, const char *description) {
     printf("%s: %s\n", condition ? "PASS" : "FAIL", description);
+    /* A hung test is killed with this output still buffered. */
+    fflush(stdout);
     if (!condition) failures++;
 }
 
