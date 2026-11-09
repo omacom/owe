@@ -269,8 +269,13 @@ media is silent. Source files remain intact.
   and draw it without blending. While a still fades in, the surface has no
   opaque region, so the compositor blends it. A crossfade over video keeps
   the opaque region, because the video below it keeps the alpha at 1.
-- Hardware decode is on by default (`hwdec=auto-safe`). Override with
-  the `OWE_HWDEC` environment variable.
+- Hardware decode is on by default. When OpenGL renders on Intel or AMD,
+  the renderer decodes with `vaapi,vaapi-copy` and ignores
+  `LIBVA_DRIVER_NAME=nvidia`, so a hybrid laptop decodes on the GPU that
+  renders. Nouveau decodes in software, because its video decoder needs
+  firmware that `linux-firmware` does not ship. Other GPUs use
+  `hwdec=auto-safe`. Override the decoder with the `OWE_HWDEC` environment
+  variable.
 - The renderer uses desktop OpenGL 3.2 or later. If the driver has no
   such context, as on some ARM SoCs, the renderer uses OpenGL ES 3.0 or later.
 - `libmpv` runs without its lua scripts. The ytdl hook, stats overlay,

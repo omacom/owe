@@ -265,6 +265,23 @@ int main(void) {
            !vaapi_interop_only("Mesa", "llvmpipe (LLVM 21.1.8, 256 bits)") &&
            !vaapi_interop_only("Broadcom", "V3D 7.1.10.2") && !vaapi_interop_only(NULL, NULL),
            "only Intel and AMD GL limit mpv to the VA-API interop");
+    verify(strcmp(default_hwdec("Intel", "Mesa Intel(R) UHD Graphics (ADL-S GT1)"), "vaapi,vaapi-copy") == 0 &&
+           strcmp(default_hwdec("AMD", "AMD Radeon 860M Graphics (radeonsi, krackan1, ACO)"), "vaapi,vaapi-copy") == 0 &&
+           strcmp(default_hwdec("NVIDIA Corporation", "NVIDIA GeForce RTX 4070 Ti/PCIe/SSE2"), "auto-safe") == 0 &&
+           strcmp(default_hwdec(NULL, NULL), "auto-safe") == 0,
+           "Intel and AMD GL decode only with VA-API, other GPUs keep auto-safe");
+    verify(strcmp(default_hwdec("nouveau", "NVE4"), "no") == 0, "Nouveau GL decodes in software");
+    setenv("LIBVA_DRIVER_NAME", "nvidia", 1);
+    drop_nvidia_va_driver("NVIDIA Corporation", "NVIDIA GeForce RTX 4070 Ti/PCIe/SSE2");
+    bool kept_on_nvidia = getenv("LIBVA_DRIVER_NAME") != NULL;
+    drop_nvidia_va_driver("Intel", "Mesa Intel(R) UHD Graphics (ADL-S GT1)");
+    bool dropped_on_intel = getenv("LIBVA_DRIVER_NAME") == NULL;
+    setenv("LIBVA_DRIVER_NAME", "iHD", 1);
+    drop_nvidia_va_driver("Intel", "Mesa Intel(R) UHD Graphics (ADL-S GT1)");
+    bool kept_other_driver = getenv("LIBVA_DRIVER_NAME") != NULL;
+    unsetenv("LIBVA_DRIVER_NAME");
+    verify(kept_on_nvidia && dropped_on_intel && kept_other_driver,
+           "Intel GL drops only LIBVA_DRIVER_NAME=nvidia");
     CHECK(mkdtemp(root));
     make_media();
     int rc = init_display();

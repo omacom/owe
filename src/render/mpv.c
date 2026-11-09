@@ -111,6 +111,31 @@ static bool vaapi_interop_only(const char *vendor, const char *renderer) {
            (strstr(vendor, "Intel") || strstr(vendor, "AMD") || strstr(renderer, "radeonsi"));
 }
 
+/* auto-safe tries Vulkan and NVDEC before VA-API, and their copy modes after
+ * it. On Intel and AMD only VA-API decodes on the GPU that renders, so a
+ * failed VA-API fell through to nvdec-copy, which wakes the NVIDIA GPU of a
+ * hybrid laptop. Nouveau decodes video only with firmware that
+ * linux-firmware does not ship. Without it, its VA-API driver crashed the
+ * renderer with SIGBUS instead of returning an error. */
+static const char *default_hwdec(const char *vendor, const char *renderer) {
+    if (vaapi_interop_only(vendor, renderer)) return "vaapi,vaapi-copy";
+    if (vendor && strstr(vendor, "nouveau")) return "no";
+    return "auto-safe";
+}
+
+/* Omarchy's NVIDIA setup sets LIBVA_DRIVER_NAME=nvidia for the session. When
+ * GL renders on the Intel or AMD GPU of a hybrid laptop, that name sends
+ * VA-API to the NVIDIA GPU. Without it, libva loads the driver of the GPU
+ * that renders. */
+static void drop_nvidia_va_driver(const char *vendor, const char *renderer) {
+    const char *driver = getenv("LIBVA_DRIVER_NAME");
+    if (!vaapi_interop_only(vendor, renderer) || !driver || strcmp(driver, "nvidia") != 0) {
+        return;
+    }
+    OWE_INFO("GL renders on %s, so VA-API ignores LIBVA_DRIVER_NAME=nvidia", vendor);
+    unsetenv("LIBVA_DRIVER_NAME");
+}
+
 static void set_extra_options(mpv_handle *h) {
     const char *extra = getenv("OWE_MPV_OPTIONS");
     char *copy;
@@ -173,6 +198,8 @@ struct owe_mpv *owe_mpv_new(struct owe_wayland *wl) {
     int nparams = 0;
     mpv_opengl_init_params gl_params = { .get_proc_address = get_proc_address,
                                          .get_proc_address_ctx = NULL };
+    const char *vendor;
+    const char *renderer;
     int rc;
     if (!wl) {
         return NULL;
@@ -183,6 +210,10 @@ struct owe_mpv *owe_mpv_new(struct owe_wayland *wl) {
     }
     m->wl = wl;
     gl_params.get_proc_address_ctx = m;
+    vendor = (const char *)glGetString(GL_VENDOR);
+    renderer = (const char *)glGetString(GL_RENDERER);
+    /* Before mpv starts its threads, which read the environment. */
+    drop_nvidia_va_driver(vendor, renderer);
     if (pipe2(m->wakeup_pipe, O_NONBLOCK | O_CLOEXEC) != 0) {
         free(m);
         return NULL;
@@ -198,7 +229,7 @@ struct owe_mpv *owe_mpv_new(struct owe_wayland *wl) {
     set_opt(m->handle, "vo", "libmpv");
     {
         const char *hwdec = getenv("OWE_HWDEC");
-        set_opt(m->handle, "hwdec", hwdec && *hwdec ? hwdec : "auto-safe");
+        set_opt(m->handle, "hwdec", hwdec && *hwdec ? hwdec : default_hwdec(vendor, renderer));
     }
     /* A video wallpaper plays its audio track through the default output.
      * Cover art stays off, and a session with no audio server keeps a null
@@ -247,8 +278,7 @@ struct owe_mpv *owe_mpv_new(struct owe_wayland *wl) {
     set_opt(m->handle, "hwdec-extra-frames", "3");
     /* Audio and video stay in step. A silent file uses the default clock. */
     set_opt(m->handle, "video-sync", "audio");
-    if (vaapi_interop_only((const char *)glGetString(GL_VENDOR),
-                           (const char *)glGetString(GL_RENDERER))) {
+    if (vaapi_interop_only(vendor, renderer)) {
         set_opt(m->handle, "gpu-hwdec-interop", "vaapi");
     }
     set_extra_options(m->handle);
