@@ -64,15 +64,17 @@ for selected, intro in [('still.png', 'intro.mp4'), ('still.png', ''), ('still.p
                 process.wait(timeout=8)
 
 # At login owed can start before the shell answers: first the shell is not
-# running, then it is busy loading and a call times out after it went out. The
+# running, then it is busy loading and calls time out after they went out. The
 # still waits for the shell, which takes it as soon as it answers. Suspending
 # the shell for a renderer fallback would land late and hide the wallpaper
-# until the next retry.
+# until the next retry. The busy shell fails both commands of one handoff, so
+# the still must also wait through a failure of a shell that is up.
 with tempfile.TemporaryDirectory(prefix='owe-start-') as directory:
     root, env = stage(directory, 'still.png', '''#!/bin/bash
 echo "$*" >> "$XDG_RUNTIME_DIR/shell-calls"
 if [[ ! -e $XDG_RUNTIME_DIR/shell-up ]]; then echo 'omarchy-shell is not running' >&2; exit 1; fi
-if [[ ! -e $XDG_RUNTIME_DIR/shell-busy ]]; then touch "$XDG_RUNTIME_DIR/shell-busy"; sleep 0.2; echo 'omarchy-shell is not responding' >&2; exit 1; fi
+echo "$*" >> "$XDG_RUNTIME_DIR/shell-busy"
+if (( $(wc -l < "$XDG_RUNTIME_DIR/shell-busy") <= 2 )); then sleep 0.2; echo 'omarchy-shell is not responding' >&2; exit 1; fi
 ''')
     with (root / 'daemon.log').open('w') as log:
         process = subprocess.Popen([str(root / 'owed'), '--prepare-intro', ''], env=env, stdout=log, stderr=log)
@@ -89,6 +91,8 @@ if [[ ! -e $XDG_RUNTIME_DIR/shell-busy ]]; then touch "$XDG_RUNTIME_DIR/shell-bu
                 assert process.poll() is None and time.monotonic() < deadline, (root / 'daemon.log').read_text()
                 time.sleep(.1)
             sent = calls.read_text().splitlines()
+            busy = (root / 'shell-busy').read_text().splitlines()
+            assert len(busy) >= 3 and busy[-1] == 'background setSuspended false', busy
             assert 'background setSuspended true' not in sent, sent
             assert 'shell setPluginEnabled omarchy.background false' not in sent, sent
             print('a still waits for a starting shell instead of suspending it')
