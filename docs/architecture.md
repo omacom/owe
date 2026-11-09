@@ -169,6 +169,10 @@ Until the daemon first reaches it, a still retries the shell handoff every secon
 for up to 20 seconds instead of falling back to the renderer: the shell draws the
 still on its own once it is up, and a suspend sent to a shell that is still
 loading can run after the daemon gave up on it.
+After that wait, a still that the shell cannot take falls back to the renderer,
+and the renderer draws it even if the shell cannot be suspended either. A late
+suspend then reveals the same still. A video that follows suspends the shell
+before it plays.
 
 It connects to the Hyprland event socket for `fullscreen`, `openwindow`,
 `closewindow`, `movewindow`, `workspace`, and monitor events. It queries
