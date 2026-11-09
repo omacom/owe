@@ -59,6 +59,10 @@ typedef struct owed_app {
     off_t intro_prepared_size;
     struct timespec intro_prepared_mtime;
     struct timespec intro_prepared_ctime;
+    /* A login intro prepared at startup: until this time the shell keeps the
+     * still it draws by itself, without a handoff the intro would undo. */
+    int64_t login_intro_until_ms;
+    char login_intro_still[4096];
 
     char source_path[4096];
     char source_kind[16];
@@ -88,6 +92,9 @@ typedef struct owed_app {
     int intro_active; /* 1 while a one-shot intro video owns the renderer */
     int intro_phase;
     int intro_from_still; /* 1 when the intro starts from the shell's still */
+    int intro_release_first; /* 1 while a login intro waits for the shell to let go */
+    int intro_hold; /* 1 while an intro shows its first frame, paused, until asked to play */
+    int64_t intro_hold_until_ms; /* when a held intro plays anyway */
     char intro_path[4096];
     dev_t intro_still_dev; /* the still file the intro started from and ends on */
     ino_t intro_still_ino;
@@ -107,7 +114,8 @@ void owed_app_apply_policy(void);
 const char *owed_app_engine(void);
 bool owed_app_renderer_expected(void);
 
-int owed_app_start_intro(const char *path, bool from_still);
+int owed_app_start_intro(const char *path, bool from_still, bool hold);
+int owed_app_play_intro(void);
 int owed_app_warm_renderer(void);
 int owed_app_prepare_intro(const char *path);
 void owed_app_poll_intro(void);

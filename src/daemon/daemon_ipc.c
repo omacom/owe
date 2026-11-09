@@ -224,7 +224,9 @@ static void handle_command(void *context, struct owe_ipc_client *c, const char *
                 owed_app_on_background_changed(resolved);
             }
         }
-        if (owed_app_start_intro(path, !start || strcmp(start, "still") == 0) != 0) {
+        /* "hold": a login intro waits on its first frame for intro-play. */
+        bool hold = yyjson_get_bool(yyjson_obj_get(root, "hold"));
+        if (owed_app_start_intro(path, !start || strcmp(start, "still") == 0, hold) != 0) {
             send_err(c, "Intro start failed");
         } else {
             send_ok(c, NULL);
@@ -239,6 +241,9 @@ static void handle_command(void *context, struct owe_ipc_client *c, const char *
             send_err(c, "intro status failed");
         }
         free(intro_line);
+    } else if (strcmp(cmd, "intro-play") == 0) {
+        if (owed_app_play_intro() < 0) send_err(c, "intro start failed");
+        else send_ok(c, NULL);
     } else if (strcmp(cmd, "intro-stop") == 0) {
         owed_app_stop_intro("intro cancelled");
         send_ok(c, NULL);

@@ -75,6 +75,8 @@ owe warm                  # Keep an idle decoder/GPU context ready for one minut
 owe intro-prepare <video> # Decode one intro offscreen and pause at its opening frame
 owe intro <video>         # Play a one-shot intro video and wait
 owe intro --start first-frame <video> # Start the intro on its own first frame
+owe intro --start first-frame --hold <video> # At login, hold it on its first frame until intro-play
+owe intro-play            # Play an intro held on its first frame
 owe status                # Daemon status as JSON
 owe config                # Effective config as JSON
 owe render-status         # Renderer status as JSON
@@ -98,7 +100,7 @@ owe --socket "$XDG_RUNTIME_DIR/owe-test/owed.sock" status
 
 One daemon can run in each runtime directory.
 An intro requires a still background and ends after 30 seconds at most.
-The daemon accepts `--prepare-intro <video>` to start an offscreen, paused decode before its initial shell handoff. The systemd unit asks Omarchy for the enabled login intro; an empty or unavailable selection keeps ordinary startup. Preparation never plays the clip or consumes the login. Quickshell still starts the intro and reveals the desktop only when it is ready.
+The daemon accepts `--prepare-intro <video>` to start an offscreen, paused decode as it starts. The systemd unit asks Omarchy for the enabled login intro; an empty or unavailable selection keeps ordinary startup. Preparation never plays the clip or consumes the login. Quickshell still starts the intro and reveals the desktop only when it is ready. While the prepared intro waits for that request, the daemon answers at once and leaves the still with the shell, which draws it by itself as it starts. When the request comes, the shell lets go of its still before the clip resumes, since its login cover hides the desktop until the intro moves, so the clip plays from its start once the shell is free to reveal it. A new background, a lost renderer, a lock or sleep, or 15 seconds without a request ends the wait, and the still is handed to the shell as usual.
 
 The CLI accepts an absolute or relative intro path. `intro-prepare` warms one clip while the shell owns the still wallpaper; it never maps a preview or advances playback. A matching first-frame intro resumes that decoder, including when the theme staged a copy or renamed its directory. A changed clip falls back to an ordinary load. The prepared clip and idle context expire after one minute, and locking or sleeping releases them. After an intro the renderer unloads its media but keeps its context warm for that same window. `intro --start first-frame --refresh <video>` synchronizes the background symlink and starts playback in one request.
 An intro starts from the current still by default (`--start still`). `--start first-frame` starts it on its own first frame instead, for a shell that leaves the background empty for it.
@@ -127,7 +129,8 @@ Commands:
 - `{"cmd":"reload-config"}` — reload `~/.config/owe/config.toml`.
 - `{"cmd":"render-status"}` — proxy the renderer status reply.
 - `{"cmd":"render-restart"}` — restart `owe-render` and reload current media. The reply has `"starting":true` when the new renderer needs more than 7 seconds. The daemon reloads the media when that renderer creates its socket.
-- `{"cmd":"intro","path":"/abs/file.mp4"}` — play a one-shot intro video over a still background, muted. Reply means it started. Cancel with `intro-stop`. `"start":"first-frame"` starts it on its own first frame instead of from the still; `"start":"still"` is the default, and any other value is rejected. `"refresh":true` synchronizes the background symlink before starting.
+- `{"cmd":"intro","path":"/abs/file.mp4"}` — play a one-shot intro video over a still background, muted. Reply means it started. Cancel with `intro-stop`. `"start":"first-frame"` starts it on its own first frame instead of from the still; `"start":"still"` is the default, and any other value is rejected. `"refresh":true` synchronizes the background symlink before starting. `"hold":true` keeps a prepared login intro on its first frame, paused, once the shell has let go, until `intro-play`, or for at most 3 seconds; any other intro ignores it.
+- `{"cmd":"intro-play"}` — play an intro held on its first frame.
 - `{"cmd":"warm"}` — keep the covered renderer ready for one minute.
 - `{"cmd":"intro-prepare","path":"/abs/video.mp4"}` — prepare one paused intro offscreen.
 - `{"cmd":"intro-status"}` — reply `{"running":bool,"result":"running|ok|error"}`.

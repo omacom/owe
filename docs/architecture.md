@@ -96,7 +96,20 @@ hook's, leaves the intro playing.
 With `--start first-frame` the daemon loads the intro without a transition source.
 The new renderer surface stays unmapped until the intro's first frame, and the
 shell releases its layer once the renderer reports that frame drawn. This suits
-a shell that leaves its background empty for the intro, as at login. A
+a shell that leaves its background empty for the intro, as at login.
+At login the daemon prepares the intro before the shell has loaded and does not
+hand the shell its still first: the shell draws it by itself as it starts, and
+taking it only to give it back would put two IPC round trips to a busy shell in
+front of the intro. When the shell asks for the intro, the daemon has it let go
+of its still first and resumes the prepared clip once it has answered: the
+login cover hides the desktop until the intro moves, and a clip resumed while
+the shell is still busy would play its opening under that cover. A new
+background (also through a refresh), a lost renderer, a lock or sleep that drops
+the prepared clip, or 15 seconds without an intro request ends that wait with
+the ordinary handoff. With `--hold` that released clip shows its first frame,
+paused, and plays only on `intro-play`, which the shell sends as its cover
+starts to lift, so the reveal opens on the clip's first frame. A held clip
+that is never asked for plays after 3 seconds. A
 renderer that is already on screen starts the intro from its still instead.
 The intro still fades into the still at EOF.
 After an intro the daemon returns the engine to the shell. `intro-status`

@@ -375,7 +375,7 @@ def main():
                           for command in direct_commands),
                       "an intro started on its first frame starts on its video and still fades into the still",
                       json.dumps(direct_commands))
-                usage = "owe intro [--start still|first-frame] [--refresh] <video>"
+                usage = "owe intro [--start still|first-frame] [--refresh] [--hold] <video>"
                 for args, case in ((["intro"], "without a video"),
                                    (["intro", "--start", "first-frame"], "without a video after --start"),
                                    (["intro", "--start"], "without a start value"),

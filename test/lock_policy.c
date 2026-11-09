@@ -442,7 +442,7 @@ int main(void) {
     /* The shell draws the still, so the renderer is stopped. */
     renderer.down = true;
     strcpy(supervisor_reply, "{\"status\":\"ok\"}");
-    CHECK(owed_app_start_intro("/intro.mp4", true) == 0);
+    CHECK(owed_app_start_intro("/intro.mp4", true, false) == 0);
     CHECK(owed_app_intro_active());
     CHECK(strstr(supervisor_last, "\"once\":true") != NULL);
     CHECK(strstr(supervisor_last, "\"mute\":true") != NULL);
@@ -456,7 +456,7 @@ int main(void) {
     CHECK(owed_app_intro_active());
     CHECK(g_app.engine == OWE_ENGINE_RENDERER);
     CHECK(shell_plugin_calls == 1 && !shell_plugin_enabled);
-    CHECK(owed_app_start_intro("/other.mp4", true) != 0);
+    CHECK(owed_app_start_intro("/other.mp4", true, false) != 0);
     strcpy(supervisor_reply, "{\"status\":\"ok\",\"ready\":true,\"error\":\"\",\"eof\":true,\"has_transition\":false,\"transition_busy\":false,\"transition_done\":false}");
     owed_app_poll_intro();
     CHECK(owed_app_intro_active() && g_app.intro_phase == OWE_INTRO_FINISHING);
@@ -473,7 +473,7 @@ int main(void) {
     g_app.shell_enabled = 1;
     shell_plugin_calls = 0;
     strcpy(supervisor_reply, "{\"status\":\"ok\",\"ready\":true,\"error\":\"\",\"eof\":false}");
-    CHECK(owed_app_start_intro("/intro.mp4", true) == 0);
+    CHECK(owed_app_start_intro("/intro.mp4", true, false) == 0);
     power.locked = true;
     owed_app_poll_intro();
     CHECK(!owed_app_intro_active());
@@ -483,12 +483,12 @@ int main(void) {
 
     /* A fullscreen window and an explicit stop also interrupt. */
     strcpy(supervisor_reply, "{\"status\":\"ok\",\"ready\":true,\"error\":\"\",\"eof\":false}");
-    CHECK(owed_app_start_intro("/intro.mp4", true) == 0);
+    CHECK(owed_app_start_intro("/intro.mp4", true, false) == 0);
     hypr.fullscreen = true;
     owed_app_poll_intro();
     CHECK(!owed_app_intro_active());
     hypr.fullscreen = false;
-    CHECK(owed_app_start_intro("/intro.mp4", true) == 0);
+    CHECK(owed_app_start_intro("/intro.mp4", true, false) == 0);
     owed_app_stop_intro("intro cancelled");
     CHECK(!owed_app_intro_active());
     CHECK(strcmp(owed_app_intro_result(), "error") == 0);
@@ -497,11 +497,11 @@ int main(void) {
     g_app.engine = OWE_ENGINE_SHELL;
     g_app.shell_enabled = 1;
     strcpy(supervisor_reply, "{\"status\":\"error\"}");
-    CHECK(owed_app_start_intro("/intro.mp4", true) != 0);
+    CHECK(owed_app_start_intro("/intro.mp4", true, false) != 0);
     CHECK(!owed_app_intro_active());
     CHECK(g_app.engine == OWE_ENGINE_SHELL);
     strcpy(supervisor_reply, "{\"status\":\"ok\"}");
-    CHECK(owed_app_start_intro("/intro.mp4", true) == 0);
+    CHECK(owed_app_start_intro("/intro.mp4", true, false) == 0);
     hypr.locked = true;
     owed_app_poll_intro();
     CHECK(!owed_app_intro_active() && g_app.engine == OWE_ENGINE_SHELL);
@@ -517,7 +517,7 @@ int main(void) {
     intro_show_calls = 0;
     renderer.down = true;
     strcpy(supervisor_reply, "{\"status\":\"ok\"}");
-    CHECK(owed_app_start_intro("/intro.mp4", false) == 0);
+    CHECK(owed_app_start_intro("/intro.mp4", false, false) == 0);
     CHECK(strstr(supervisor_last, "\"once\":true") != NULL);
     CHECK(strstr(supervisor_last, "\"from\"") == NULL);
     strcpy(supervisor_reply, "{\"status\":\"ok\",\"ready\":false,\"error\":\"\",\"eof\":false,\"has_transition\":false,\"transition_busy\":false,\"transition_done\":false}");
@@ -546,7 +546,7 @@ int main(void) {
     renderer.down = false;
     {
         int stops = renderer.stops;
-        CHECK(owed_app_start_intro("/intro.mp4", false) == 0);
+        CHECK(owed_app_start_intro("/intro.mp4", false, false) == 0);
         CHECK(renderer.stops == stops + 1);
         CHECK(!g_app.intro_from_still);
         CHECK(strstr(supervisor_last, "\"from\"") == NULL);
@@ -559,7 +559,7 @@ int main(void) {
     /* A renderer already on screen fades the intro in from its still rather
      * than clearing that still before the intro's first frame. */
     strcpy(supervisor_reply, "{\"status\":\"ok\",\"swaps\":12}");
-    CHECK(owed_app_start_intro("/intro.mp4", false) == 0);
+    CHECK(owed_app_start_intro("/intro.mp4", false, false) == 0);
     CHECK(strstr(supervisor_last, "\"from\":\"/corrupt.png\"") != NULL);
     CHECK(g_app.intro_from_still);
     owed_app_stop_intro("intro cancelled");
@@ -572,7 +572,7 @@ int main(void) {
     g_app.renderer_retry_at_ms = monotonic_ms() + 30000;
     renderer.starts = 0;
     strcpy(supervisor_reply, "{\"status\":\"ok\",\"swaps\":0}");
-    CHECK(owed_app_start_intro("/intro.mp4", false) == 0);
+    CHECK(owed_app_start_intro("/intro.mp4", false, false) == 0);
     CHECK(strstr(supervisor_last, "\"from\"") == NULL);
     CHECK(!g_app.intro_from_still && renderer.starts == 0);
     owed_app_stop_intro("intro cancelled");
@@ -596,7 +596,7 @@ int main(void) {
         snprintf(g_app.source_path, sizeof(g_app.source_path), "%s", still);
         strcpy(g_app.source_kind, "still");
         strcpy(supervisor_reply, "{\"status\":\"ok\"}");
-        CHECK(owed_app_start_intro("/intro.mp4", true) == 0);
+        CHECK(owed_app_start_intro("/intro.mp4", true, false) == 0);
         CHECK(owed_app_intro_still_is(still));
         owed_app_on_background_changed(still);
         CHECK(owed_app_intro_active());
@@ -671,6 +671,135 @@ int main(void) {
         CHECK(prepare_intro(prepared, true) == 0);
         CHECK(g_app.engine == OWE_ENGINE_NONE && g_app.shell_enabled == -1);
         CHECK(g_app.intro_prepared && !g_app.intro_active);
+        /* A prepared login intro leaves the still with the shell until the
+         * prepared clip is gone, here released by a lock. */
+        shell_plugin_calls = 0;
+        g_app.login_intro_until_ms = monotonic_ms() + LOGIN_INTRO_WAIT_MS;
+        owed_app_apply_policy();
+        CHECK(g_app.engine == OWE_ENGINE_NONE && shell_plugin_calls == 0);
+        hypr.locked = true;
+        {
+            int stops = renderer.stops;
+            process_shell_handoff();
+            CHECK(renderer.stops == stops + 1);
+        }
+        hypr.locked = false;
+        CHECK(!g_app.intro_prepared);
+        renderer.down = true;
+        owed_app_apply_policy();
+        renderer.down = false;
+        CHECK(g_app.engine == OWE_ENGINE_SHELL && shell_plugin_calls == 1 && !g_app.login_intro_until_ms);
+        g_app.engine = OWE_ENGINE_NONE;
+        g_app.shell_enabled = -1;
+        CHECK(prepare_intro(prepared, true) == 0);
+        /* A refresh to another still, which clears source_path first, and a
+         * renderer lost before the request each end the wait with a handoff. */
+        strcpy(g_app.source_path, "/still.png");
+        strcpy(g_app.login_intro_still, "/still.png");
+        g_app.login_intro_until_ms = monotonic_ms() + LOGIN_INTRO_WAIT_MS;
+        shell_plugin_calls = 0;
+        g_app.source_path[0] = '\0';
+        owed_app_on_background_changed("/still.png");
+        CHECK(g_app.engine == OWE_ENGINE_NONE && g_app.intro_prepared && shell_plugin_calls == 0);
+        g_app.source_path[0] = '\0';
+        owed_app_on_background_changed("/other.png");
+        CHECK(g_app.engine == OWE_ENGINE_SHELL && !g_app.intro_prepared && !g_app.login_intro_until_ms);
+        CHECK(shell_plugin_calls == 1 && shell_plugin_enabled);
+        g_app.engine = OWE_ENGINE_NONE;
+        g_app.shell_enabled = -1;
+        CHECK(prepare_intro(prepared, true) == 0);
+        g_app.login_intro_until_ms = monotonic_ms() + LOGIN_INTRO_WAIT_MS;
+        renderer.down = true;
+        owed_app_apply_policy();
+        CHECK(g_app.engine == OWE_ENGINE_SHELL && !g_app.login_intro_until_ms);
+        renderer.down = false;
+        g_app.engine = OWE_ENGINE_NONE;
+        g_app.shell_enabled = -1;
+        CHECK(prepare_intro(prepared, true) == 0);
+        /* Asked for, the login intro first lets the shell go, then resumes
+         * the prepared decoder, with nothing sent to the renderer between. */
+        g_app.login_intro_until_ms = monotonic_ms() + LOGIN_INTRO_WAIT_MS;
+        shell_plugin_calls = 0;
+        supervisor_last[0] = '\0';
+        CHECK(owed_app_start_intro(prepared, false, false) == 0);
+        CHECK(supervisor_last[0] == '\0' && shell_plugin_calls == 0 && !g_app.login_intro_until_ms);
+        owed_app_poll_intro();
+        CHECK(shell_plugin_calls == 1 && !shell_plugin_enabled && g_app.engine == OWE_ENGINE_RENDERER);
+        CHECK(strstr(supervisor_last, "intro-start") != NULL);
+        owed_app_stop_intro("intro cancelled");
+        g_app.engine = OWE_ENGINE_NONE;
+        g_app.shell_enabled = -1;
+        CHECK(prepare_intro(prepared, true) == 0);
+        /* Held, it shows its first frame paused once the shell lets go, and
+         * plays only when asked: the cover lifts onto its first frame. */
+        g_app.login_intro_until_ms = monotonic_ms() + LOGIN_INTRO_WAIT_MS;
+        supervisor_last[0] = '\0';
+        CHECK(owed_app_start_intro(prepared, false, true) == 0);
+        owed_app_poll_intro();
+        CHECK(strstr(supervisor_last, "intro-hold") != NULL && g_app.intro_hold);
+        strcpy(supervisor_reply, "{\"status\":\"ok\",\"ready\":true}");
+        owed_app_poll_intro();
+        CHECK(g_app.intro_phase == OWE_INTRO_PLAYING && g_app.intro_hold && g_app.intro_hold_until_ms > 0);
+        supervisor_last[0] = '\0';
+        owed_app_poll_intro();
+        CHECK(strstr(supervisor_last, "intro-start") == NULL);
+        CHECK(owed_app_play_intro() == 0 && !g_app.intro_hold);
+        CHECK(strstr(supervisor_last, "intro-start") != NULL);
+        CHECK(owed_app_play_intro() == 1); /* only once */
+        /* Nobody asks: it plays on its own. */
+        owed_app_stop_intro("intro cancelled");
+        g_app.engine = OWE_ENGINE_NONE;
+        g_app.shell_enabled = -1;
+        strcpy(supervisor_reply, "{\"status\":\"ok\"}");
+        CHECK(prepare_intro(prepared, true) == 0);
+        g_app.login_intro_until_ms = monotonic_ms() + LOGIN_INTRO_WAIT_MS;
+        CHECK(owed_app_start_intro(prepared, false, true) == 0);
+        owed_app_poll_intro();
+        strcpy(supervisor_reply, "{\"status\":\"ok\",\"ready\":true}");
+        owed_app_poll_intro();
+        g_app.intro_hold_until_ms = monotonic_ms() - 1;
+        supervisor_last[0] = '\0';
+        owed_app_poll_intro();
+        CHECK(!g_app.intro_hold && strstr(supervisor_last, "intro-start") != NULL);
+        /* Asked to play before the shell has let go, it starts as the
+         * release finishes and never holds. */
+        owed_app_stop_intro("intro cancelled");
+        g_app.engine = OWE_ENGINE_NONE;
+        g_app.shell_enabled = -1;
+        strcpy(supervisor_reply, "{\"status\":\"ok\"}");
+        CHECK(prepare_intro(prepared, true) == 0);
+        g_app.login_intro_until_ms = monotonic_ms() + LOGIN_INTRO_WAIT_MS;
+        CHECK(owed_app_start_intro(prepared, false, true) == 0);
+        CHECK(owed_app_play_intro() == 0 && !g_app.intro_hold);
+        supervisor_last[0] = '\0';
+        owed_app_poll_intro();
+        CHECK(strstr(supervisor_last, "intro-start") != NULL && strstr(supervisor_last, "intro-hold") == NULL);
+        strcpy(supervisor_reply, "{\"status\":\"ok\",\"ready\":true}");
+        owed_app_poll_intro();
+        CHECK(!g_app.intro_hold && !g_app.intro_hold_until_ms);
+        /* Stopped while held, nothing plays it afterwards. */
+        owed_app_stop_intro("intro cancelled");
+        g_app.engine = OWE_ENGINE_NONE;
+        g_app.shell_enabled = -1;
+        strcpy(supervisor_reply, "{\"status\":\"ok\"}");
+        CHECK(prepare_intro(prepared, true) == 0);
+        g_app.login_intro_until_ms = monotonic_ms() + LOGIN_INTRO_WAIT_MS;
+        CHECK(owed_app_start_intro(prepared, false, true) == 0);
+        owed_app_poll_intro();
+        strcpy(supervisor_reply, "{\"status\":\"ok\",\"ready\":true}");
+        owed_app_poll_intro();
+        CHECK(g_app.intro_hold);
+        owed_app_stop_intro("intro cancelled");
+        CHECK(!g_app.intro_active && !g_app.intro_hold && !g_app.intro_hold_until_ms);
+        supervisor_last[0] = '\0';
+        CHECK(owed_app_play_intro() == 1);
+        owed_app_poll_intro();
+        CHECK(supervisor_last[0] == '\0');
+        owed_app_stop_intro("intro cancelled");
+        g_app.engine = OWE_ENGINE_NONE;
+        g_app.shell_enabled = -1;
+        strcpy(supervisor_reply, "{\"status\":\"ok\"}");
+        CHECK(prepare_intro(prepared, true) == 0);
         CHECK(switch_to_shell() == 0);
         CHECK(g_app.intro_prepared);
         CHECK(owed_app_prepare_intro(prepared) == 0);
@@ -681,7 +810,7 @@ int main(void) {
         snprintf(prepared, sizeof(prepared), "%s/intro.mp4", published);
         CHECK(prepared_intro_matches(prepared));
         CHECK(owed_app_prepare_intro(copy) == 0); /* no second load */
-        CHECK(owed_app_start_intro(copy, false) == 0);
+        CHECK(owed_app_start_intro(copy, false, false) == 0);
         CHECK(strstr(supervisor_last, "intro-start") && g_app.intro_prepared);
         strcpy(supervisor_reply, "{\"status\":\"ok\",\"ready\":true}");
         owed_app_poll_intro();
