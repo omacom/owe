@@ -350,6 +350,7 @@ int main(void) {
 
     /* A new renderer receives feed state and media again. */
     g_app.engine = OWE_ENGINE_RENDERER;
+    g_app.shell_enabled = 0;
     strcpy(g_app.source_path, "/retry.mp4");
     strcpy(g_app.source_kind, "video");
     power.locked = true;
@@ -936,6 +937,47 @@ int main(void) {
     poll_late_renderer();
     CHECK(g_app.handoff_pending && !strcmp(g_app.loaded_path, "/late.mp4"));
     CHECK(g_app.renderer_warm_until_ms == 0);
+
+    /* A shell that takes neither the still nor a suspend, after the startup
+     * wait: the renderer still draws the still. A suspend that runs late
+     * then reveals that still instead of an empty background. */
+    strcpy(g_app.source_path, "/fallback.png");
+    strcpy(g_app.source_kind, "still");
+    g_app.handoff_pending = false;
+    g_app.engine = OWE_ENGINE_NONE;
+    g_app.shell_enabled = -1;
+    g_app.shell_start_until_ms = 0;
+    g_app.shell_retry_at_ms = 0;
+    g_app.renderer_retry_at_ms = 0;
+    g_app.loaded_path[0] = '\0';
+    g_app.loaded_kind[0] = '\0';
+    renderer.down = false;
+    renderer.fail_load = false;
+    renderer.fail_start = false;
+    shell_plugin_fail = true;
+    {
+        int loads = renderer.loads;
+        int calls = shell_plugin_calls;
+        owed_app_apply_policy();
+        CHECK(g_app.engine == OWE_ENGINE_RENDERER && g_app.shell_enabled == -1);
+        CHECK(renderer.loads == loads + 1 && !strcmp(g_app.loaded_path, "/fallback.png"));
+        CHECK(shell_plugin_calls == calls + 2 && g_app.shell_retry_at_ms > monotonic_ms());
+        /* The shell handoff waits for its retry time. */
+        owed_app_apply_policy();
+        CHECK(shell_plugin_calls == calls + 2 && renderer.loads == loads + 1);
+        /* A video must not play under a shell that was never suspended. */
+        strcpy(g_app.source_path, "/after-fallback.mp4");
+        strcpy(g_app.source_kind, "video");
+        g_app.shell_retry_at_ms = 0;
+        owed_app_apply_policy();
+        CHECK(renderer.loads == loads + 1 && g_app.renderer_retry_at_ms > monotonic_ms());
+        CHECK(!shell_plugin_enabled && g_app.shell_enabled == -1);
+        shell_plugin_fail = false;
+        g_app.renderer_retry_at_ms = 0;
+        owed_app_apply_policy();
+        CHECK(g_app.engine == OWE_ENGINE_RENDERER && g_app.shell_enabled == 0);
+        CHECK(renderer.loads == loads + 2 && !strcmp(g_app.loaded_path, "/after-fallback.mp4"));
+    }
 
     owed_policy_free(g_app.policy);
     puts("lock policy and still transition checks passed");

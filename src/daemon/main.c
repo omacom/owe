@@ -278,12 +278,28 @@ static int activate_renderer(void) {
 
 /* Without a shell still on screen there is nothing to keep, so the renderer
  * takes over at once. Taking over from the shell's still waits for the new
- * media's first frame instead; see owed_app_apply_policy. */
-static int switch_to_renderer(void) {
+ * media's first frame instead; see owed_app_apply_policy.
+ *
+ * A still that the shell could not take keeps the renderer even when the
+ * shell cannot be suspended either. The renderer draws the same image, so a
+ * suspend that runs late reveals that still, not an empty background. The
+ * shell keeps its state, and a video suspends it before it plays. */
+static int switch_to_renderer(bool still) {
+    owed_app_t *app = &g_app;
     if (ensure_renderer() != 0) {
         return -1;
     }
-    return activate_renderer();
+    if (activate_renderer() == 0) {
+        return 0;
+    }
+    if (!still || !owed_render_is_alive(app->supervisor)) {
+        return -1;
+    }
+    OWE_WARN("shell suspend failed, the renderer draws the still anyway");
+    app->engine = OWE_ENGINE_RENDERER;
+    app->shell_stop_at_ms = 0;
+    app->renderer_retry_at_ms = 0;
+    return 0;
 }
 
 /* The shell keeps its still: stop the renderer that was loading behind it. */
@@ -1072,8 +1088,8 @@ void owed_app_apply_policy(void) {
             app->shell_stop_at_ms = 0;
             OWE_INFO("renderer loading behind the shell's still");
         }
-    } else if (app->engine != OWE_ENGINE_RENDERER) {
-        if (switch_to_renderer() != 0) {
+    } else if (app->engine != OWE_ENGINE_RENDERER || (!shell_engine && app->shell_enabled != 0)) {
+        if (switch_to_renderer(shell_engine) != 0) {
             return;
         }
         OWE_INFO("engine: renderer");
