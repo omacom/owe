@@ -272,8 +272,10 @@ media is silent. Source files remain intact.
 - Hardware decode is on by default. When OpenGL renders on Intel or AMD,
   the renderer decodes with `vaapi,vaapi-copy` and ignores
   `LIBVA_DRIVER_NAME=nvidia`, so a hybrid laptop decodes on the GPU that
-  renders. Other GPUs use `hwdec=auto-safe`. Override the decoder with the
-  `OWE_HWDEC` environment variable.
+  renders. Nouveau decodes in software, because its video decoder needs
+  firmware that `linux-firmware` does not ship. Other GPUs use
+  `hwdec=auto-safe`. Override the decoder with the `OWE_HWDEC` environment
+  variable.
 - The renderer uses desktop OpenGL 3.2 or later. If the driver has no
   such context, as on some ARM SoCs, the renderer uses OpenGL ES 3.0 or later.
 - `libmpv` runs without its lua scripts. The ytdl hook, stats overlay,

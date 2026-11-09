@@ -270,6 +270,7 @@ int main(void) {
            strcmp(default_hwdec("NVIDIA Corporation", "NVIDIA GeForce RTX 4070 Ti/PCIe/SSE2"), "auto-safe") == 0 &&
            strcmp(default_hwdec(NULL, NULL), "auto-safe") == 0,
            "Intel and AMD GL decode only with VA-API, other GPUs keep auto-safe");
+    verify(strcmp(default_hwdec("nouveau", "NVE4"), "no") == 0, "Nouveau GL decodes in software");
     setenv("LIBVA_DRIVER_NAME", "nvidia", 1);
     drop_nvidia_va_driver("NVIDIA Corporation", "NVIDIA GeForce RTX 4070 Ti/PCIe/SSE2");
     bool kept_on_nvidia = getenv("LIBVA_DRIVER_NAME") != NULL;

@@ -114,9 +114,13 @@ static bool vaapi_interop_only(const char *vendor, const char *renderer) {
 /* auto-safe tries Vulkan and NVDEC before VA-API, and their copy modes after
  * it. On Intel and AMD only VA-API decodes on the GPU that renders, so a
  * failed VA-API fell through to nvdec-copy, which wakes the NVIDIA GPU of a
- * hybrid laptop. */
+ * hybrid laptop. Nouveau decodes video only with firmware that
+ * linux-firmware does not ship. Without it, its VA-API driver crashed the
+ * renderer with SIGBUS instead of returning an error. */
 static const char *default_hwdec(const char *vendor, const char *renderer) {
-    return vaapi_interop_only(vendor, renderer) ? "vaapi,vaapi-copy" : "auto-safe";
+    if (vaapi_interop_only(vendor, renderer)) return "vaapi,vaapi-copy";
+    if (vendor && strstr(vendor, "nouveau")) return "no";
+    return "auto-safe";
 }
 
 /* Omarchy's NVIDIA setup sets LIBVA_DRIVER_NAME=nvidia for the session. When
