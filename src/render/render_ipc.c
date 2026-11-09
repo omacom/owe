@@ -183,11 +183,10 @@ static void handle_load(struct owe_render_ipc *ipc, struct owe_ipc_client *c, yy
             OWE_WARN("Transition image is not a readable local file");
             from = "";
         }
-        if (owe_mpv_load(app->mpv, path) != 0) {
+        if (owe_mpv_load(app->mpv, path, !once && !prepare) != 0) {
             send_err(c, "video load failed");
             return;
         }
-        owe_mpv_set_loop(app->mpv, !once && !prepare);
         ipc->load_error[0] = '\0';
         owe_mpv_set_muted(app->mpv, mute || app->feeding);
         app->preparing = prepare;

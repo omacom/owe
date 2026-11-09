@@ -9,11 +9,10 @@ struct owe_output;
 struct owe_mpv *owe_mpv_new(struct owe_wayland *wl);
 void owe_mpv_free(struct owe_mpv *m);
 
-int owe_mpv_load(struct owe_mpv *m, const char *path);
+int owe_mpv_load(struct owe_mpv *m, const char *path, bool loop);
 void owe_mpv_stop(struct owe_mpv *m);
 void owe_mpv_set_paused(struct owe_mpv *m, bool paused);
 void owe_mpv_set_muted(struct owe_mpv *m, bool muted);
-void owe_mpv_set_loop(struct owe_mpv *m, bool loop);
 bool owe_mpv_eof(struct owe_mpv *m);
 
 bool owe_mpv_has_video(struct owe_mpv *m);
@@ -31,5 +30,7 @@ int owe_mpv_prepare_frame(struct owe_mpv *m, int w, int h);
 int owe_mpv_snapshot(struct owe_mpv *m, const char *path, int w, int h);
 void owe_mpv_report_swap(struct owe_mpv *m);
 double owe_mpv_time_pos(struct owe_mpv *m);
+/* How many copies of the file the current loop plays as; 1 for a file on its own. */
+int owe_mpv_loop_copies(struct owe_mpv *m);
 const char *owe_mpv_error(struct owe_mpv *m);
 const char *owe_mpv_hwdec(struct owe_mpv *m);

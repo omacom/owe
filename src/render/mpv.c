@@ -2,12 +2,14 @@
 
 #include <fcntl.h>
 #include <limits.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
 #include <epoxy/gl.h>
+#include <libavformat/avformat.h>
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <mpv/client.h>
@@ -24,6 +26,11 @@ struct owe_mpv {
     mpv_handle *handle;
     mpv_render_context *ctx;
     char path[4096];
+    /* How many copies of the file the loaded EDL plays back to back; 1 when
+     * the file was loaded on its own. */
+    int repeats;
+    /* The length of one copy, read from the file when it was loaded. */
+    double copy_length;
     bool has_video;
     bool paused;
     bool pause_known;
@@ -301,18 +308,140 @@ void owe_mpv_free(struct owe_mpv *m) {
     free(m);
 }
 
-int owe_mpv_load(struct owe_mpv *m, const char *path) {
+/* mpv's loop-file holds the last frame about one frame too long before it
+ * seeks back, then cuts the first frame short to catch up: on a 60 Hz screen a
+ * 24 fps loop shows its last frame for ~90 ms instead of ~42 and can skip its
+ * first. Played as an EDL of copies of the file, the decoder runs from the
+ * last frame of one copy straight into the first of the next with no seek.
+ * mpv opens the file once for all of them. loop-file still repeats the whole
+ * EDL, so the stall is left once every LOOP_COPIES passes (about an hour for a
+ * 14 s loop). The timeline costs a little CPU per copy: 1000 copies took the
+ * renderer from about 4.2% to 5.3% of a core, 256 to 4.7%, 16 to no change.
+ *
+ * An EDL segment only ends where the file does when its timestamps start at 0
+ * and its length is known. mpv takes each copy from 0 for the file's length,
+ * so a file that starts later loses its tail on every copy (an MP4 starting at
+ * 2 s plays one second of three), and one without a length plays only once.
+ * Those files loop on their own, as before. */
+#define LOOP_COPIES 256
+#define LOOP_EDL_MAX (1 << 20)
+
+/* The length of one copy when the file can play as an EDL of copies, and 0
+ * otherwise. mpv takes each copy from 0 for the file's length, so this needs:
+ * - the first frame's timestamp at 0: a file that starts later, has negative
+ *   leading timestamps, or lacks an MP4 edit list loses frames on every copy;
+ * - a known length that includes the last frame's display time, which MP4/MOV
+ *   and Matroska/WebM give (NUT, for one, leaves the last frame out);
+ * - no audio: audio that ends before the video makes mpv play the video's
+ *   tail too fast on every copy under video-sync=audio.
+ * Other files loop on their own as before. It reads the header and the first
+ * few packets without decoding, so it takes a few milliseconds even for a 4K
+ * file (finding stream info decoded frames and took up to 300 ms), and it
+ * opens local files of those containers only, so a playlist or a FIFO can't
+ * block the renderer. */
+static double loop_copy_length(const char *path) {
+    AVFormatContext *fmt = NULL;
+    AVDictionary *options = NULL;
+    AVPacket *packet;
+    int64_t first = AV_NOPTS_VALUE;
+    double length = -1.0;
+    int video = -1;
+    bool audio = false;
+    av_dict_set(&options, "format_whitelist", "mov,mp4,m4a,3gp,3g2,mj2,matroska,webm", 0);
+    av_dict_set(&options, "protocol_whitelist", "file", 0);
+    if (avformat_open_input(&fmt, path, NULL, &options) < 0) {
+        av_dict_free(&options);
+        OWE_INFO("Loop plays on its own: not an MP4 or Matroska file");
+        return 0.0;
+    }
+    av_dict_free(&options);
+    for (unsigned i = 0; i < fmt->nb_streams; i++) {
+        AVStream *stream = fmt->streams[i];
+        enum AVMediaType type = stream->codecpar->codec_type;
+        if (type == AVMEDIA_TYPE_AUDIO) audio = true;
+        if (video < 0 && type == AVMEDIA_TYPE_VIDEO && !(stream->disposition & AV_DISPOSITION_ATTACHED_PIC)) {
+            video = (int)i;
+        }
+        if (stream->duration != AV_NOPTS_VALUE && stream->duration > 0) {
+            double d = stream->duration * av_q2d(stream->time_base);
+            if (d > length) length = d;
+        }
+    }
+    if (fmt->duration != AV_NOPTS_VALUE && fmt->duration > 0) {
+        length = (double)fmt->duration / AV_TIME_BASE;
+    }
+    /* The earliest timestamp of the first few video packets, in case the
+     * first packet is not the first frame shown. */
+    packet = audio ? NULL : av_packet_alloc();
+    for (int i = 0, seen = 0; packet && video >= 0 && seen < 8 && i < 32 && av_read_frame(fmt, packet) >= 0; i++) {
+        if (packet->stream_index == video && packet->pts != AV_NOPTS_VALUE) {
+            int64_t t = av_rescale_q(packet->pts, fmt->streams[video]->time_base, AV_TIME_BASE_Q);
+            if (first == AV_NOPTS_VALUE || t < first) first = t;
+            seen++;
+        }
+        av_packet_unref(packet);
+    }
+    av_packet_free(&packet);
+    avformat_close_input(&fmt);
+    if (audio) {
+        OWE_INFO("Loop plays on its own: it has an audio track");
+        return 0.0;
+    }
+    if (first == AV_NOPTS_VALUE || llabs(first) > AV_TIME_BASE / 1000 || length <= 0) {
+        OWE_INFO("Loop plays on its own: first frame at %.3f s, length %s",
+                 first != AV_NOPTS_VALUE ? (double)first / AV_TIME_BASE : -1.0, length > 0 ? "known" : "unknown");
+        return 0.0;
+    }
+    return length;
+}
+
+static char *loop_edl(const char *path, int *copies) {
+    size_t len = strlen(path);
+    char entry[32];
+    int head = snprintf(entry, sizeof(entry), "%%%zu%%", len);
+    size_t per = (size_t)head + len + 1;
+    int n = LOOP_COPIES;
+    char *edl;
+    char *p;
+    if ((size_t)n * per + 7 > LOOP_EDL_MAX) n = (int)((LOOP_EDL_MAX - 7) / per);
+    if (n < 2) return NULL;
+    edl = malloc((size_t)n * per + 8);
+    if (!edl) return NULL;
+    p = edl + sprintf(edl, "edl://");
+    for (int i = 0; i < n; i++) {
+        memcpy(p, entry, (size_t)head);
+        p += head;
+        memcpy(p, path, len);
+        p += len;
+        *p++ = i + 1 < n ? ';' : '\0';
+    }
+    *copies = n;
+    return edl;
+}
+
+int owe_mpv_load(struct owe_mpv *m, const char *path, bool loop) {
+    char *edl = NULL;
+    int copies = 1;
+    double length = 0.0;
     const char *cmd[] = { "loadfile", path, "replace", NULL };
     int rc;
     if (!m || !path || !*path) {
         return -1;
     }
+    if (loop && (length = loop_copy_length(path)) > 0 && (edl = loop_edl(path, &copies))) {
+        cmd[1] = edl;
+    }
+    mpv_set_property_string(m->handle, "loop-file", loop ? "inf" : "no");
     rc = mpv_command(m->handle, cmd);
+    free(edl);
     if (rc < 0) {
         OWE_ERROR("loadfile failed: %s", mpv_error_string(rc));
         return -1;
     }
     snprintf(m->path, sizeof(m->path), "%s", path);
+    if (copies > 1) OWE_INFO("Loop plays as %d copies of %.3f s", copies, length);
+    m->repeats = copies;
+    m->copy_length = copies > 1 ? length : 0.0;
     m->error[0] = '\0';
     m->has_video = true;
     /* Keep-open can change mpv's pause state at EOF. Reapply policy after each load. */
@@ -332,6 +461,8 @@ void owe_mpv_stop(struct owe_mpv *m) {
     mpv_command(m->handle, cmd);
     m->has_video = false;
     m->path[0] = '\0';
+    m->repeats = 1;
+    m->copy_length = 0.0;
     m->ready = false;
     m->file_loaded = false;
     m->has_frame = false;
@@ -363,13 +494,6 @@ void owe_mpv_set_muted(struct owe_mpv *m, bool muted) {
     mpv_set_property(m->handle, "mute", MPV_FORMAT_FLAG, &v);
 }
 
-void owe_mpv_set_loop(struct owe_mpv *m, bool loop) {
-    if (!m) {
-        return;
-    }
-    mpv_set_property_string(m->handle, "loop-file", loop ? "inf" : "no");
-}
-
 bool owe_mpv_eof(struct owe_mpv *m) {
     return m && m->eof;
 }
@@ -381,6 +505,10 @@ bool owe_mpv_has_video(struct owe_mpv *m) {
 bool owe_mpv_is_paused(struct owe_mpv *m) {
     int paused = 0;
     return m && mpv_get_property(m->handle, "pause", MPV_FORMAT_FLAG, &paused) >= 0 && paused;
+}
+
+int owe_mpv_loop_copies(struct owe_mpv *m) {
+    return m ? m->repeats : 0;
 }
 
 bool owe_mpv_ready(struct owe_mpv *m) {
@@ -630,6 +758,14 @@ double owe_mpv_time_pos(struct owe_mpv *m) {
     double pos = -1.0;
     if (m && m->handle && m->ready) {
         mpv_get_property(m->handle, "time-pos", MPV_FORMAT_DOUBLE, &pos);
+        /* A loop plays as copies of the file: report the position within
+         * the copy on screen, as a file looped on its own would. */
+        if (pos > 0 && m->copy_length > 0) {
+            /* mpv sums the copies' starts, so a copy's first frame can sit a
+             * hair below k copies and fold to almost a whole copy. */
+            pos = fmod(pos, m->copy_length);
+            if (m->copy_length - pos < 0.001) pos = 0.0;
+        }
     }
     return pos;
 }
