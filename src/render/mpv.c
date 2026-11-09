@@ -215,6 +215,13 @@ struct owe_mpv *owe_mpv_new(struct owe_wayland *wl) {
     set_opt(m->handle, "profile", "fast");
     set_opt(m->handle, "scale", "bilinear");
     set_opt(m->handle, "cscale", "bilinear");
+    /* The fast profile shrinks video with plain bilinear sampling, which skips
+     * source pixels once a video is larger than the output. Thin lines then
+     * come out harsher than the same picture as a still, which is shrunk with
+     * an averaging filter, and how much harsher depends on the output size.
+     * Hermite with correct downscaling averages the way a still resize does. */
+    set_opt(m->handle, "dscale", "hermite");
+    set_opt(m->handle, "correct-downscaling", "yes");
     set_opt(m->handle, "framedrop", "no");
     set_opt(m->handle, "panscan", "1.0");
     set_opt(m->handle, "config", "no");
