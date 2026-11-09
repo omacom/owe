@@ -151,6 +151,11 @@ belongs to the shell: it enables the plugin, stops the renderer, and
 keeps only the daemon. The plugin is disabled after the renderer starts, before waiting for its first
 frame: an occluded background surface may never receive a frame callback.
 Readiness and fallback are tracked separately from releasing the shell layer.
+At startup, as at login, the shell can still be loading when the daemon starts.
+Until the daemon first reaches it, a still retries the shell handoff every second
+for up to 20 seconds instead of falling back to the renderer: the shell draws the
+still on its own once it is up, and a suspend sent to a shell that is still
+loading can run after the daemon gave up on it.
 
 It connects to the Hyprland event socket for `fullscreen`, `openwindow`,
 `closewindow`, `movewindow`, `workspace`, and monitor events. It queries

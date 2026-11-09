@@ -54,11 +54,21 @@ static bool battery_poster_active(void) {
 #define INTRO_FINISH_TIMEOUT_MS 5000
 #define INTRO_FADE_OUT_MS 750
 #define RENDERER_WARM_MS 60000
+#define SHELL_START_WAIT_MS 20000
+#define SHELL_START_RETRY_MS 1000
 
 static int64_t monotonic_ms(void) {
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
     return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+}
+
+/* Until owed first reaches the shell, the shell may still be starting, as at
+ * login. It draws the still on its own once it is up. A renderer fallback would
+ * have to suspend it instead, and a suspend sent to a shell that is busy loading
+ * can run after owed gave up on it, hiding the wallpaper until the next retry. */
+static bool shell_starting(void) {
+    return g_app.shell_enabled == -1 && monotonic_ms() < g_app.shell_start_until_ms;
 }
 
 static void copy_path(char *dst, size_t size, const char *src) {
@@ -197,8 +207,13 @@ static int switch_to_shell(void) {
         held = true;
     }
     if (app->shell_enabled != 1 && owed_shell_plugin_set(true) != 0) {
-        OWE_WARN("shell handoff failed, keeping the renderer for the still");
         if (held) owed_supervisor_resume(app->supervisor);
+        if (shell_starting()) {
+            OWE_INFO("shell not up yet, the still waits for it");
+            app->shell_retry_at_ms = now + SHELL_START_RETRY_MS;
+            return -1;
+        }
+        OWE_WARN("shell handoff failed, keeping the renderer for the still");
         app->shell_retry_at_ms = now + 30000;
         return -1;
     }
@@ -939,6 +954,7 @@ void owed_app_apply_policy(void) {
                 OWE_INFO("engine: shell");
                 return;
             }
+            if (shell_starting()) return;
         } else {
             return;
         }
@@ -1306,6 +1322,7 @@ int main(int argc, char **argv) {
     }
     g_app.engine = OWE_ENGINE_NONE;
     g_app.shell_enabled = -1;
+    g_app.shell_start_until_ms = monotonic_ms() + SHELL_START_WAIT_MS;
     owed_policy_recompute(g_app.policy);
 
     if (owed_watch_resolve_current(resolved, sizeof(resolved)) == 0) {

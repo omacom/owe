@@ -49,6 +49,8 @@ typedef struct owed_app {
     int64_t shell_stop_at_ms;
     int64_t shell_retry_at_ms;
     int64_t renderer_retry_at_ms;
+    /* Until this time a shell owed has never reached may still be starting. */
+    int64_t shell_start_until_ms;
     int64_t renderer_warm_until_ms;
     bool intro_prepared;
     int intro_prepared_fd;
