@@ -54,6 +54,7 @@ static bool battery_poster_active(void) {
 #define INTRO_FINISH_TIMEOUT_MS 5000
 #define INTRO_FADE_OUT_MS 750
 #define RENDERER_WARM_MS 60000
+#define SHUTDOWN_HANDBACK_MS 300
 #define SHELL_START_WAIT_MS 20000
 #define SHELL_START_RETRY_MS 1000
 /* How long an intro held on its first frame waits to be asked to play. */
@@ -1573,7 +1574,16 @@ int main(int argc, char **argv) {
 
     OWE_INFO("shutdown");
     if (g_app.shell_enabled == 0) {
-        owed_shell_plugin_set(true);
+        /* The shell draws its still a few frames after it answers. Stopping
+         * the renderer before then leaves the screen empty in between, which
+         * a logout showed as a black flash. */
+        if (owed_shell_plugin_set(true) == 0) {
+            /* A signal cuts a sleep short, so wait out the whole allowance. */
+            int64_t until = monotonic_ms() + SHUTDOWN_HANDBACK_MS;
+            int64_t left;
+            while ((left = until - monotonic_ms()) > 0 && owed_render_is_alive(g_app.supervisor))
+                usleep((useconds_t)left * 1000);
+        }
     }
     if (g_app.job) {
         owed_async_job_free(g_app.job);

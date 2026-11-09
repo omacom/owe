@@ -7,6 +7,9 @@ After=graphical-session.target
 Type=simple
 # A missing Omarchy helper leaves ordinary daemon startup unchanged.
 ExecStart=/bin/bash -c 'exec %h/.local/bin/owed --prepare-intro "$("$$OMARCHY_PATH/bin/omarchy-theme-bg-boot-intro" --resolve-startup 2>/dev/null)"'
+# Only the daemon gets the stop signal, so it can hand the background back to
+# the shell before it stops the renderer itself.
+KillMode=mixed
 Restart=on-failure
 RestartSec=2
 
