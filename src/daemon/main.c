@@ -967,7 +967,7 @@ const char *owed_app_intro_result(void) {
  * otherwise once its first frame is, or it ends without one. */
 void owed_app_wait_intro_shown(struct owe_ipc_client *client) {
     owed_app_t *app = &g_app;
-    if (app->intro_active && app->intro_shown) {
+    if (app->intro_active && app->intro_shown && !app->intro_renderer_lost) {
         owe_ipc_client_send(client, "{\"status\":\"ok\",\"shown\":true}");
         return;
     }
@@ -1279,9 +1279,10 @@ void owed_app_on_job_done(void) {
 }
 
 void owed_app_on_renderer_restarted(void) {
-    /* A new renderer has none of the intro, so nothing of it will reach the screen. */
-    if (g_app.intro_active && !g_app.intro_shown) {
+    /* A new renderer has none of the intro, so nothing of it is on screen now. */
+    if (g_app.intro_active) {
         g_app.intro_renderer_lost = true;
+        g_app.intro_shown = false;
         answer_intro_shown(false);
     }
     clear_prepared_intro();
@@ -1606,7 +1607,8 @@ int main(int argc, char **argv) {
          * The shell's still stays on screen until that frame, so a slow poll
          * delays the switch. */
         rc = poll(pfds, (nfds_t)n,
-                  (g_app.intro_active && (g_app.intro_phase == OWE_INTRO_PREPARING || !g_app.intro_shown)) ||
+                  (g_app.intro_active && (g_app.intro_phase == OWE_INTRO_PREPARING ||
+                                           (!g_app.intro_shown && !g_app.intro_renderer_lost))) ||
                           g_app.handoff_pending || g_app.transition_release_pending ? 16 :
                   (have_job || g_app.media_pending || g_app.intro_active ||
                    owed_supervisor_starting(g_app.supervisor)) ? 200 : 1000);
