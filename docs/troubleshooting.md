@@ -57,7 +57,7 @@ Useful fields in the current renderer status:
 | `skipped` | Lists outputs that OWE skips because of fullscreen coverage or DRM DPMS state. |
 | `swaps` | Counts successful desktop EGL swaps across current outputs. |
 | `swap_failures` | Counts failed desktop EGL swaps across current outputs. |
-| `presented` | The fewest successful swaps of any current output that is not skipped: frames every screen has shown. |
+| `presented` | The fewest successful swaps, since the renderer was last given an intro, of any current output that is not skipped: frames of it every screen has shown. |
 | `drm_dpms` | Shows whether the process uses DRM sysfs DPMS checks. |
 | `error` | Reports media or libmpv render failures. |
 

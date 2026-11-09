@@ -733,6 +733,7 @@ void owe_wayland_render_pending(struct owe_wayland *wl) {
                 continue;
             }
             out->swaps++;
+            out->intro_swaps++;
             if (video_drawn) rendered_video = 1;
             if (transition_drawn) rendered_transition = true;
         }
@@ -754,6 +755,10 @@ owe_output_t *owe_wayland_outputs(struct owe_wayland *wl) {
 
 int owe_wayland_output_count(struct owe_wayland *wl) {
     return wl ? wl->output_count : 0;
+}
+
+void owe_wayland_mark_intro(struct owe_wayland *wl) {
+    for (owe_output_t *out = wl ? wl->outputs : NULL; out; out = out->next) out->intro_swaps = 0;
 }
 
 void owe_wayland_outputs_max_size(struct owe_wayland *wl, int *w, int *h) {

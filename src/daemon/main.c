@@ -463,8 +463,8 @@ static void answer_intro_shown(bool shown) {
     }
 }
 
-/* Frames every output the renderer draws to has swapped so far, or -1 when
- * the status has no count. */
+/* Frames every output the renderer draws to has swapped since it was given
+ * the intro, or -1 when the status has no count. */
 static double render_swaps(const char *reply) {
     yyjson_doc *doc = reply ? yyjson_read(reply, strlen(reply), 0) : NULL;
     yyjson_val *swaps = doc ? yyjson_obj_get(yyjson_doc_get_root(doc), "presented") : NULL;
@@ -473,16 +473,8 @@ static double render_swaps(const char *reply) {
     return count;
 }
 
-/* The renderer's on-screen swaps now, taken just before an intro is sent to
- * it, so the intro's own first swap is what reports it on screen. */
-static double renderer_swaps_now(void) {
-    char reply[8192] = "";
-    if (owed_supervisor_send(g_app.supervisor, "{\"cmd\":\"status\"}", reply, sizeof(reply)) != 0) return -1;
-    return render_swaps(reply);
-}
-
 /* A playing intro is on screen once every output has swapped a frame since
- * the intro started: a prepared clip was decoded offscreen and reports ready
+ * the renderer was given it: a prepared clip was decoded offscreen and reports ready
  * before it was ever shown. One that starts from the still is on screen once
  * that still has faded out over moving video. */
 static void check_intro_shown(const char *reply) {
@@ -491,9 +483,8 @@ static void check_intro_shown(const char *reply) {
     yyjson_val *root;
     double swaps = render_swaps(reply);
     bool shown;
-    /* Without both counts nothing proves the intro reached the screen. */
     if (app->intro_shown || app->intro_renderer_lost || app->intro_phase != OWE_INTRO_PLAYING ||
-        swaps < 0 || app->intro_swaps_before < 0 || swaps <= app->intro_swaps_before) return;
+        swaps <= 0) return;
     doc = yyjson_read(reply, strlen(reply), 0);
     root = doc ? yyjson_doc_get_root(doc) : NULL;
     shown = root && yyjson_get_bool(yyjson_obj_get(root, "ready")) &&
@@ -661,7 +652,6 @@ int owed_app_start_intro(const char *path, bool from_still, bool hold) {
     bool prepared;
     bool login;
     bool shell_has_still;
-    double swaps_before = -1;
     if (!path || !*path || !app->supervisor || app->intro_active) {
         return -1;
     }
@@ -725,7 +715,6 @@ int owed_app_start_intro(const char *path, bool from_still, bool hold) {
     }
     if (!prepared) clear_prepared_intro();
     if (line) {
-        swaps_before = renderer_swaps_now();
         rc = owed_supervisor_send(app->supervisor, line, reply, sizeof(reply));
         free(line);
         line = NULL;
@@ -743,7 +732,6 @@ int owed_app_start_intro(const char *path, bool from_still, bool hold) {
     app->intro_phase = OWE_INTRO_PREPARING;
     app->intro_shown = false;
     app->intro_renderer_lost = false;
-    app->intro_swaps_before = swaps_before;
     app->intro_from_still = from_still;
     {
         struct stat st;
@@ -850,7 +838,6 @@ void owed_app_poll_intro(void) {
             return;
         }
         app->intro_release_first = 0;
-        app->intro_swaps_before = renderer_swaps_now();
         /* A held intro shows its first frame, paused, until the shell has
          * finished covering the login and asks it to play. */
         if (owed_supervisor_send(app->supervisor, app->intro_hold ? "{\"cmd\":\"intro-hold\"}" : "{\"cmd\":\"intro-start\"}",

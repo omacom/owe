@@ -60,6 +60,8 @@ while True:
         reply = {"status": "ok"}
         if command == "load":
             showing = not request.get("prepare")
+            if request.get("once"):
+                state["presented"] = 0
             intro_end = time.monotonic() + 0.3 if request.get("once") else None
             state["eof"] = False
             state.update(has_transition=bool(request.get("from")), transition_busy=False,
@@ -93,10 +95,12 @@ while True:
             state.update(path="", kind="", ready=False, paused=False, has_transition=False)
         elif command == "intro-start":
             showing = True
+            state["presented"] = 0
             state["paused"] = False
             intro_end = time.monotonic() + 0.3
         elif command == "intro-hold":
             showing = True
+            state["presented"] = 0
         elif command == "intro-finish":
             state.update(has_transition=True, transition_busy=False, transition_done=False)
             transition_end = time.monotonic() + 0.3

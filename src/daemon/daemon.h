@@ -100,7 +100,6 @@ typedef struct owed_app {
     int64_t intro_hold_until_ms; /* when a held intro plays anyway */
     char intro_path[4096];
     bool intro_shown; /* the intro's first frame reached the screen */
-    double intro_swaps_before; /* the renderer's on-screen swaps when the intro started, -1 unknown */
     bool intro_renderer_lost; /* the renderer restarted under the intro, which it no longer has */
     /* Requests answered once the intro's first frame is on screen, or the intro
      * ends without it. Each slot is a client and the generation it had. */
