@@ -2,6 +2,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -84,9 +85,33 @@ for selected, intro, then in cases:
                         # still first, is asked nothing else, and the clip starts after.
                         wait(lambda: (root / 'handoff').exists(), 4, lambda: log_path.read_text())
                         assert shell_calls() == ['background setSuspended true'], shell_calls()
-                        time.sleep(.2)
+                        # Whoever reveals the login waits for the clip's first frame on screen,
+                        # which comes only once the shell has let go.
+                        waiter = socket.socket(socket.AF_UNIX)
+                        waiter.connect(str(root / 'owe/owed.sock'))
+                        waiter.sendall(b'{"cmd":"intro-wait-shown"}\n')
+                        waiter.settimeout(.2)
+                        try:
+                            early = waiter.recv(4096)
+                        except socket.timeout:
+                            early = b''
+                        assert not early, early
                         assert not any(command['cmd'] == 'intro-start' for command in sent()), sent()
+                        # A clip decoded offscreen is ready before it is on screen: only its
+                        # first swap after the shell lets go reports it.
+                        (root / 'no-swap').touch()
                         (root / 'release').touch()
+                        wait(lambda: any(command['cmd'] == 'intro-start' for command in sent()), 4, lambda: log_path.read_text())
+                        try:
+                            early = waiter.recv(4096)
+                        except socket.timeout:
+                            early = b''
+                        assert not early, early
+                        (root / 'no-swap').unlink()
+                        waiter.settimeout(4)
+                        shown = json.loads(waiter.recv(4096))
+                        waiter.close()
+                        assert shown == {'status': 'ok', 'shown': True}, shown
                         # It resumes the prepared decoder rather than loading the clip again.
                         wait(lambda: any(command['cmd'] == 'intro-start' for command in sent()), 4, lambda: log_path.read_text())
                         assert not any(command.get('once') for command in sent()), sent()

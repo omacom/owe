@@ -241,6 +241,8 @@ static void handle_command(void *context, struct owe_ipc_client *c, const char *
             send_err(c, "intro status failed");
         }
         free(intro_line);
+    } else if (strcmp(cmd, "intro-wait-shown") == 0) {
+        owed_app_wait_intro_shown(c);
     } else if (strcmp(cmd, "intro-play") == 0) {
         if (owed_app_play_intro() < 0) send_err(c, "intro start failed");
         else send_ok(c, NULL);

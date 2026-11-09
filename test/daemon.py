@@ -35,7 +35,10 @@ server.listen()
 log = (root / "commands.jsonl").open("a")
 state = {"status": "ok", "paused": False, "path": "", "kind": "", "outputs": 1,
          "ready": False, "error": "", "has_transition": False,
-         "transition_busy": False, "transition_done": False}
+         "transition_busy": False, "transition_done": False, "presented": 0}
+# Whether the surface has something to show, and so swaps a frame at every status;
+# a no-swap file holds its frames back, as a failing swap would.
+showing = False
 pending = None
 intro_end = None
 transition_end = None
@@ -56,6 +59,7 @@ while True:
         command = request["cmd"]
         reply = {"status": "ok"}
         if command == "load":
+            showing = not request.get("prepare")
             intro_end = time.monotonic() + 0.3 if request.get("once") else None
             state["eof"] = False
             state.update(has_transition=bool(request.get("from")), transition_busy=False,
@@ -88,12 +92,17 @@ while True:
             pending = intro_end = transition_end = None
             state.update(path="", kind="", ready=False, paused=False, has_transition=False)
         elif command == "intro-start":
+            showing = True
             state["paused"] = False
             intro_end = time.monotonic() + 0.3
+        elif command == "intro-hold":
+            showing = True
         elif command == "intro-finish":
             state.update(has_transition=True, transition_busy=False, transition_done=False)
             transition_end = time.monotonic() + 0.3
         elif command == "status":
+            if showing and not (root / "no-swap").exists():
+                state["presented"] += 1
             if intro_end and time.monotonic() >= intro_end:
                 state["eof"] = True
             if transition_end and time.monotonic() >= transition_end:
@@ -375,7 +384,35 @@ def main():
                           for command in direct_commands),
                       "an intro started on its first frame starts on its video and still fades into the still",
                       json.dumps(direct_commands))
-                usage = "owe intro [--start still|first-frame] [--refresh] [--hold] <video>"
+                # A launcher reveals the intro the moment its first frame is
+                # on screen, and learns of a clip that never showed one.
+                result = subprocess.run(cli + ["intro", "--start", "first-frame", "--print-shown", "good.mp4"], env=env,
+                                        cwd=root, capture_output=True, text=True, timeout=8)
+                check(result.returncode == 0 and result.stdout == "shown\n",
+                      "an intro reports its first frame on screen, then plays to its end", result.stdout + result.stderr)
+                result = subprocess.run(cli + ["intro", "--start", "first-frame", "--print-shown", "bad.mp4"], env=env,
+                                        cwd=root, capture_output=True, text=True, timeout=8)
+                check(result.returncode == 1 and result.stdout == "",
+                      "an intro that fails to decode reports no first frame", result.stdout + result.stderr)
+                reply = call(daemon_socket, "intro-wait-shown")
+                check(reply.get("status") == "error", "waiting for the first frame of no intro answers at once",
+                      json.dumps(reply))
+                # A renderer restarted under an intro has none of it: whoever waits is told so.
+                (root / "no-swap").touch()
+                intro = subprocess.Popen(cli + ["intro", "--start", "first-frame", "--print-shown", "good.mp4"], env=env,
+                                         cwd=root, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline and not call(daemon_socket, "intro-status").get("running"):
+                    time.sleep(0.05)
+                check(call(daemon_socket, "render-restart")["status"] == "ok", "the renderer restarts during an intro")
+                (root / "no-swap").unlink()
+                reply = call(daemon_socket, "intro-wait-shown")
+                check(reply.get("status") == "error", "an intro whose renderer restarted is never reported shown",
+                      json.dumps(reply))
+                call(daemon_socket, "intro-stop")
+                out, err = intro.communicate(timeout=10)
+                check("shown" not in out, "the waiting launcher hears the intro was not shown", out + err)
+                usage = "owe intro [--start still|first-frame] [--refresh] [--hold] [--print-shown] <video>"
                 for args, case in ((["intro"], "without a video"),
                                    (["intro", "--start", "first-frame"], "without a video after --start"),
                                    (["intro", "--start"], "without a start value"),
