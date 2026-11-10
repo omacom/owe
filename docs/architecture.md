@@ -112,6 +112,7 @@ starts to lift, so the reveal opens on the clip's first frame. A held clip
 that is never asked for plays after 3 seconds. A
 renderer that is already on screen starts the intro from its still instead.
 The intro still fades into the still at EOF.
+Whoever reveals the intro can wait for its first frame instead of polling for it: `intro-wait-shown` is answered once the renderer has swapped a frame of the intro onto the screen, or when the intro ends without one, and `owe intro --print-shown` prints `shown` then.
 After an intro the daemon returns the engine to the shell. `intro-status`
 reports `running` and the last result, and `intro-stop` cancels.
 The renderer observes `eof-reached` because `keep-open` can retain playback without an `END_FILE` event.

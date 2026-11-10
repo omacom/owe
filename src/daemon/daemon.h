@@ -14,6 +14,9 @@ struct owed_power;
 struct owed_policy;
 struct owed_ipc;
 struct owed_supervisor;
+struct owe_ipc_client;
+
+#define OWE_INTRO_SHOWN_WAITERS 4
 
 enum owed_engine {
     OWE_ENGINE_NONE = 0,
@@ -96,6 +99,12 @@ typedef struct owed_app {
     int intro_hold; /* 1 while an intro shows its first frame, paused, until asked to play */
     int64_t intro_hold_until_ms; /* when a held intro plays anyway */
     char intro_path[4096];
+    bool intro_shown; /* the intro's first frame reached the screen */
+    bool intro_renderer_lost; /* the renderer restarted under the intro, which it no longer has */
+    /* Requests answered once the intro's first frame is on screen, or the intro
+     * ends without it. Each slot is a client and the generation it had. */
+    struct owe_ipc_client *intro_shown_waiters[OWE_INTRO_SHOWN_WAITERS];
+    uint64_t intro_shown_generations[OWE_INTRO_SHOWN_WAITERS];
     dev_t intro_still_dev; /* the still file the intro started from and ends on */
     ino_t intro_still_ino;
     char intro_result[16];
@@ -123,3 +132,4 @@ void owed_app_stop_intro(const char *reason);
 bool owed_app_intro_active(void);
 bool owed_app_intro_still_is(const char *path);
 const char *owed_app_intro_result(void);
+void owed_app_wait_intro_shown(struct owe_ipc_client *client);

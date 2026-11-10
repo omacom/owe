@@ -451,6 +451,52 @@ static bool render_status_flags(const char *reply, bool *ready, bool *error, boo
     return ok;
 }
 
+/* Answers every request waiting for the intro's first frame. */
+static void answer_intro_shown(bool shown) {
+    owed_app_t *app = &g_app;
+    for (int i = 0; i < OWE_INTRO_SHOWN_WAITERS; i++) {
+        struct owe_ipc_client *c = app->intro_shown_waiters[i];
+        app->intro_shown_waiters[i] = NULL;
+        if (!c || c->fd < 0 || c->generation != app->intro_shown_generations[i]) continue;
+        owe_ipc_client_send(c, shown ? "{\"status\":\"ok\",\"shown\":true}"
+                                     : "{\"status\":\"error\",\"message\":\"intro ended before it was shown\"}");
+    }
+}
+
+/* Frames every output the renderer draws to has swapped since it was given
+ * the intro, or -1 when the status has no count. */
+static double render_swaps(const char *reply) {
+    yyjson_doc *doc = reply ? yyjson_read(reply, strlen(reply), 0) : NULL;
+    yyjson_val *swaps = doc ? yyjson_obj_get(yyjson_doc_get_root(doc), "presented") : NULL;
+    double count = yyjson_is_num(swaps) ? yyjson_get_num(swaps) : -1;
+    yyjson_doc_free(doc);
+    return count;
+}
+
+/* A playing intro is on screen once every output has swapped a frame since
+ * the renderer was given it: a prepared clip was decoded offscreen and reports ready
+ * before it was ever shown. One that starts from the still is on screen once
+ * that still has faded out over moving video. */
+static void check_intro_shown(const char *reply) {
+    owed_app_t *app = &g_app;
+    yyjson_doc *doc;
+    yyjson_val *root;
+    double swaps = render_swaps(reply);
+    bool shown;
+    if (app->intro_shown || app->intro_renderer_lost || app->intro_phase != OWE_INTRO_PLAYING ||
+        swaps <= 0) return;
+    doc = yyjson_read(reply, strlen(reply), 0);
+    root = doc ? yyjson_doc_get_root(doc) : NULL;
+    shown = root && yyjson_get_bool(yyjson_obj_get(root, "ready")) &&
+            (!app->intro_from_still ||
+             (!yyjson_get_bool(yyjson_obj_get(root, "has_transition")) &&
+              yyjson_get_num(yyjson_obj_get(root, "time_pos")) > 0));
+    yyjson_doc_free(doc);
+    if (!shown) return;
+    app->intro_shown = true;
+    answer_intro_shown(true);
+}
+
 static void intro_finish(const char *error) {
     owed_app_t *app = &g_app;
     bool renderer_owned;
@@ -468,6 +514,7 @@ static void intro_finish(const char *error) {
     app->intro_phase_deadline_ms = 0;
     app->intro_path[0] = '\0';
     snprintf(app->intro_result, sizeof(app->intro_result), "%s", error ? "error" : "ok");
+    answer_intro_shown(false);
     if (error) {
         OWE_WARN("intro ended: %s", error);
     } else {
@@ -683,6 +730,8 @@ int owed_app_start_intro(const char *path, bool from_still, bool hold) {
     app->intro_hold = hold && prepared && login;
     app->intro_hold_until_ms = 0;
     app->intro_phase = OWE_INTRO_PREPARING;
+    app->intro_shown = false;
+    app->intro_renderer_lost = false;
     app->intro_from_still = from_still;
     {
         struct stat st;
@@ -825,6 +874,7 @@ void owed_app_poll_intro(void) {
             }
             app->intro_phase = OWE_INTRO_PLAYING;
             app->intro_phase_deadline_ms = 0;
+            check_intro_shown(reply);
             if (app->intro_hold) {
                 app->intro_hold_until_ms = now + INTRO_HOLD_TIMEOUT_MS;
                 OWE_INFO("intro holding its first frame: %s", app->intro_path);
@@ -861,6 +911,7 @@ void owed_app_poll_intro(void) {
         }
         return;
     }
+    check_intro_shown(reply);
     if (app->intro_phase == OWE_INTRO_PLAYING && eof) {
         if (intro_begin_finish() != 0) {
             intro_finish("intro finish transition failed");
@@ -897,6 +948,28 @@ bool owed_app_intro_still_is(const char *path) {
 
 const char *owed_app_intro_result(void) {
     return g_app.intro_result;
+}
+
+/* Answers at once when the intro is already on screen or none is running, and
+ * otherwise once its first frame is, or it ends without one. */
+void owed_app_wait_intro_shown(struct owe_ipc_client *client) {
+    owed_app_t *app = &g_app;
+    if (app->intro_active && app->intro_shown && !app->intro_renderer_lost) {
+        owe_ipc_client_send(client, "{\"status\":\"ok\",\"shown\":true}");
+        return;
+    }
+    if (!app->intro_active || app->intro_renderer_lost) {
+        owe_ipc_client_send(client, "{\"status\":\"error\",\"message\":\"no intro running\"}");
+        return;
+    }
+    for (int i = 0; i < OWE_INTRO_SHOWN_WAITERS; i++) {
+        struct owe_ipc_client *c = app->intro_shown_waiters[i];
+        if (c && c->fd >= 0 && c->generation == app->intro_shown_generations[i]) continue;
+        app->intro_shown_waiters[i] = client;
+        app->intro_shown_generations[i] = client->generation;
+        return;
+    }
+    owe_ipc_client_send(client, "{\"status\":\"error\",\"message\":\"too many intro waiters\"}");
 }
 
 static void media_failed(void) {
@@ -1193,6 +1266,12 @@ void owed_app_on_job_done(void) {
 }
 
 void owed_app_on_renderer_restarted(void) {
+    /* A new renderer has none of the intro, so nothing of it is on screen now. */
+    if (g_app.intro_active) {
+        g_app.intro_renderer_lost = true;
+        g_app.intro_shown = false;
+        answer_intro_shown(false);
+    }
     clear_prepared_intro();
     g_app.loaded_path[0] = '\0';
     g_app.loaded_kind[0] = '\0';
@@ -1515,7 +1594,8 @@ int main(int argc, char **argv) {
          * The shell's still stays on screen until that frame, so a slow poll
          * delays the switch. */
         rc = poll(pfds, (nfds_t)n,
-                  (g_app.intro_active && g_app.intro_phase == OWE_INTRO_PREPARING) ||
+                  (g_app.intro_active && (g_app.intro_phase == OWE_INTRO_PREPARING ||
+                                           (!g_app.intro_shown && !g_app.intro_renderer_lost))) ||
                           g_app.handoff_pending || g_app.transition_release_pending ? 16 :
                   (have_job || g_app.media_pending || g_app.intro_active ||
                    owed_supervisor_starting(g_app.supervisor)) ? 200 : 1000);

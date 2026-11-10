@@ -89,8 +89,9 @@ static int reply_line(int fd, char *reply, size_t len, int timeout_ms) {
 }
 
 /* Play a one-shot intro video and block until it ends. The intro starts from
- * the current still, or with from_still false on its own first frame. */
-static int cmd_intro(const char *path, bool from_still, bool refresh, bool hold) {
+ * the current still, or with from_still false on its own first frame. With
+ * print_shown, "shown" goes to stdout the moment its first frame is on screen. */
+static int cmd_intro(const char *path, bool from_still, bool refresh, bool hold, bool print_shown) {
     char sock[PATH_MAX];
     char resolved[PATH_MAX];
     char reply[OWE_IPC_MAX_LINE];
@@ -128,6 +129,22 @@ static int cmd_intro(const char *path, bool from_still, bool refresh, bool hold)
         fprintf(stderr, "owe: intro rejected: %s\n", reply);
         close(fd);
         return 1;
+    }
+    if (print_shown) {
+        if (owe_ipc_send_line(fd, "{\"cmd\":\"intro-wait-shown\"}") != 0 ||
+            reply_line(fd, reply, sizeof(reply), 30000) != 0) {
+            /* A reply still owed on this connection would be read as the
+             * status below, so ask for that on a new one. */
+            close(fd);
+            fd = owe_ipc_connect(sock);
+            if (fd < 0) {
+                fprintf(stderr, "owe: daemon not running at %s\n", sock);
+                return 1;
+            }
+        } else if (owe_json_ok(reply)) {
+            printf("shown\n");
+            fflush(stdout);
+        }
     }
     int64_t deadline = owe_ipc_now_ms() + 35000;
     while (owe_ipc_now_ms() < deadline) {
@@ -182,9 +199,11 @@ static void usage(const char *argv0) {
             "  pause                   Pause video manually\n"
             "  resume                  Clear manual pause\n"
             "  always-animate on|off   Force animation regardless of policy\n"
-            "  intro [--start still|first-frame] [--refresh] [--hold] <video>\n"
+            "  intro [--start still|first-frame] [--refresh] [--hold] [--print-shown] <video>\n"
             "                          Play a one-shot intro video and wait; --hold keeps\n"
-            "                          a login intro on its first frame until intro-play\n"
+            "                          a login intro on its first frame until intro-play;\n"
+            "                          --print-shown prints shown once its first frame is\n"
+            "                          on screen\n"
             "  intro-play              Play an intro held on its first frame\n"
             "  warm                    Keep an idle renderer ready for one minute\n"
             "  intro-prepare <video>   Decode an intro offscreen, paused at its start\n"
@@ -339,11 +358,16 @@ int main(int argc, char **argv) {
             hold = true;
             path_arg++;
         }
+        bool print_shown = false;
+        if (path_arg < argc && strcmp(argv[path_arg], "--print-shown") == 0) {
+            print_shown = true;
+            path_arg++;
+        }
         if (argc != path_arg + 1) {
-            fprintf(stderr, "owe intro [--start still|first-frame] [--refresh] [--hold] <video>\n");
+            fprintf(stderr, "owe intro [--start still|first-frame] [--refresh] [--hold] [--print-shown] <video>\n");
             return 1;
         }
-        return cmd_intro(argv[path_arg], from_still, refresh, hold);
+        return cmd_intro(argv[path_arg], from_still, refresh, hold, print_shown);
     }
     if (strcmp(cmd, "intro-play") == 0) {
         return daemon_call("{\"cmd\":\"intro-play\"}", 1);

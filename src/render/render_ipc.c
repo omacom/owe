@@ -83,12 +83,19 @@ static void handle_status(struct owe_render_ipc *ipc, struct owe_ipc_client *c) 
     int mh = 0;
     uint64_t swaps = 0;
     uint64_t swap_failures = 0;
+    /* The fewest frames any output that is drawn to has swapped since the
+     * renderer was last given an intro: what every screen has shown of it. */
+    uint64_t presented = 0;
+    bool presented_any = false;
     if (app && app->wl) {
         owe_wayland_outputs_max_size(app->wl, &mw, &mh);
         owe_wayland_skipped_list(app->wl, skipped, sizeof(skipped));
         for (owe_output_t *out = owe_wayland_outputs(app->wl); out; out = out->next) {
             swaps += out->swaps;
             swap_failures += out->swap_failures;
+            if (out->skip_render || out->drm_off) continue;
+            if (!presented_any || out->intro_swaps < presented) presented = out->intro_swaps;
+            presented_any = true;
         }
     }
     skipped_json = owe_json_quote(skipped);
@@ -103,7 +110,8 @@ static void handle_status(struct owe_render_ipc *ipc, struct owe_ipc_client *c) 
              "\"max_width\":%d,\"max_height\":%d,\"has_video\":%s,\"has_still\":%s,"
              "\"has_transition\":%s,\"transition_busy\":%s,\"transition_done\":%s,"
              "\"time_pos\":%.3f,\"hwdec\":%s,\"error\":%s,\"skipped\":%s,"
-             "\"intro\":%s,\"eof\":%s,\"drm_dpms\":%s,\"swaps\":%" PRIu64 ",\"swap_failures\":%" PRIu64 "}",
+             "\"intro\":%s,\"eof\":%s,\"drm_dpms\":%s,\"swaps\":%" PRIu64 ",\"swap_failures\":%" PRIu64 ","
+             "\"presented\":%" PRIu64 "}",
              path, app ? app->current_kind : "",
              app && app->paused ? "true" : "false",
              ready ? "true" : "false",
@@ -117,7 +125,8 @@ static void handle_status(struct owe_render_ipc *ipc, struct owe_ipc_client *c) 
              hwdec, error, skipped_json,
              app && app->intro ? "true" : "false",
               app && app->mpv && owe_mpv_eof(app->mpv) ? "true" : "false",
-              owe_drm_dpms_enabled() ? "true" : "false", swaps, swap_failures) >= 0)
+              owe_drm_dpms_enabled() ? "true" : "false", swaps, swap_failures,
+              presented) >= 0)
         client_send(c, line);
     free(line);
     free(path);
@@ -187,6 +196,7 @@ static void handle_load(struct owe_render_ipc *ipc, struct owe_ipc_client *c, yy
             send_err(c, "video load failed");
             return;
         }
+        if (once) owe_wayland_mark_intro(app->wl);
         ipc->load_error[0] = '\0';
         owe_mpv_set_muted(app->mpv, mute || app->feeding);
         app->preparing = prepare;
@@ -329,6 +339,7 @@ static void handle_command(void *context, struct owe_ipc_client *c, const char *
             app->intro = true;
             app->paused = hold;
             owe_mpv_set_paused(app->mpv, hold);
+            owe_wayland_mark_intro(app->wl);
             owe_app_request_render();
             send_ok(c, NULL);
         } else send_err(c, "no prepared intro");

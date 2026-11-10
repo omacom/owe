@@ -34,6 +34,7 @@ typedef struct owe_output {
     int32_t opaque_h;
     int64_t drm_checked_ms;
     uint64_t swaps;
+    uint64_t intro_swaps; /* since the renderer was last given an intro */
     uint64_t swap_failures;
     struct wl_surface *surface;
     struct zwlr_layer_surface_v1 *layer;
@@ -65,6 +66,7 @@ void owe_wayland_skipped_list(struct owe_wayland *wl, char *out, size_t out_len)
 
 owe_output_t *owe_wayland_outputs(struct owe_wayland *wl);
 int owe_wayland_output_count(struct owe_wayland *wl);
+void owe_wayland_mark_intro(struct owe_wayland *wl);
 
 void owe_output_buffer_size(const owe_output_t *out, int *w, int *h);
 void owe_wayland_outputs_max_size(struct owe_wayland *wl, int *w, int *h);
