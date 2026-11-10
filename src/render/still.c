@@ -597,6 +597,10 @@ void owe_still_set_fade_out(struct owe_still *s, int ms) {
 
 /* Keep the still opaque over the video while another surface still covers the
  * renderer. The fade starts at the first draw after the release. */
+bool owe_still_held(struct owe_still *s) {
+    return s && s->held;
+}
+
 void owe_still_set_held(struct owe_still *s, bool held) {
     if (s) {
         s->held = held;

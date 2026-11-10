@@ -733,7 +733,13 @@ void owe_wayland_render_pending(struct owe_wayland *wl) {
                 continue;
             }
             out->swaps++;
-            out->intro_swaps++;
+            /* Only a frame that shows the intro on this screen counts: video
+             * with no outgoing still left over it, faded out or held. */
+            if (video_drawn && (!transition_drawn ||
+                                (!fading && owe_still_fades_out(app->transition) &&
+                                 !owe_still_held(app->transition)))) {
+                out->intro_swaps++;
+            }
             if (video_drawn) rendered_video = 1;
             if (transition_drawn) rendered_transition = true;
         }
