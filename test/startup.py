@@ -202,3 +202,33 @@ if (( $(wc -l < "$XDG_RUNTIME_DIR/shell-busy") <= 2 )); then sleep 0.2; echo 'om
         finally:
             process.terminate()
             process.wait(timeout=8)
+
+# The same login race with a video background: the renderer is ready, but the
+# shell that has to let go of the background is not up yet. owed asks again
+# about every second while the shell starts, instead of leaving the screen
+# black until the 30 s retry.
+with tempfile.TemporaryDirectory(prefix='owe-start-') as directory:
+    root, env = stage(directory, 'video.mp4', '''#!/bin/bash
+echo "$*" >> "$XDG_RUNTIME_DIR/shell-calls"
+if [[ ! -e $XDG_RUNTIME_DIR/shell-up ]]; then echo 'omarchy-shell is not running' >&2; exit 1; fi
+''')
+    with (root / 'daemon.log').open('w') as log:
+        process = subprocess.Popen([str(root / 'owed'), '--prepare-intro', ''], env=env, stdout=log, stderr=log)
+        try:
+            calls = root / 'shell-calls'
+            deadline = time.monotonic() + 4
+            while not calls.exists():
+                assert process.poll() is None and time.monotonic() < deadline, (root / 'daemon.log').read_text()
+                time.sleep(.01)
+            time.sleep(1.5)
+            (root / 'shell-up').touch()
+            deadline = time.monotonic() + 4
+            while call(root / 'owe/owed.sock', 'status').get('engine') != 'renderer':
+                assert process.poll() is None and time.monotonic() < deadline, (root / 'daemon.log').read_text()
+                time.sleep(.1)
+            sent = calls.read_text().splitlines()
+            assert len(sent) >= 2 and sent[-1] == 'background setSuspended true', sent
+            print('a video takes over as soon as a starting shell answers')
+        finally:
+            process.terminate()
+            process.wait(timeout=8)

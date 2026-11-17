@@ -267,7 +267,10 @@ static int activate_renderer(void) {
         return -1;
     }
     if (app->shell_enabled != 0 && owed_shell_plugin_set(false) != 0) {
-        app->renderer_retry_at_ms = monotonic_ms() + 30000;
+        /* At login the shell may not be up yet: ask again shortly, as the
+         * still path does, rather than leaving the screen black for 30 s. */
+        app->renderer_retry_at_ms = monotonic_ms() + (shell_starting() ? SHELL_START_RETRY_MS : 30000);
+        if (shell_starting()) OWE_INFO("shell not up yet, the video waits for it");
         return -1;
     }
     app->engine = OWE_ENGINE_RENDERER;
