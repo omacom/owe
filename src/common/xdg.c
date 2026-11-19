@@ -189,6 +189,18 @@ int owe_omarchy_background_link(char *buf, size_t len) {
     return 0;
 }
 
+int owe_theme_loop_for(const char *still, char *buf, size_t len) {
+    const char *slash = still ? strrchr(still, '/') : NULL;
+    const char *dot = slash ? strrchr(slash, '.') : NULL;
+    struct stat st;
+    if (!dot || dot == slash + 1 ||
+        snprintf(buf, len, "%.*s/loops/%.*s.mp4", (int)(slash - still), still,
+                 (int)(dot - slash - 1), slash + 1) >= (int)len) {
+        return -1;
+    }
+    return stat(buf, &st) == 0 && S_ISREG(st.st_mode) ? 0 : -1;
+}
+
 int owe_mkdir_p(const char *path) {
     char tmp[PATH_MAX];
     char *p;

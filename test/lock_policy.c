@@ -40,6 +40,7 @@ bool owed_hypr_locked(struct owed_hypr *h) { return h && h->locked; }
 bool owed_hypr_all_monitors_off(struct owed_hypr *h) { return h && h->off; }
 bool owed_hypr_any_fullscreen(struct owed_hypr *h) { return h && h->fullscreen; }
 bool owed_hypr_any_window_visible(struct owed_hypr *h) { (void)h; return false; }
+bool owed_hypr_animations_off(struct owed_hypr *h) { (void)h; return false; }
 int owed_render_is_alive(struct owed_supervisor *s) { return s != NULL && !s->down; }
 int owed_supervisor_feed_start(struct owed_supervisor *s) {
     s->starts++;

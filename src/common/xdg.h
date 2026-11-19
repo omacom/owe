@@ -15,5 +15,8 @@ int owe_socket_path_sibling(const char *socket_path, const char *name, char *buf
 int owe_config_path(char *buf, size_t len);
 int owe_transcode_cache_dir(char *buf, size_t len);
 int owe_omarchy_background_link(char *buf, size_t len);
+/* The theme loop beside a still: dir/<stem>.<ext> plays dir/loops/<stem>.mp4
+ * in its place, when that file exists. */
+int owe_theme_loop_for(const char *still, char *buf, size_t len);
 
 int owe_mkdir_p(const char *path);

@@ -56,6 +56,10 @@ static bool battery_poster_active(void) {
 #define RENDERER_WARM_MS 60000
 #define SHUTDOWN_HANDBACK_MS 300
 #define SHELL_START_WAIT_MS 20000
+/* How long a newly linked still waits for an intro before its theme loop. */
+#define THEME_LOOP_DELAY_MS 1500
+
+static void set_source(const char *path, owe_media_kind_t kind);
 #define SHELL_START_RETRY_MS 1000
 /* How long an intro held on its first frame waits to be asked to play. */
 #define INTRO_HOLD_TIMEOUT_MS 3000
@@ -662,6 +666,16 @@ int owed_app_start_intro(const char *path, bool from_still, bool hold) {
     login = login_intro_waiting();
     shell_has_still = (app->engine == OWE_ENGINE_SHELL && app->shell_enabled == 1) || login;
     app->login_intro_until_ms = 0;
+    /* An intro plays from the still its theme loop stands in for; the loop
+     * resumes once the intro ends. */
+    if (*app->loop_still) {
+        copy_path(app->source_path, sizeof(app->source_path), app->loop_still);
+        snprintf(app->source_kind, sizeof(app->source_kind), "still");
+        app->loop_still[0] = '\0';
+        /* A loop still loading behind the shell would time out mid-intro. */
+        cancel_handoff("an intro takes over from the theme loop");
+        app->media_pending = false;
+    }
     /* A one-shot intro pairs with a still background. A video or GIF already
      * owns the renderer and needs no intro. */
     if (strcmp(app->source_kind, "still") != 0) {
@@ -992,6 +1006,10 @@ static void media_failed(void) {
         cancel_handoff("media did not start");
         return;
     }
+    /* process_theme_loop puts a failed theme loop's still back. */
+    if (*app->loop_still) {
+        return;
+    }
     if (*app->restore_path &&
         strcmp(app->restore_path, app->loaded_path) != 0) {
         if (load_if_needed(app->restore_path, app->restore_kind) == 0) {
@@ -1116,6 +1134,37 @@ static void finish_media(const char *path, const char *kind) {
         return;
     }
     apply_playback_state();
+}
+
+/* A still with a theme loop beside it plays the loop in its place once it has
+ * settled: after a short wait for an intro the shell may still ask for, and
+ * never during one. The loop starts and ends on its still. It gives way to
+ * the still while animations are off or when it fails, and is not retried
+ * after a failure until the background changes. */
+static void process_theme_loop(void) {
+    owed_app_t *app = &g_app;
+    bool want;
+    if (!*app->loop_path || app->intro_active || app->login_intro_until_ms) {
+        return;
+    }
+    if (*app->loop_still && strcmp(app->fail_path, app->loop_path) == 0) {
+        copy_path(app->loop_failed, sizeof(app->loop_failed), app->loop_path);
+    }
+    want = !(app->hypr && owed_hypr_animations_off(app->hypr)) &&
+           strcmp(app->loop_failed, app->loop_path) != 0;
+    if (*app->loop_still) {
+        if (!want) {
+            char still[PATH_MAX];
+            copy_path(still, sizeof(still), app->loop_still);
+            app->loop_still[0] = '\0';
+            OWE_INFO("theme loop gives way to its still");
+            set_source(still, OWE_KIND_STILL);
+        }
+    } else if (want && monotonic_ms() >= app->loop_at_ms && strcmp(app->source_kind, "still") == 0) {
+        copy_path(app->loop_still, sizeof(app->loop_still), app->source_path);
+        OWE_INFO("theme loop: %s", app->loop_path);
+        set_source(app->loop_path, OWE_KIND_VIDEO);
+    }
 }
 
 void owed_app_apply_policy(void) {
@@ -1307,9 +1356,25 @@ void owed_app_on_background_changed(const char *resolved_path) {
         OWE_WARN("unknown media kind: %s", resolved_path);
         return;
     }
-    if (strcmp(app->source_path, resolved_path) == 0) {
+    /* The link still names the still whose loop plays. A refresh has cleared
+     * source_path, so it rebuilds the source from that still. */
+    if (*app->source_path &&
+        strcmp(*app->loop_still ? app->loop_still : app->source_path, resolved_path) == 0) {
         return;
     }
+    app->loop_still[0] = '\0';
+    app->loop_failed[0] = '\0';
+    if (kind != OWE_KIND_STILL || owe_theme_loop_for(resolved_path, app->loop_path, sizeof(app->loop_path)) != 0) {
+        app->loop_path[0] = '\0';
+    }
+    app->loop_at_ms = monotonic_ms() + THEME_LOOP_DELAY_MS;
+    set_source(resolved_path, kind);
+}
+
+/* The source the renderer and shell follow: the linked background, or the
+ * theme loop playing in place of its still. */
+static void set_source(const char *path, owe_media_kind_t kind) {
+    owed_app_t *app = &g_app;
     if (app->job) {
         owed_async_job_free(app->job);
         app->job = NULL;
@@ -1318,7 +1383,7 @@ void owed_app_on_background_changed(const char *resolved_path) {
      * still draws that still, so it takes it over before the new background
      * loads, as it would have at startup. A refresh has cleared source_path,
      * so the still is compared with the one the intro was prepared for. */
-    if (app->login_intro_until_ms && strcmp(resolved_path, app->login_intro_still) != 0) {
+    if (app->login_intro_until_ms && strcmp(path, app->login_intro_still) != 0) {
         app->login_intro_until_ms = 0;
         clear_prepared_intro();
         if (app->engine == OWE_ENGINE_NONE && switch_to_shell() == 0) {
@@ -1336,7 +1401,7 @@ void owed_app_on_background_changed(const char *resolved_path) {
     app->source_generation++;
     app->shell_retry_at_ms = 0;
     app->renderer_retry_at_ms = 0;
-    snprintf(app->source_path, sizeof(app->source_path), "%s", resolved_path);
+    snprintf(app->source_path, sizeof(app->source_path), "%s", path);
     snprintf(app->source_kind, sizeof(app->source_kind), "%s", owe_kind_to_string(kind));
     app->fail_path[0] = '\0';
     app->poster_fail_path[0] = '\0';
@@ -1655,6 +1720,7 @@ int main(int argc, char **argv) {
         owed_app_poll_intro();
         sync_output_skips();
         process_shell_handoff();
+        process_theme_loop();
         if (g_app.engine == OWE_ENGINE_RENDERER && !g_app.intro_active &&
             !owed_render_is_alive(g_app.supervisor) &&
             owed_supervisor_ensure_running(g_app.supervisor) == 0)

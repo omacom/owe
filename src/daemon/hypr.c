@@ -26,6 +26,7 @@ struct owed_hypr {
     bool any_window_visible;
     bool all_monitors_off;
     bool locked;
+    bool animations_off;
     int monitor_count;
     char covered[1024];
 };
@@ -111,7 +112,7 @@ static void reconnect(struct owed_hypr *h) {
     }
 }
 
-static int request(struct owed_hypr *h, const char *cmd, char **out) {
+static int request(struct owed_hypr *h, const char *cmd, char **out, bool object) {
     int fd = connect_socket(h, ".socket.sock");
     if (fd < 0) return -1;
     char req[64];
@@ -136,7 +137,8 @@ static int request(struct owed_hypr *h, const char *cmd, char **out) {
 done:
     close(fd);
     yyjson_doc *doc = eof && buf ? yyjson_read(buf, used, 0) : NULL;
-    bool valid = doc && yyjson_is_arr(yyjson_doc_get_root(doc));
+    yyjson_val *root = doc ? yyjson_doc_get_root(doc) : NULL;
+    bool valid = object ? yyjson_is_obj(root) : yyjson_is_arr(root);
     yyjson_doc_free(doc);
     if (!valid) { free(buf); return -1; }
     free(*out);
@@ -188,17 +190,32 @@ static void recompute(struct owed_hypr *h) {
 }
 
 void owed_hypr_refresh_clients(struct owed_hypr *h) {
-    if (h && request(h, "clients", &h->clients) == 0) recompute(h);
+    if (h && request(h, "clients", &h->clients, false) == 0) recompute(h);
 }
 
 void owed_hypr_refresh_monitors(struct owed_hypr *h) {
-    if (h && request(h, "monitors", &h->monitors) == 0) recompute(h);
+    if (h && request(h, "monitors", &h->monitors, false) == 0) recompute(h);
+}
+
+/* Omarchy turns animations off, by its toggle or on a session that renders
+ * on the CPU, through Hyprland's own option. */
+static void refresh_animations(struct owed_hypr *h) {
+    char *json = NULL;
+    if (request(h, "getoption animations:enabled", &json, true) != 0) return;
+    yyjson_doc *doc = yyjson_read(json, strlen(json), 0);
+    yyjson_val *root = yyjson_doc_get_root(doc);
+    yyjson_val *b = yyjson_obj_get(root, "bool"), *i = yyjson_obj_get(root, "int");
+    bool off = yyjson_is_bool(b) ? !yyjson_get_bool(b) : yyjson_is_int(i) && yyjson_get_int(i) == 0;
+    yyjson_doc_free(doc);
+    free(json);
+    h->animations_off = off;
 }
 
 void owed_hypr_refresh(struct owed_hypr *h) {
     if (!h) return;
-    request(h, "clients", &h->clients);
-    request(h, "monitors", &h->monitors);
+    request(h, "clients", &h->clients, false);
+    request(h, "monitors", &h->monitors, false);
+    refresh_animations(h);
     recompute(h);
 }
 
@@ -249,8 +266,9 @@ int owed_hypr_poll(struct owed_hypr *h) {
     while ((nl = memchr(h->event_buf + consumed, '\n', h->event_len - consumed))) {
         *nl = '\0';
         char *event = h->event_buf + consumed;
+        if (strncmp(event, "configreloaded>>", 16) == 0) refresh_animations(h);
         /* Focus and title events do not change wallpaper visibility. */
-        if (strncmp(event, "activewindow", 12) && strncmp(event, "windowtitle", 11)) refresh = true;
+        else if (strncmp(event, "activewindow", 12) && strncmp(event, "windowtitle", 11)) refresh = true;
         consumed = (size_t)(nl - h->event_buf) + 1;
     }
     memmove(h->event_buf, h->event_buf + consumed, h->event_len - consumed);
@@ -264,5 +282,6 @@ bool owed_hypr_any_fullscreen(struct owed_hypr *h) { return h && h->any_fullscre
 bool owed_hypr_any_window_visible(struct owed_hypr *h) { return h && h->any_window_visible; }
 bool owed_hypr_all_monitors_off(struct owed_hypr *h) { return h && h->all_monitors_off; }
 bool owed_hypr_locked(struct owed_hypr *h) { return h && h->locked; }
+bool owed_hypr_animations_off(struct owed_hypr *h) { return h && h->animations_off; }
 int owed_hypr_monitor_count(struct owed_hypr *h) { return h ? h->monitor_count : 0; }
 const char *owed_hypr_covered_names(struct owed_hypr *h) { return h ? h->covered : ""; }
