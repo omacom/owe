@@ -69,6 +69,12 @@ typedef struct owed_app {
 
     char source_path[4096];
     char source_kind[16];
+    /* The linked still's theme loop, the still while that loop is the source,
+     * a loop that failed, and when a newly linked still may start its loop. */
+    char loop_path[4096];
+    char loop_still[4096];
+    char loop_failed[4096];
+    int64_t loop_at_ms;
 
     char loaded_path[4096];
     char loaded_kind[16];
@@ -117,7 +123,6 @@ owed_app_t *owed_app_get(void);
 
 void owed_app_on_background_changed(const char *resolved_path);
 void owed_app_on_policy_changed(void);
-void owed_app_on_animations_changed(void);
 void owed_app_on_job_done(void);
 void owed_app_on_renderer_restarted(void);
 void owed_app_apply_policy(void);

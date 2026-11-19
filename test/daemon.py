@@ -291,6 +291,30 @@ def main():
                 check(os.readlink(current / "background").endswith("backgrounds/road.png"),
                       "the background link keeps naming the still")
 
+                # An intro still plays from a still whose loop is playing, and
+                # the loop comes back once the intro ends.
+                result = subprocess.run(cli + ["intro", "good.mp4"], env=env, cwd=root,
+                                        capture_output=True, text=True, timeout=15)
+                check(result.returncode == 0, "a still with a theme loop still plays its intro", result.stderr)
+                resumed = False
+                deadline = time.monotonic() + 8
+                while time.monotonic() < deadline:
+                    if call(daemon_socket, "status")["source_path"].endswith("backgrounds/loops/road.mp4"):
+                        resumed = True
+                        break
+                    time.sleep(0.1)
+                check(resumed, "the theme loop resumes after the intro")
+
+                # A loop the renderer cannot play gives way to its own still.
+                (root / "backgrounds/reject-road.png").write_bytes(b"test")
+                (root / "backgrounds/loops/reject-road.mp4").write_bytes(b"not a video")
+                check(call(daemon_socket, "set", path=str(root / "backgrounds/reject-road.png"))["status"] == "ok",
+                      "daemon accepts a still with a broken theme loop")
+                time.sleep(4)
+                status = call(daemon_socket, "status")
+                check(status["source_path"].endswith("backgrounds/reject-road.png"),
+                      "a failed theme loop gives way to its still", json.dumps(status))
+
                 check(call(daemon_socket, "set", path=str(root / "slow.png"))["status"] == "ok",
                       "daemon accepts a slow fallback still")
                 deadline = time.monotonic() + 2

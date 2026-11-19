@@ -27,7 +27,6 @@ struct owed_hypr {
     bool all_monitors_off;
     bool locked;
     bool animations_off;
-    bool animations_known;
     int monitor_count;
     char covered[1024];
 };
@@ -209,11 +208,7 @@ static void refresh_animations(struct owed_hypr *h) {
     bool off = yyjson_is_bool(b) ? !yyjson_get_bool(b) : yyjson_is_int(i) && yyjson_get_int(i) == 0;
     yyjson_doc_free(doc);
     free(json);
-    /* The first read is taken before the daemon applies the background. */
-    bool changed = h->animations_known && off != h->animations_off;
     h->animations_off = off;
-    h->animations_known = true;
-    if (changed) owed_app_on_animations_changed();
 }
 
 void owed_hypr_refresh(struct owed_hypr *h) {
