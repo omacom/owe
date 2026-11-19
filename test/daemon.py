@@ -272,6 +272,25 @@ def main():
                       "last good media is loaded and ready", json.dumps(status))
 
                 (root / "shell-fail").touch()
+                # A still with a theme loop beside it plays the loop in its place.
+                (root / "backgrounds/loops").mkdir(parents=True)
+                (root / "backgrounds/road.png").write_bytes(b"test")
+                (root / "backgrounds/loops/road.mp4").write_bytes(b"test")
+                check(call(daemon_socket, "set", path=str(root / "backgrounds/road.png"))["status"] == "ok",
+                      "daemon accepts a still with a theme loop")
+                looped = False
+                deadline = time.monotonic() + 8
+                while time.monotonic() < deadline:
+                    loads = [json.loads(line).get("path", "") for line in commands_path.read_text().splitlines()
+                             if json.loads(line).get("cmd") == "load"]
+                    if loads and loads[-1].endswith("backgrounds/loops/road.mp4"):
+                        looped = True
+                        break
+                    time.sleep(0.1)
+                check(looped, "a still with a theme loop plays the loop")
+                check(os.readlink(current / "background").endswith("backgrounds/road.png"),
+                      "the background link keeps naming the still")
+
                 check(call(daemon_socket, "set", path=str(root / "slow.png"))["status"] == "ok",
                       "daemon accepts a slow fallback still")
                 deadline = time.monotonic() + 2

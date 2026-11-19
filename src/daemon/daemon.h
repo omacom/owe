@@ -117,6 +117,7 @@ owed_app_t *owed_app_get(void);
 
 void owed_app_on_background_changed(const char *resolved_path);
 void owed_app_on_policy_changed(void);
+void owed_app_on_animations_changed(void);
 void owed_app_on_job_done(void);
 void owed_app_on_renderer_restarted(void);
 void owed_app_apply_policy(void);

@@ -1,10 +1,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "config.h"
 #include "strutil.h"
+#include "xdg.h"
 
 static int failures = 0;
 
@@ -124,12 +126,35 @@ static void test_config_load(void) {
     unlink(path);
 }
 
+static void test_theme_loop_for(void) {
+    char dir[] = "/tmp/owe-loop-test-XXXXXX", path[512], loop[512];
+    FILE *f;
+    CHECK(mkdtemp(dir) != NULL, "mkdtemp");
+    snprintf(path, sizeof(path), "%s/loops", dir);
+    mkdir(path, 0700);
+    snprintf(path, sizeof(path), "%s/loops/road.mp4", dir);
+    f = fopen(path, "w");
+    fclose(f);
+    snprintf(path, sizeof(path), "%s/road.webp", dir);
+    CHECK(owe_theme_loop_for(path, loop, sizeof(loop)) == 0, "a still finds its loop");
+    snprintf(path, sizeof(path), "%s/loops/road.mp4", dir);
+    CHECK(strcmp(loop, path) == 0, "the loop is loops/<stem>.mp4 beside the still");
+    snprintf(path, sizeof(path), "%s/sky.webp", dir);
+    CHECK(owe_theme_loop_for(path, loop, sizeof(loop)) != 0, "a still without a loop finds none");
+    snprintf(path, sizeof(path), "%s/loops/road.mp4", dir);
+    unlink(path);
+    snprintf(path, sizeof(path), "%s/loops", dir);
+    rmdir(path);
+    rmdir(dir);
+}
+
 int main(void) {
     test_kind();
     test_trim();
     test_config_defaults();
     test_config_load();
     test_config_multiline();
+    test_theme_loop_for();
     if (failures == 0) {
         printf("all unit tests passed\n");
         return 0;

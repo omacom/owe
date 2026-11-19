@@ -1295,6 +1295,7 @@ void owed_app_on_renderer_restarted(void) {
 void owed_app_on_background_changed(const char *resolved_path) {
     owed_app_t *app = &g_app;
     owe_media_kind_t kind;
+    char loop[PATH_MAX];
 
     if (!resolved_path || !*resolved_path) {
         return;
@@ -1303,6 +1304,14 @@ void owed_app_on_background_changed(const char *resolved_path) {
         owed_app_stop_intro("background changed");
     }
     kind = owe_kind_from_path(resolved_path);
+    /* A still with a theme loop beside it plays the loop in its place while
+     * animations are on. The loop starts and ends on the still, so an intro
+     * hands over to it, and the shell keeps the still underneath. */
+    if (kind == OWE_KIND_STILL && !(app->hypr && owed_hypr_animations_off(app->hypr)) &&
+        owe_theme_loop_for(resolved_path, loop, sizeof(loop)) == 0) {
+        resolved_path = loop;
+        kind = OWE_KIND_VIDEO;
+    }
     if (kind == OWE_KIND_UNKNOWN) {
         OWE_WARN("unknown media kind: %s", resolved_path);
         return;
@@ -1342,6 +1351,13 @@ void owed_app_on_background_changed(const char *resolved_path) {
     app->poster_fail_path[0] = '\0';
     owed_policy_recompute(app->policy);
     owed_app_apply_policy();
+}
+
+void owed_app_on_animations_changed(void) {
+    char resolved[PATH_MAX];
+    if (owed_watch_resolve_current(resolved, sizeof(resolved)) == 0) {
+        owed_app_on_background_changed(resolved);
+    }
 }
 
 void owed_app_on_policy_changed(void) {
