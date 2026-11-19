@@ -672,6 +672,9 @@ int owed_app_start_intro(const char *path, bool from_still, bool hold) {
         copy_path(app->source_path, sizeof(app->source_path), app->loop_still);
         snprintf(app->source_kind, sizeof(app->source_kind), "still");
         app->loop_still[0] = '\0';
+        /* A loop still loading behind the shell would time out mid-intro. */
+        cancel_handoff("an intro takes over from the theme loop");
+        app->media_pending = false;
     }
     /* A one-shot intro pairs with a still background. A video or GIF already
      * owns the renderer and needs no intro. */
@@ -1353,11 +1356,14 @@ void owed_app_on_background_changed(const char *resolved_path) {
         OWE_WARN("unknown media kind: %s", resolved_path);
         return;
     }
-    /* The link still names the still whose loop plays. */
-    if (strcmp(*app->loop_still ? app->loop_still : app->source_path, resolved_path) == 0) {
+    /* The link still names the still whose loop plays. A refresh has cleared
+     * source_path, so it rebuilds the source from that still. */
+    if (*app->source_path &&
+        strcmp(*app->loop_still ? app->loop_still : app->source_path, resolved_path) == 0) {
         return;
     }
     app->loop_still[0] = '\0';
+    app->loop_failed[0] = '\0';
     if (kind != OWE_KIND_STILL || owe_theme_loop_for(resolved_path, app->loop_path, sizeof(app->loop_path)) != 0) {
         app->loop_path[0] = '\0';
     }

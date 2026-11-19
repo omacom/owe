@@ -305,6 +305,20 @@ def main():
                     time.sleep(0.1)
                 check(resumed, "the theme loop resumes after the intro")
 
+                # A refresh while the loop plays rebuilds the source from the
+                # still, and the loop comes back.
+                check(call(daemon_socket, "refresh")["status"] == "ok", "the daemon accepts a refresh during a loop")
+                status = call(daemon_socket, "status")
+                check(status["source_path"], "a refresh during a loop keeps a source", json.dumps(status))
+                resumed = False
+                deadline = time.monotonic() + 8
+                while time.monotonic() < deadline:
+                    if call(daemon_socket, "status")["source_path"].endswith("backgrounds/loops/road.mp4"):
+                        resumed = True
+                        break
+                    time.sleep(0.1)
+                check(resumed, "the theme loop comes back after a refresh")
+
                 # A loop the renderer cannot play gives way to its own still.
                 (root / "backgrounds/reject-road.png").write_bytes(b"test")
                 (root / "backgrounds/loops/reject-road.mp4").write_bytes(b"not a video")
@@ -314,6 +328,26 @@ def main():
                 status = call(daemon_socket, "status")
                 check(status["source_path"].endswith("backgrounds/reject-road.png"),
                       "a failed theme loop gives way to its still", json.dumps(status))
+
+                # Choosing that still again tries its loop again.
+                def loop_loads():
+                    return sum(1 for line in commands_path.read_text().splitlines()
+                               if json.loads(line).get("cmd") == "load" and
+                               json.loads(line).get("path", "").endswith("loops/reject-road.mp4"))
+                tries = loop_loads()
+                check(call(daemon_socket, "set", path=str(root / "backgrounds/road.png"))["status"] == "ok",
+                      "daemon accepts another still")
+                time.sleep(0.5)
+                check(call(daemon_socket, "set", path=str(root / "backgrounds/reject-road.png"))["status"] == "ok",
+                      "daemon accepts the broken loop's still again")
+                retried = False
+                deadline = time.monotonic() + 6
+                while time.monotonic() < deadline:
+                    if loop_loads() > tries:
+                        retried = True
+                        break
+                    time.sleep(0.1)
+                check(retried, "choosing a still again retries its failed loop")
 
                 check(call(daemon_socket, "set", path=str(root / "slow.png"))["status"] == "ok",
                       "daemon accepts a slow fallback still")
