@@ -79,12 +79,30 @@ with tempfile.TemporaryDirectory(prefix='owe-busy-') as directory:
             if not wait(lambda: sock.exists() and call(sock, 'status').get('engine') == 'shell', 8):
                 fail('the shell takes the still at startup', root)
 
-            # The shell turns busy: the intro's handoff calls land but time out.
+            # A shell busy for a moment, as one still loading at login is, only
+            # delays the intro: owed asks again and the clip plays.
             (root / 'busy').touch()
             reply = call(sock, 'intro', path=str(root / 'intro.mp4'))
             if reply.get('status') != 'ok':
                 fail(f'the daemon accepts the intro: {reply}', root)
+            time.sleep(1.5)
+            (root / 'busy').unlink()
             if not wait(lambda: not call(sock, 'intro-status').get('running'), 20):
+                fail('the intro ends once the shell answers', root)
+            result = call(sock, 'intro-status').get('result')
+            if result != 'ok':
+                fail(f'an intro plays once a busy shell releases its still; result={result}', root)
+            if not wait(lambda: state.read_text().strip() == 'on', 10):
+                fail('the shell takes the still back after the intro', root)
+            print('ok: an intro waits for a busy shell instead of ending')
+
+            # A shell that stays busy: the handoff calls land but time out
+            # until the intro's deadline.
+            (root / 'busy').touch()
+            reply = call(sock, 'intro', path=str(root / 'intro.mp4'))
+            if reply.get('status') != 'ok':
+                fail(f'the daemon accepts the intro: {reply}', root)
+            if not wait(lambda: not call(sock, 'intro-status').get('running'), 40):
                 fail('the intro ends', root)
             if not (state.exists() and state.read_text().strip() == 'off'):
                 fail('the busy shell applied the timed-out disable (test precondition)', root)

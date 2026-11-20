@@ -53,6 +53,7 @@ static bool battery_poster_active(void) {
 #define INTRO_PREPARE_TIMEOUT_MS 3000
 #define INTRO_FINISH_TIMEOUT_MS 5000
 #define INTRO_FADE_OUT_MS 750
+#define INTRO_HANDOFF_RETRY_MS 1000
 #define RENDERER_WARM_MS 60000
 #define SHUTDOWN_HANDBACK_MS 300
 #define SHELL_START_WAIT_MS 20000
@@ -524,6 +525,7 @@ static void intro_finish(const char *error) {
     app->intro_hold_until_ms = 0;
     app->intro_phase = OWE_INTRO_IDLE;
     app->intro_deadline_ms = 0;
+    app->intro_handoff_retry_at_ms = 0;
     app->intro_phase_deadline_ms = 0;
     app->intro_path[0] = '\0';
     snprintf(app->intro_result, sizeof(app->intro_result), "%s", error ? "error" : "ok");
@@ -765,6 +767,7 @@ int owed_app_start_intro(const char *path, bool from_still, bool hold) {
     snprintf(app->intro_path, sizeof(app->intro_path), "%s", path);
     snprintf(app->intro_result, sizeof(app->intro_result), "running");
     app->intro_deadline_ms = monotonic_ms() + 30000;
+    app->intro_handoff_retry_at_ms = 0;
     app->intro_phase_deadline_ms = monotonic_ms() + INTRO_PREPARE_TIMEOUT_MS;
     app->shell_stop_at_ms = 0;
     OWE_INFO("intro preparing: %s", path);
@@ -822,6 +825,15 @@ static int intro_begin_finish(void) {
     return rc;
 }
 
+/* A shell still loading at login, or busy applying a theme, can miss the
+ * release. The intro stays pending and asks again until its deadline rather
+ * than ending on the first refusal. */
+static void intro_handoff_wait(void) {
+    owed_app_t *app = &g_app;
+    if (!app->intro_handoff_retry_at_ms) OWE_INFO("intro waits for the shell to release its still");
+    app->intro_handoff_retry_at_ms = monotonic_ms() + INTRO_HANDOFF_RETRY_MS;
+}
+
 void owed_app_poll_intro(void) {
     owed_app_t *app = &g_app;
     char reply[8192];
@@ -841,7 +853,7 @@ void owed_app_poll_intro(void) {
     }
     now = monotonic_ms();
     if (now >= app->intro_deadline_ms) {
-        intro_finish("intro timed out");
+        intro_finish(app->intro_handoff_retry_at_ms ? "renderer handoff failed" : "intro timed out");
         return;
     }
     if ((app->power && owed_power_locked(app->power)) ||
@@ -851,15 +863,19 @@ void owed_app_poll_intro(void) {
         intro_finish("intro interrupted");
         return;
     }
+    if (now < app->intro_handoff_retry_at_ms) {
+        return;
+    }
     if (app->intro_release_first) {
         /* At login the shell's cover hides the desktop until the intro
          * moves, so the shell can let go of its still before the first frame.
          * The clip then starts once the shell is free to reveal it, rather
          * than playing its opening under the cover while the shell is busy. */
         if (activate_renderer() != 0) {
-            intro_finish("renderer handoff failed");
+            intro_handoff_wait();
             return;
         }
+        app->intro_handoff_retry_at_ms = 0;
         app->intro_release_first = 0;
         /* A held intro shows its first frame, paused, until the shell has
          * finished covering the login and asks it to play. */
@@ -892,9 +908,10 @@ void owed_app_poll_intro(void) {
         if (ready) {
             clear_prepared_intro();
             if (activate_renderer() != 0) {
-                intro_finish("renderer handoff failed");
+                intro_handoff_wait();
                 return;
             }
+            app->intro_handoff_retry_at_ms = 0;
             app->intro_phase = OWE_INTRO_PLAYING;
             app->intro_phase_deadline_ms = 0;
             check_intro_shown(reply);
@@ -917,9 +934,10 @@ void owed_app_poll_intro(void) {
     if (app->intro_phase == OWE_INTRO_PREPARING) {
         if (has_transition) {
             if (activate_renderer() != 0) {
-                intro_finish("renderer handoff failed");
+                intro_handoff_wait();
                 return;
             }
+            app->intro_handoff_retry_at_ms = 0;
             if (owed_supervisor_intro_show(app->supervisor) != 0) {
                 intro_finish("intro reveal failed");
                 return;
