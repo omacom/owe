@@ -51,6 +51,9 @@ typedef struct owed_app {
     bool transition_release_pending;
     int64_t shell_stop_at_ms;
     int64_t shell_retry_at_ms;
+    /* A shell call that timed out may still run once the busy shell gets to
+     * it, so after a failed release the shell is asked to draw the still again. */
+    bool shell_resync;
     int64_t renderer_retry_at_ms;
     /* Until this time a shell owed has never reached may still be starting. */
     int64_t shell_start_until_ms;

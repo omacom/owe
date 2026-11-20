@@ -61,6 +61,7 @@ static bool battery_poster_active(void) {
 
 static void set_source(const char *path, owe_media_kind_t kind);
 #define SHELL_START_RETRY_MS 1000
+#define SHELL_RESYNC_RETRY_MS 5000
 /* How long an intro held on its first frame waits to be asked to play. */
 #define INTRO_HOLD_TIMEOUT_MS 3000
 
@@ -231,6 +232,7 @@ static int switch_to_shell(void) {
     }
     app->shell_retry_at_ms = 0;
     app->shell_enabled = 1;
+    app->shell_resync = false;
     app->engine = OWE_ENGINE_SHELL;
     app->media_pending = false;
     app->media_ready = true;
@@ -271,6 +273,9 @@ static int activate_renderer(void) {
         return -1;
     }
     if (app->shell_enabled != 0 && owed_shell_plugin_set(false) != 0) {
+        /* A busy shell can run a call after omarchy-shell gave up on it, so
+         * the shell may have let go of its still after all. */
+        if (app->shell_enabled == 1) app->shell_resync = true;
         /* At login the shell may not be up yet: ask again shortly, as the
          * still path does, rather than leaving the screen black for 30 s. */
         app->renderer_retry_at_ms = monotonic_ms() + (shell_starting() ? SHELL_START_RETRY_MS : 30000);
@@ -280,6 +285,7 @@ static int activate_renderer(void) {
     app->engine = OWE_ENGINE_RENDERER;
     app->shell_stop_at_ms = 0;
     app->shell_enabled = 0;
+    app->shell_resync = false;
     return 0;
 }
 
@@ -1169,6 +1175,21 @@ static void process_theme_loop(void) {
     }
 }
 
+/* The shell keeps the still, but a release that failed may have reached it
+ * late. Asking it to draw again costs nothing when it never let go. */
+static void resync_shell(void) {
+    owed_app_t *app = &g_app;
+    int64_t now = monotonic_ms();
+    if (!app->shell_resync || now < app->shell_retry_at_ms) return;
+    if (owed_shell_plugin_set(true) != 0) {
+        app->shell_retry_at_ms = now + SHELL_RESYNC_RETRY_MS;
+        return;
+    }
+    app->shell_retry_at_ms = 0;
+    app->shell_resync = false;
+    OWE_INFO("shell background restored after a failed release");
+}
+
 void owed_app_apply_policy(void) {
     owed_app_t *app = &g_app;
     char cache[PATH_MAX];
@@ -1199,6 +1220,7 @@ void owed_app_apply_policy(void) {
             }
             if (shell_starting()) return;
         } else {
+            resync_shell();
             return;
         }
     }
