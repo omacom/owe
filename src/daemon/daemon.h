@@ -51,6 +51,9 @@ typedef struct owed_app {
     bool transition_release_pending;
     int64_t shell_stop_at_ms;
     int64_t shell_retry_at_ms;
+    /* A shell call that timed out may still run once the busy shell gets to
+     * it, so after a failed release the shell is asked to draw the still again. */
+    bool shell_resync;
     int64_t renderer_retry_at_ms;
     /* Until this time a shell owed has never reached may still be starting. */
     int64_t shell_start_until_ms;
@@ -115,6 +118,10 @@ typedef struct owed_app {
     ino_t intro_still_ino;
     char intro_result[16];
     int64_t intro_deadline_ms;
+    /* A shell too busy to release its still is asked again until the deadline. */
+    int64_t intro_handoff_retry_at_ms;
+    /* The playing clip is paused while the shell holds its still. */
+    bool intro_handoff_paused;
     int64_t intro_phase_deadline_ms;
     unsigned long source_generation;
 } owed_app_t;

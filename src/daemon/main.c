@@ -53,6 +53,7 @@ static bool battery_poster_active(void) {
 #define INTRO_PREPARE_TIMEOUT_MS 3000
 #define INTRO_FINISH_TIMEOUT_MS 5000
 #define INTRO_FADE_OUT_MS 750
+#define INTRO_HANDOFF_RETRY_MS 1000
 #define RENDERER_WARM_MS 60000
 #define SHUTDOWN_HANDBACK_MS 300
 #define SHELL_START_WAIT_MS 20000
@@ -61,6 +62,7 @@ static bool battery_poster_active(void) {
 
 static void set_source(const char *path, owe_media_kind_t kind);
 #define SHELL_START_RETRY_MS 1000
+#define SHELL_RESYNC_RETRY_MS 5000
 /* How long an intro held on its first frame waits to be asked to play. */
 #define INTRO_HOLD_TIMEOUT_MS 3000
 
@@ -231,6 +233,7 @@ static int switch_to_shell(void) {
     }
     app->shell_retry_at_ms = 0;
     app->shell_enabled = 1;
+    app->shell_resync = false;
     app->engine = OWE_ENGINE_SHELL;
     app->media_pending = false;
     app->media_ready = true;
@@ -271,6 +274,9 @@ static int activate_renderer(void) {
         return -1;
     }
     if (app->shell_enabled != 0 && owed_shell_plugin_set(false) != 0) {
+        /* A busy shell can run a call after omarchy-shell gave up on it, so
+         * the shell may have let go of its still after all. */
+        if (app->shell_enabled == 1) app->shell_resync = true;
         /* At login the shell may not be up yet: ask again shortly, as the
          * still path does, rather than leaving the screen black for 30 s. */
         app->renderer_retry_at_ms = monotonic_ms() + (shell_starting() ? SHELL_START_RETRY_MS : 30000);
@@ -280,6 +286,7 @@ static int activate_renderer(void) {
     app->engine = OWE_ENGINE_RENDERER;
     app->shell_stop_at_ms = 0;
     app->shell_enabled = 0;
+    app->shell_resync = false;
     return 0;
 }
 
@@ -518,6 +525,8 @@ static void intro_finish(const char *error) {
     app->intro_hold_until_ms = 0;
     app->intro_phase = OWE_INTRO_IDLE;
     app->intro_deadline_ms = 0;
+    app->intro_handoff_retry_at_ms = 0;
+    app->intro_handoff_paused = false;
     app->intro_phase_deadline_ms = 0;
     app->intro_path[0] = '\0';
     snprintf(app->intro_result, sizeof(app->intro_result), "%s", error ? "error" : "ok");
@@ -759,6 +768,8 @@ int owed_app_start_intro(const char *path, bool from_still, bool hold) {
     snprintf(app->intro_path, sizeof(app->intro_path), "%s", path);
     snprintf(app->intro_result, sizeof(app->intro_result), "running");
     app->intro_deadline_ms = monotonic_ms() + 30000;
+    app->intro_handoff_retry_at_ms = 0;
+    app->intro_handoff_paused = false;
     app->intro_phase_deadline_ms = monotonic_ms() + INTRO_PREPARE_TIMEOUT_MS;
     app->shell_stop_at_ms = 0;
     OWE_INFO("intro preparing: %s", path);
@@ -816,6 +827,35 @@ static int intro_begin_finish(void) {
     return rc;
 }
 
+/* A shell still loading at login, or busy applying a theme, can miss the
+ * release. The intro stays pending and asks again until its deadline rather
+ * than ending on the first refusal. */
+static void intro_handoff_wait(void) {
+    owed_app_t *app = &g_app;
+    if (!app->intro_handoff_retry_at_ms) OWE_INFO("intro waits for the shell to release its still");
+    app->intro_handoff_retry_at_ms = monotonic_ms() + INTRO_HANDOFF_RETRY_MS;
+}
+
+/* A clip that already plays behind the shell's still holds its frame while
+ * the shell is asked to let go, since a busy shell can take longer to answer
+ * than the clip runs. It is hidden until then, so the pause never shows. */
+static void intro_handoff_hold(void) {
+    owed_app_t *app = &g_app;
+    if (!app->intro_hold && !app->intro_handoff_paused &&
+        owed_supervisor_send(app->supervisor, "{\"cmd\":\"pause\"}", NULL, 0) == 0) {
+        app->intro_handoff_paused = true;
+    }
+}
+
+static void intro_handoff_done(void) {
+    owed_app_t *app = &g_app;
+    app->intro_handoff_retry_at_ms = 0;
+    if (app->intro_handoff_paused) {
+        app->intro_handoff_paused = false;
+        owed_supervisor_send(app->supervisor, "{\"cmd\":\"resume\"}", NULL, 0);
+    }
+}
+
 void owed_app_poll_intro(void) {
     owed_app_t *app = &g_app;
     char reply[8192];
@@ -835,7 +875,7 @@ void owed_app_poll_intro(void) {
     }
     now = monotonic_ms();
     if (now >= app->intro_deadline_ms) {
-        intro_finish("intro timed out");
+        intro_finish(app->intro_handoff_retry_at_ms ? "renderer handoff failed" : "intro timed out");
         return;
     }
     if ((app->power && owed_power_locked(app->power)) ||
@@ -845,15 +885,19 @@ void owed_app_poll_intro(void) {
         intro_finish("intro interrupted");
         return;
     }
+    if (now < app->intro_handoff_retry_at_ms) {
+        return;
+    }
     if (app->intro_release_first) {
         /* At login the shell's cover hides the desktop until the intro
          * moves, so the shell can let go of its still before the first frame.
          * The clip then starts once the shell is free to reveal it, rather
          * than playing its opening under the cover while the shell is busy. */
         if (activate_renderer() != 0) {
-            intro_finish("renderer handoff failed");
+            intro_handoff_wait();
             return;
         }
+        intro_handoff_done();
         app->intro_release_first = 0;
         /* A held intro shows its first frame, paused, until the shell has
          * finished covering the login and asks it to play. */
@@ -885,10 +929,12 @@ void owed_app_poll_intro(void) {
          * an empty background. */
         if (ready) {
             clear_prepared_intro();
+            intro_handoff_hold();
             if (activate_renderer() != 0) {
-                intro_finish("renderer handoff failed");
+                intro_handoff_wait();
                 return;
             }
+            intro_handoff_done();
             app->intro_phase = OWE_INTRO_PLAYING;
             app->intro_phase_deadline_ms = 0;
             check_intro_shown(reply);
@@ -910,10 +956,12 @@ void owed_app_poll_intro(void) {
     }
     if (app->intro_phase == OWE_INTRO_PREPARING) {
         if (has_transition) {
+            intro_handoff_hold();
             if (activate_renderer() != 0) {
-                intro_finish("renderer handoff failed");
+                intro_handoff_wait();
                 return;
             }
+            intro_handoff_done();
             if (owed_supervisor_intro_show(app->supervisor) != 0) {
                 intro_finish("intro reveal failed");
                 return;
@@ -1084,14 +1132,18 @@ static void sync_output_skips(void) {
     char array[2048];
     char *line = NULL;
     size_t used = 0;
-    if (!g_app.hypr || !g_app.supervisor || g_app.engine != OWE_ENGINE_RENDERER) {
+    bool loading = g_app.engine != OWE_ENGINE_RENDERER && g_app.handoff_pending;
+    if (!g_app.hypr || !g_app.supervisor || (g_app.engine != OWE_ENGINE_RENDERER && !loading)) {
         /* The renderer that takes over next can be a new process, or a warm
          * one with an old list. It must receive the list again, also when the
          * list is empty. */
         g_skip_synced = false;
         return;
     }
-    covered = owed_hypr_covered_names(g_app.hypr);
+    /* A renderer loading behind the shell's still reports ready only once it
+     * has drawn, so it skips no output until it takes over. A warm renderer
+     * would otherwise keep the list from its last video and never draw. */
+    covered = loading ? "" : owed_hypr_covered_names(g_app.hypr);
     if (g_skip_synced && strcmp(covered, g_last_skip) == 0) {
         return;
     }
@@ -1169,6 +1221,21 @@ static void process_theme_loop(void) {
     }
 }
 
+/* The shell keeps the still, but a release that failed may have reached it
+ * late. Asking it to draw again costs nothing when it never let go. */
+static void resync_shell(void) {
+    owed_app_t *app = &g_app;
+    int64_t now = monotonic_ms();
+    if (!app->shell_resync || now < app->shell_retry_at_ms) return;
+    if (owed_shell_plugin_set(true) != 0) {
+        app->shell_retry_at_ms = now + SHELL_RESYNC_RETRY_MS;
+        return;
+    }
+    app->shell_retry_at_ms = 0;
+    app->shell_resync = false;
+    OWE_INFO("shell background restored after a failed release");
+}
+
 void owed_app_apply_policy(void) {
     owed_app_t *app = &g_app;
     char cache[PATH_MAX];
@@ -1199,6 +1266,7 @@ void owed_app_apply_policy(void) {
             }
             if (shell_starting()) return;
         } else {
+            resync_shell();
             return;
         }
     }
