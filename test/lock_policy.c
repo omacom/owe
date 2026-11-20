@@ -412,6 +412,22 @@ int main(void) {
     CHECK(skip_sends == 3 && !*g_last_skip && strstr(supervisor_last, "\"outputs\":[]"));
     sync_output_skips();
     CHECK(skip_sends == 3);
+    /* A warm renderer loading behind the shell's still skips no output, so it
+     * draws the frame that reports it ready, and gets the covered list once
+     * it takes over (#45). */
+    strcpy(covered_names, "DP-1");
+    g_app.engine = OWE_ENGINE_SHELL;
+    sync_output_skips();
+    g_app.handoff_pending = true;
+    sync_output_skips();
+    CHECK(skip_sends == 4 && strstr(supervisor_last, "\"outputs\":[]"));
+    g_app.handoff_pending = false;
+    g_app.engine = OWE_ENGINE_RENDERER;
+    sync_output_skips();
+    CHECK(skip_sends == 5 && strstr(supervisor_last, "\"outputs\":[\"DP-1\"]"));
+    covered_names[0] = '\0';
+    sync_output_skips();
+    CHECK(skip_sends == 6);
     /* A rejected source still is not mistaken for a failed generated poster. */
     power.battery = true;
     renderer.fail_load = true;

@@ -1108,14 +1108,18 @@ static void sync_output_skips(void) {
     char array[2048];
     char *line = NULL;
     size_t used = 0;
-    if (!g_app.hypr || !g_app.supervisor || g_app.engine != OWE_ENGINE_RENDERER) {
+    bool loading = g_app.engine != OWE_ENGINE_RENDERER && g_app.handoff_pending;
+    if (!g_app.hypr || !g_app.supervisor || (g_app.engine != OWE_ENGINE_RENDERER && !loading)) {
         /* The renderer that takes over next can be a new process, or a warm
          * one with an old list. It must receive the list again, also when the
          * list is empty. */
         g_skip_synced = false;
         return;
     }
-    covered = owed_hypr_covered_names(g_app.hypr);
+    /* A renderer loading behind the shell's still reports ready only once it
+     * has drawn, so it skips no output until it takes over. A warm renderer
+     * would otherwise keep the list from its last video and never draw. */
+    covered = loading ? "" : owed_hypr_covered_names(g_app.hypr);
     if (g_skip_synced && strcmp(covered, g_last_skip) == 0) {
         return;
     }

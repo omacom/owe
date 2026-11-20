@@ -577,6 +577,7 @@ int owe_mpv_fd(struct owe_mpv *m) {
 bool owe_mpv_process_updates(struct owe_mpv *m) {
     char buf[128];
     uint64_t flags;
+    bool resized = false;
     if (!m) {
         return false;
     }
@@ -601,8 +602,10 @@ bool owe_mpv_process_updates(struct owe_mpv *m) {
                 strcmp(property->name, "eof-reached") == 0) {
                 m->eof = *(int *)property->data != 0;
             } else if (property && strcmp(property->name, "dwidth") == 0) {
+                resized |= m->video_w != property_size(property);
                 m->video_w = property_size(property);
             } else if (property && strcmp(property->name, "dheight") == 0) {
+                resized |= m->video_h != property_size(property);
                 m->video_h = property_size(property);
             } else if (property && strcmp(property->name, "hwdec-current") == 0) {
                 snprintf(m->hwdec_current, sizeof(m->hwdec_current), "%s",
@@ -626,7 +629,11 @@ bool owe_mpv_process_updates(struct owe_mpv *m) {
     owe_egl_make_current(owe_app_get()->egl);
     flags = mpv_render_context_update(m->ctx);
     if ((flags & MPV_RENDER_UPDATE_FRAME) && m->file_loaded) m->has_frame = true;
-    return (flags & MPV_RENDER_UPDATE_FRAME) != 0;
+    /* A frame drawn before mpv reported the video's size does not count as
+     * ready. A paused video sends no further frame, so its size arriving
+     * draws it again. */
+    return (flags & MPV_RENDER_UPDATE_FRAME) != 0 ||
+           (resized && m->has_frame && !m->ready && owe_mpv_video_size(m, NULL, NULL) == 0);
 }
 
 bool owe_mpv_has_frame(struct owe_mpv *m) {
