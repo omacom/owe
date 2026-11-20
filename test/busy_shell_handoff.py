@@ -82,6 +82,8 @@ with tempfile.TemporaryDirectory(prefix='owe-busy-') as directory:
             # A shell busy for a moment, as one still loading at login is, only
             # delays the intro: owed asks again and the clip plays.
             (root / 'busy').touch()
+            commands = root / 'commands.jsonl'
+            seen = len(commands.read_text().splitlines()) if commands.exists() else 0
             reply = call(sock, 'intro', path=str(root / 'intro.mp4'))
             if reply.get('status') != 'ok':
                 fail(f'the daemon accepts the intro: {reply}', root)
@@ -92,6 +94,12 @@ with tempfile.TemporaryDirectory(prefix='owe-busy-') as directory:
             result = call(sock, 'intro-status').get('result')
             if result != 'ok':
                 fail(f'an intro plays once a busy shell releases its still; result={result}', root)
+            # The clip, already playing behind the still, holds its frame
+            # while it waits, so it does not run out before it is revealed.
+            sent = [json.loads(line)['cmd'] for line in commands.read_text().splitlines()[seen:]]
+            waits = [c for c in sent if c in ('pause', 'resume')]
+            if waits[:2] != ['pause', 'resume']:
+                fail(f'an intro waiting for the shell pauses and then resumes its clip; sent={sent}', root)
             if not wait(lambda: state.read_text().strip() == 'on', 10):
                 fail('the shell takes the still back after the intro', root)
             print('ok: an intro waits for a busy shell instead of ending')

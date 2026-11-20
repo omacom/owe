@@ -526,6 +526,7 @@ static void intro_finish(const char *error) {
     app->intro_phase = OWE_INTRO_IDLE;
     app->intro_deadline_ms = 0;
     app->intro_handoff_retry_at_ms = 0;
+    app->intro_handoff_paused = false;
     app->intro_phase_deadline_ms = 0;
     app->intro_path[0] = '\0';
     snprintf(app->intro_result, sizeof(app->intro_result), "%s", error ? "error" : "ok");
@@ -768,6 +769,7 @@ int owed_app_start_intro(const char *path, bool from_still, bool hold) {
     snprintf(app->intro_result, sizeof(app->intro_result), "running");
     app->intro_deadline_ms = monotonic_ms() + 30000;
     app->intro_handoff_retry_at_ms = 0;
+    app->intro_handoff_paused = false;
     app->intro_phase_deadline_ms = monotonic_ms() + INTRO_PREPARE_TIMEOUT_MS;
     app->shell_stop_at_ms = 0;
     OWE_INFO("intro preparing: %s", path);
@@ -831,7 +833,23 @@ static int intro_begin_finish(void) {
 static void intro_handoff_wait(void) {
     owed_app_t *app = &g_app;
     if (!app->intro_handoff_retry_at_ms) OWE_INFO("intro waits for the shell to release its still");
+    /* A clip that already plays behind the shell's still would run out while
+     * it waits, so it holds its frame. One released first has not started,
+     * and a held intro is paused already. */
+    if (!app->intro_release_first && !app->intro_hold && !app->intro_handoff_paused &&
+        owed_supervisor_send(app->supervisor, "{\"cmd\":\"pause\"}", NULL, 0) == 0) {
+        app->intro_handoff_paused = true;
+    }
     app->intro_handoff_retry_at_ms = monotonic_ms() + INTRO_HANDOFF_RETRY_MS;
+}
+
+static void intro_handoff_done(void) {
+    owed_app_t *app = &g_app;
+    app->intro_handoff_retry_at_ms = 0;
+    if (app->intro_handoff_paused) {
+        app->intro_handoff_paused = false;
+        owed_supervisor_send(app->supervisor, "{\"cmd\":\"resume\"}", NULL, 0);
+    }
 }
 
 void owed_app_poll_intro(void) {
@@ -875,7 +893,7 @@ void owed_app_poll_intro(void) {
             intro_handoff_wait();
             return;
         }
-        app->intro_handoff_retry_at_ms = 0;
+        intro_handoff_done();
         app->intro_release_first = 0;
         /* A held intro shows its first frame, paused, until the shell has
          * finished covering the login and asks it to play. */
@@ -911,7 +929,7 @@ void owed_app_poll_intro(void) {
                 intro_handoff_wait();
                 return;
             }
-            app->intro_handoff_retry_at_ms = 0;
+            intro_handoff_done();
             app->intro_phase = OWE_INTRO_PLAYING;
             app->intro_phase_deadline_ms = 0;
             check_intro_shown(reply);
@@ -937,7 +955,7 @@ void owed_app_poll_intro(void) {
                 intro_handoff_wait();
                 return;
             }
-            app->intro_handoff_retry_at_ms = 0;
+            intro_handoff_done();
             if (owed_supervisor_intro_show(app->supervisor) != 0) {
                 intro_finish("intro reveal failed");
                 return;
