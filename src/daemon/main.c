@@ -1139,8 +1139,9 @@ static void finish_media(const char *path, const char *kind) {
 /* A still with a theme loop beside it plays the loop in its place once it has
  * settled: after a short wait for an intro the shell may still ask for, and
  * never during one. The loop starts and ends on its still. It gives way to
- * the still while animations are off or when it fails, and is not retried
- * after a failure until the background changes. */
+ * the still while animations are off, while on battery, since decoding it
+ * costs several watts, or when it fails, and is not retried after a failure
+ * until the background changes. */
 static void process_theme_loop(void) {
     owed_app_t *app = &g_app;
     bool want;
@@ -1151,6 +1152,7 @@ static void process_theme_loop(void) {
         copy_path(app->loop_failed, sizeof(app->loop_failed), app->loop_path);
     }
     want = !(app->hypr && owed_hypr_animations_off(app->hypr)) &&
+           !owed_power_on_battery(app->power) &&
            strcmp(app->loop_failed, app->loop_path) != 0;
     if (*app->loop_still) {
         if (!want) {

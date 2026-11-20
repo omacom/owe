@@ -36,7 +36,7 @@ omarchy hook install theme-set /usr/share/owe/10-owe-sync
 ```
 
 The daemon also watches the background symlink directly.
-A still with a theme loop beside it, `loops/<stem>.mp4` next to `<stem>.<ext>`, plays the loop in its place while Hyprland's animations are on; the symlink keeps naming the still, and turning animations off goes back to it.
+A still with a theme loop beside it, `loops/<stem>.mp4` next to `<stem>.<ext>`, plays the loop in its place while Hyprland's animations are on and the machine is on AC power; the symlink keeps naming the still, and turning animations off or unplugging goes back to it.
 The hook requests a refresh after the theme changes.
 
 Or build from source, as below.
