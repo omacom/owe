@@ -833,14 +833,18 @@ static int intro_begin_finish(void) {
 static void intro_handoff_wait(void) {
     owed_app_t *app = &g_app;
     if (!app->intro_handoff_retry_at_ms) OWE_INFO("intro waits for the shell to release its still");
-    /* A clip that already plays behind the shell's still would run out while
-     * it waits, so it holds its frame. One released first has not started,
-     * and a held intro is paused already. */
-    if (!app->intro_release_first && !app->intro_hold && !app->intro_handoff_paused &&
+    app->intro_handoff_retry_at_ms = monotonic_ms() + INTRO_HANDOFF_RETRY_MS;
+}
+
+/* A clip that already plays behind the shell's still holds its frame while
+ * the shell is asked to let go, since a busy shell can take longer to answer
+ * than the clip runs. It is hidden until then, so the pause never shows. */
+static void intro_handoff_hold(void) {
+    owed_app_t *app = &g_app;
+    if (!app->intro_hold && !app->intro_handoff_paused &&
         owed_supervisor_send(app->supervisor, "{\"cmd\":\"pause\"}", NULL, 0) == 0) {
         app->intro_handoff_paused = true;
     }
-    app->intro_handoff_retry_at_ms = monotonic_ms() + INTRO_HANDOFF_RETRY_MS;
 }
 
 static void intro_handoff_done(void) {
@@ -925,6 +929,7 @@ void owed_app_poll_intro(void) {
          * an empty background. */
         if (ready) {
             clear_prepared_intro();
+            intro_handoff_hold();
             if (activate_renderer() != 0) {
                 intro_handoff_wait();
                 return;
@@ -951,6 +956,7 @@ void owed_app_poll_intro(void) {
     }
     if (app->intro_phase == OWE_INTRO_PREPARING) {
         if (has_transition) {
+            intro_handoff_hold();
             if (activate_renderer() != 0) {
                 intro_handoff_wait();
                 return;

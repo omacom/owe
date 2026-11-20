@@ -23,6 +23,8 @@ owed = Path(sys.argv[1]).resolve()
 # only an ask made once the shell answers again brings the still back.
 SHELL = r"""#!/bin/bash
 echo "$*" >>"$XDG_RUNTIME_DIR/shell.log"
+# Shell calls go into the renderer's command log too, so the order is kept.
+echo '{"cmd":"shell"}' >>"$XDG_RUNTIME_DIR/commands.jsonl"
 busy=0; [[ -e $XDG_RUNTIME_DIR/busy ]] && busy=1
 case "$*" in
   "background setSuspended true"|"shell setPluginEnabled omarchy.background false") echo off >"$XDG_RUNTIME_DIR/bg-state" ;;
@@ -95,11 +97,13 @@ with tempfile.TemporaryDirectory(prefix='owe-busy-') as directory:
             if result != 'ok':
                 fail(f'an intro plays once a busy shell releases its still; result={result}', root)
             # The clip, already playing behind the still, holds its frame
-            # while it waits, so it does not run out before it is revealed.
+            # before the shell is asked, since a busy shell can take longer
+            # to answer than the clip runs, and plays on once it is revealed.
             sent = [json.loads(line)['cmd'] for line in commands.read_text().splitlines()[seen:]]
-            waits = [c for c in sent if c in ('pause', 'resume')]
-            if waits[:2] != ['pause', 'resume']:
-                fail(f'an intro waiting for the shell pauses and then resumes its clip; sent={sent}', root)
+            if 'pause' not in sent or 'shell' not in sent or sent.index('pause') > sent.index('shell'):
+                fail(f'an intro pauses its clip before asking a busy shell; sent={sent}', root)
+            if 'resume' not in sent[sent.index('pause'):]:
+                fail(f'an intro resumes its clip once the shell lets go; sent={sent}', root)
             if not wait(lambda: state.read_text().strip() == 'on', 10):
                 fail('the shell takes the still back after the intro', root)
             print('ok: an intro waits for a busy shell instead of ending')
