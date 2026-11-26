@@ -26,5 +26,22 @@ unsigned int owe_egl_tex_from_rgba(struct owe_egl *egl, const uint8_t *rgba, int
 void owe_egl_tex_free(struct owe_egl *egl, unsigned int tex);
 void owe_egl_draw_texture(struct owe_egl *egl, struct owe_output *out, unsigned int tex,
                           float alpha, int tex_w, int tex_h);
+/* One piece of a scene, drawn over what is already there. Places are shares
+ * of the still: left, top, width and height. */
+struct owe_piece_draw {
+    unsigned int shape;      /* the piece's picture: where it is, and its colour if it has its own */
+    unsigned int still;      /* the still, for a piece that takes its colour from it; else 0 */
+    unsigned int behind;     /* what the still shows where that piece was; goes with `still` */
+    unsigned int inside;     /* a shape the piece is kept inside, or 0 */
+    int still_w;
+    int still_h;
+    const float *at;         /* where the piece was cut from the still */
+    const float *inside_at;  /* where the shape sits in the still */
+    float dx;                /* how far it is moved, as shares of the still's width and height */
+    float dy;
+    float size;              /* 1 is life size */
+    float fade;              /* 1 is fully there */
+};
+void owe_egl_draw_piece(struct owe_egl *egl, struct owe_output *out, const struct owe_piece_draw *d);
 void owe_egl_draw_texture_overlay(struct owe_egl *egl, struct owe_output *out, unsigned int tex,
                                   float alpha, int tex_w, int tex_h);

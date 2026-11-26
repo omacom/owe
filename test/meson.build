@@ -118,3 +118,11 @@ scene_desc_test = executable('owe-scene-desc-test',
   include_directories : [yyjson_inc],
   dependencies : [m_dep])
 test('scene-desc', scene_desc_test)
+
+scene_draw_test = executable('owe-scene-draw-test',
+  files('scene_draw.c', '../src/common/log.c'),
+  include_directories : [common_inc, include_directories('../src/render')],
+  dependencies : [egl_dep, epoxy_dep, wayland_egl, m_dep],
+  c_args : ['-ffunction-sections', '-fdata-sections'],
+  link_args : ['-Wl,--gc-sections'])
+test('scene-draw', scene_draw_test, env : ['LIBGL_ALWAYS_SOFTWARE=1'])

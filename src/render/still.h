@@ -34,3 +34,5 @@ bool owe_still_fades_out(struct owe_still *s);
 bool owe_still_held(struct owe_still *s);
 bool owe_still_needs_frames(struct owe_still *s);
 bool owe_still_opaque(struct owe_still *s);
+/* The loaded picture as a texture, and its size, for a scene to draw. */
+unsigned int owe_still_texture(struct owe_still *s, int *w, int *h);

@@ -648,3 +648,10 @@ bool owe_still_needs_frames(struct owe_still *s) {
 bool owe_still_opaque(struct owe_still *s) {
     return s && s->tex && s->opaque;
 }
+
+unsigned int owe_still_texture(struct owe_still *s, int *w, int *h) {
+    if (!s) return 0;
+    if (w) *w = s->tex_w;
+    if (h) *h = s->tex_h;
+    return s->tex;
+}

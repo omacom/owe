@@ -1,5 +1,6 @@
 #include "egl.h"
 
+#include <math.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
@@ -25,12 +26,34 @@ struct owe_gl_prog {
     int ready;
 };
 
+/* Draws one piece of a scene. It shares the blit program's quad. */
+struct owe_gl_piece {
+    GLuint prog;
+    GLint shape_loc;
+    GLint still_loc;
+    GLint behind_loc;
+    GLint inside_loc;
+    GLint uv_offset_loc;
+    GLint uv_scale_loc;
+    GLint at_pos_loc;
+    GLint at_size_loc;
+    GLint shift_loc;
+    GLint size_loc;
+    GLint fade_loc;
+    GLint inside_pos_loc;
+    GLint inside_size_loc;
+    GLint inside_on_loc;
+    GLint from_still_loc;
+    int ready;
+};
+
 struct owe_egl {
     EGLDisplay display;
     EGLContext context;
     EGLConfig config;
     EGLSurface current;
     struct owe_gl_prog blit;
+    struct owe_gl_piece piece;
     bool gles;
 };
 
@@ -251,6 +274,7 @@ void owe_egl_free(struct owe_egl *egl) {
         glDeleteVertexArrays(1, &egl->blit.vao);
         glDeleteProgram(egl->blit.prog);
     }
+    if (egl->piece.ready) glDeleteProgram(egl->piece.prog);
     /* EGL defers deletion while a context remains current on a thread. */
     eglMakeCurrent(egl->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
     if (egl->context != EGL_NO_CONTEXT) {
@@ -509,5 +533,173 @@ void owe_egl_draw_texture_overlay(struct owe_egl *egl, struct owe_output *out, u
     glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
     glBindVertexArray(0);
     glUseProgram(0);
+    glDisable(GL_BLEND);
+}
+
+/* A piece of a scene is a part of the still that can move. `place` is this
+ * pixel's spot in the still, and `home` the spot of the still that lands on it
+ * once the piece is moved and sized. A piece cut from the still has no colour
+ * of its own: it is what the still shows at home, less what is behind it
+ * there. Put back at home over its patch, that is the still again, at whatever
+ * size the output draws it. */
+static const char *piece_fs_src = "in vec2 vuv;\n"
+                                  "uniform sampler2D shape;\n"
+                                  "uniform sampler2D still;\n"
+                                  "uniform sampler2D behind;\n"
+                                  "uniform sampler2D inside;\n"
+                                  "uniform vec2 uv_offset;\n"
+                                  "uniform vec2 uv_scale;\n"
+                                  "uniform vec2 at_pos;\n"
+                                  "uniform vec2 at_size;\n"
+                                  "uniform vec2 shift;\n"
+                                  "uniform float size;\n"
+                                  "uniform float fade;\n"
+                                  "uniform vec2 inside_pos;\n"
+                                  "uniform vec2 inside_size;\n"
+                                  "uniform float inside_on;\n"
+                                  "uniform float from_still;\n"
+                                  "out vec4 frag;\n"
+                                  "float within(vec2 v) {\n"
+                                  "  return step(0.0, v.x) * step(v.x, 1.0) * step(0.0, v.y) * step(v.y, 1.0);\n"
+                                  "}\n"
+                                  "void main() {\n"
+                                  "  vec2 place = vuv * uv_scale + uv_offset;\n"
+                                  "  vec2 middle = at_pos + at_size * 0.5;\n"
+                                  "  vec2 home = middle + (place - shift - middle) / size;\n"
+                                  "  vec2 uv = (home - at_pos) / at_size;\n"
+                                  "  vec4 piece = texture(shape, uv);\n"
+                                  "  float keep = fade * within(uv);\n"
+                                  "  if (inside_on > 0.5) {\n"
+                                  "    vec2 k = (place - inside_pos) / inside_size;\n"
+                                  "    keep *= texture(inside, k).a * within(k);\n"
+                                  "  }\n"
+                                  "  if (from_still > 0.5) {\n"
+                                  "    vec3 seen = texture(still, home).rgb;\n"
+                                  "    vec4 cover = texture(behind, uv);\n"
+                                  "    vec3 below = mix(seen, cover.rgb, cover.a);\n"
+                                  "    frag = vec4(max(seen - below * (1.0 - piece.a), 0.0), piece.a) * keep;\n"
+                                  "  } else {\n"
+                                  "    frag = vec4(piece.rgb * piece.a, piece.a) * keep;\n"
+                                  "  }\n"
+                                  "}\n";
+
+static int piece_init(struct owe_gl_piece *p, bool gles) {
+    GLuint vs = compile_shader(GL_VERTEX_SHADER, gles, vs_src);
+    GLuint fs = compile_shader(GL_FRAGMENT_SHADER, gles, piece_fs_src);
+    GLint ok = 0;
+    if (!vs || !fs) {
+        if (vs) glDeleteShader(vs);
+        if (fs) glDeleteShader(fs);
+        return -1;
+    }
+    p->prog = glCreateProgram();
+    glAttachShader(p->prog, vs);
+    glAttachShader(p->prog, fs);
+    glBindAttribLocation(p->prog, 0, "pos");
+    glBindAttribLocation(p->prog, 1, "uv");
+    glLinkProgram(p->prog);
+    glGetProgramiv(p->prog, GL_LINK_STATUS, &ok);
+    glDeleteShader(vs);
+    glDeleteShader(fs);
+    if (!ok) {
+        OWE_ERROR("scene piece program link failed");
+        glDeleteProgram(p->prog);
+        p->prog = 0;
+        return -1;
+    }
+    p->shape_loc = glGetUniformLocation(p->prog, "shape");
+    p->still_loc = glGetUniformLocation(p->prog, "still");
+    p->behind_loc = glGetUniformLocation(p->prog, "behind");
+    p->inside_loc = glGetUniformLocation(p->prog, "inside");
+    p->uv_offset_loc = glGetUniformLocation(p->prog, "uv_offset");
+    p->uv_scale_loc = glGetUniformLocation(p->prog, "uv_scale");
+    p->at_pos_loc = glGetUniformLocation(p->prog, "at_pos");
+    p->at_size_loc = glGetUniformLocation(p->prog, "at_size");
+    p->shift_loc = glGetUniformLocation(p->prog, "shift");
+    p->size_loc = glGetUniformLocation(p->prog, "size");
+    p->fade_loc = glGetUniformLocation(p->prog, "fade");
+    p->inside_pos_loc = glGetUniformLocation(p->prog, "inside_pos");
+    p->inside_size_loc = glGetUniformLocation(p->prog, "inside_size");
+    p->inside_on_loc = glGetUniformLocation(p->prog, "inside_on");
+    p->from_still_loc = glGetUniformLocation(p->prog, "from_still");
+    glUseProgram(p->prog);
+    glUniform1i(p->shape_loc, 0);
+    glUniform1i(p->still_loc, 1);
+    glUniform1i(p->behind_loc, 2);
+    glUniform1i(p->inside_loc, 3);
+    glUseProgram(0);
+    p->ready = 1;
+    return 0;
+}
+
+void owe_egl_draw_piece(struct owe_egl *egl, struct owe_output *out, const struct owe_piece_draw *d) {
+    struct owe_gl_piece *p;
+    int out_w, out_h;
+    float scale_u = 1.0f, scale_v = 1.0f, off_u, off_v;
+    float reach, left, right, top, bottom;
+    if (!egl || !out || !d || !d->shape || d->still_w <= 0 || d->still_h <= 0) return;
+    /* Nothing of it would show. */
+    if (d->size < 0.001f || d->fade <= 0.0f) return;
+    if (owe_egl_prepare_output(egl, out) != 0) return;
+    p = &egl->piece;
+    if (!p->ready && piece_init(p, egl->gles) != 0) return;
+    owe_output_buffer_size(out, &out_w, &out_h);
+    if (out_w <= 0 || out_h <= 0) return;
+    /* The still covers the output, cropped at its middle, as owe_egl_draw_texture draws it. */
+    {
+        float src_aspect = (float)d->still_w / (float)d->still_h;
+        float dst_aspect = (float)out_w / (float)out_h;
+        if (dst_aspect > src_aspect) scale_v = src_aspect / dst_aspect;
+        else scale_u = dst_aspect / src_aspect;
+    }
+    off_u = (1.0f - scale_u) * 0.5f;
+    off_v = (1.0f - scale_v) * 0.5f;
+    /* Only the part of the output the piece can reach is drawn to: its place,
+     * grown when it is larger than life, and moved. */
+    reach = d->size > 1.0f ? (d->size - 1.0f) * 0.5f : 0.0f;
+    left = (d->at[0] + d->dx - reach * d->at[2] - off_u) / scale_u * (float)out_w - 1.0f;
+    right = (d->at[0] + d->dx + (1.0f + reach) * d->at[2] - off_u) / scale_u * (float)out_w + 1.0f;
+    top = (d->at[1] + d->dy - reach * d->at[3] - off_v) / scale_v * (float)out_h - 1.0f;
+    bottom = (d->at[1] + d->dy + (1.0f + reach) * d->at[3] - off_v) / scale_v * (float)out_h + 1.0f;
+    if (left < 0) left = 0;
+    if (top < 0) top = 0;
+    if (right > (float)out_w) right = (float)out_w;
+    if (bottom > (float)out_h) bottom = (float)out_h;
+    if (right <= left || bottom <= top) return;
+    glDisable(GL_DEPTH_TEST);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+    glEnable(GL_SCISSOR_TEST);
+    glScissor((GLint)floorf(left), (GLint)floorf((float)out_h - bottom), (GLsizei)ceilf(right - left),
+              (GLsizei)ceilf(bottom - top));
+    glUseProgram(p->prog);
+    if (d->inside) {
+        glActiveTexture(GL_TEXTURE3);
+        glBindTexture(GL_TEXTURE_2D, d->inside);
+        glUniform2f(p->inside_pos_loc, d->inside_at[0], d->inside_at[1]);
+        glUniform2f(p->inside_size_loc, d->inside_at[2], d->inside_at[3]);
+    }
+    if (d->still && d->behind) {
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, d->still);
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, d->behind);
+    }
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, d->shape);
+    glUniform1f(p->inside_on_loc, d->inside ? 1.0f : 0.0f);
+    glUniform1f(p->from_still_loc, d->still && d->behind ? 1.0f : 0.0f);
+    glUniform2f(p->uv_offset_loc, off_u, off_v);
+    glUniform2f(p->uv_scale_loc, scale_u, scale_v);
+    glUniform2f(p->at_pos_loc, d->at[0], d->at[1]);
+    glUniform2f(p->at_size_loc, d->at[2], d->at[3]);
+    glUniform2f(p->shift_loc, d->dx, d->dy);
+    glUniform1f(p->size_loc, d->size);
+    glUniform1f(p->fade_loc, d->fade > 1.0f ? 1.0f : d->fade);
+    glBindVertexArray(egl->blit.vao);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glBindVertexArray(0);
+    glUseProgram(0);
+    glDisable(GL_SCISSOR_TEST);
     glDisable(GL_BLEND);
 }
