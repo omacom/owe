@@ -7,6 +7,9 @@ struct owe_wayland;
 struct owe_output;
 
 struct owe_egl *owe_egl_new(struct owe_wayland *wl);
+/* A context with no window, and a buffer of the given size to draw into, for
+ * drawing to a file. The buffer comes back as an output's egl_surface. */
+struct owe_egl *owe_egl_new_offscreen(int width, int height, void **surface);
 void owe_egl_free(struct owe_egl *egl);
 int owe_egl_make_current(struct owe_egl *egl);
 

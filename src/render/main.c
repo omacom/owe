@@ -20,6 +20,7 @@
 #include "common_ipc.h"
 #include "mpv.h"
 #include "scene.h"
+#include "scene_frame.h"
 #include "still.h"
 #include "wayland.h"
 
@@ -86,6 +87,7 @@ static void usage(const char *argv0) {
     fprintf(stderr,
             "Usage: %s [options]\n"
             "  --socket PATH   IPC socket path (default: $XDG_RUNTIME_DIR/owe/render.sock)\n"
+            "  --scene-frame   Draw moments of a scene to picture files; see --scene-frame alone\n"
             "  --verbose       Enable debug logging\n"
             "  --help          Show this help\n",
             argv0);
@@ -97,6 +99,10 @@ int main(int argc, char **argv) {
     bool verbose = false;
     int i;
 
+    /* Drawing a scene to a file needs no window, no socket and no daemon. */
+    if (argc > 1 && strcmp(argv[1], "--scene-frame") == 0) {
+        return owe_scene_frame_main(argc, argv);
+    }
     if (owe_socket_path_render(socket_path, sizeof(socket_path)) != 0) {
         fprintf(stderr, "owe-render: cannot resolve socket path\n");
         return 1;

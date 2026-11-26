@@ -171,11 +171,11 @@ static int blit_init(struct owe_gl_prog *b, bool gles) {
 
 /* Create a desktop OpenGL 3.2 or later context, or an OpenGL ES 3.0 or later
  * context when gles is set. Logs why the API is not available. */
-static bool create_context(struct owe_egl *e, bool gles) {
+static bool create_context(struct owe_egl *e, bool gles, EGLint surface_type) {
     const char *api = gles ? "OpenGL ES" : "OpenGL";
     EGLint ncfg = 0;
     EGLint cfg_attribs[] = {
-        EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
+        EGL_SURFACE_TYPE, surface_type,
         EGL_RENDERABLE_TYPE, gles ? EGL_OPENGL_ES3_BIT : EGL_OPENGL_BIT,
         EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8, EGL_NONE,
     };
@@ -243,7 +243,7 @@ struct owe_egl *owe_egl_new(struct owe_wayland *wl) {
     OWE_INFO("EGL vendor=%s version=%d.%d", vendor ? vendor : "unknown", major, minor);
     /* Drivers on ARM SoCs, such as Raspberry Pi V3D and Mali on Panfrost, can
      * expose desktop OpenGL below 3.2 or only OpenGL ES. */
-    if (!create_context(e, false) && !create_context(e, true)) {
+    if (!create_context(e, false, EGL_WINDOW_BIT) && !create_context(e, true, EGL_WINDOW_BIT)) {
         OWE_ERROR("no OpenGL 3.2 or OpenGL ES 3.0 context is available");
         eglTerminate(e->display);
         free(e);
@@ -261,6 +261,41 @@ struct owe_egl *owe_egl_new(struct owe_wayland *wl) {
     const char *gl_version = (const char *)glGetString(GL_VERSION);
     OWE_INFO("OpenGL vendor=%s renderer=%s version=%s", gl_vendor ? gl_vendor : "unknown",
              gl_renderer ? gl_renderer : "unknown", gl_version ? gl_version : "unknown");
+    return e;
+}
+
+struct owe_egl *owe_egl_new_offscreen(int width, int height, void **surface) {
+    struct owe_egl *e = calloc(1, sizeof(*e));
+    EGLint size[] = { EGL_WIDTH, width, EGL_HEIGHT, height, EGL_NONE };
+    EGLSurface buffer;
+    if (!e || !surface || width <= 0 || height <= 0) {
+        free(e);
+        return NULL;
+    }
+    /* No window system: the driver draws into memory. */
+    e->display = eglGetPlatformDisplay(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, NULL);
+    if (e->display == EGL_NO_DISPLAY || !eglInitialize(e->display, NULL, NULL)) {
+        OWE_ERROR("no display to draw without a window: 0x%x", eglGetError());
+        free(e);
+        return NULL;
+    }
+    if (!create_context(e, false, EGL_PBUFFER_BIT) && !create_context(e, true, EGL_PBUFFER_BIT)) {
+        OWE_ERROR("no OpenGL 3.2 or OpenGL ES 3.0 context is available");
+        eglTerminate(e->display);
+        free(e);
+        return NULL;
+    }
+    buffer = eglCreatePbufferSurface(e->display, e->config, size);
+    if (buffer == EGL_NO_SURFACE || !eglMakeCurrent(e->display, buffer, buffer, e->context)) {
+        OWE_ERROR("no %dx%d buffer to draw into: 0x%x", width, height, eglGetError());
+        eglDestroyContext(e->display, e->context);
+        eglTerminate(e->display);
+        free(e);
+        return NULL;
+    }
+    /* owe_egl_prepare_output binds it again and sets its draw buffer. */
+    e->current = EGL_NO_SURFACE;
+    *surface = buffer;
     return e;
 }
 

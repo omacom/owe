@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stdint.h>
 
 struct owe_still;
 struct owe_wayland;
@@ -36,3 +37,6 @@ bool owe_still_needs_frames(struct owe_still *s);
 bool owe_still_opaque(struct owe_still *s);
 /* The loaded picture as a texture, and its size, for a scene to draw. */
 unsigned int owe_still_texture(struct owe_still *s, int *w, int *h);
+/* Decode the picture at `path` now, the way a still is decoded: RGBA, no
+ * larger than needed to cover max_w by max_h. The caller frees *rgba. */
+int owe_still_decode(const char *path, int max_w, int max_h, uint8_t **rgba, int *w, int *h);

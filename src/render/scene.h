@@ -50,3 +50,25 @@ bool owe_scene_resting(struct owe_scene *s);
 double owe_scene_time(struct owe_scene *s);
 
 void owe_scene_render_output(struct owe_scene *s, struct owe_output *out);
+
+/* The loaded pictures of a scene, as textures. */
+struct owe_scene_desc;
+struct owe_scene_look {
+    unsigned int still;
+    int still_w;
+    int still_h;
+    unsigned int pictures[32];
+    unsigned int behinds[32];
+    unsigned int masks[8];
+};
+
+/* Draw one moment of a scene: `t` seconds into its arrive part or its idle
+ * part. `settling` from 0 to 1 fades it into the still, as a paused scene
+ * does. The same code draws a playing scene and a frame written to a file. */
+void owe_scene_draw(struct owe_egl *egl, struct owe_output *out, const struct owe_scene_desc *desc,
+                    const struct owe_scene_look *look, bool arriving, double t, double settling);
+
+/* Where the still a scene names is, for a scene file at `scene_path`. */
+int owe_scene_find_still(const struct owe_scene_desc *desc, const char *scene_path, char *out, size_t len);
+/* 0 if `path` is the picture the scene was made for, by its checksum. */
+int owe_scene_check_still(const struct owe_scene_desc *desc, const char *path, char *error, size_t len);

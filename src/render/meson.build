@@ -6,6 +6,7 @@ render_sources = files(
   'still.c',
   'scene_desc.c',
   'scene.c',
+  'scene_frame.c',
   'render_ipc.c',
   'feed.c',
 )

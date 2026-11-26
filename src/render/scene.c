@@ -64,6 +64,12 @@ static double seconds_between(const struct timespec *a, const struct timespec *b
     return (double)(b->tv_sec - a->tv_sec) + (double)(b->tv_nsec - a->tv_nsec) / 1e9;
 }
 
+static double smooth(double part) {
+    if (part <= 0.0) return 0.0;
+    if (part >= 1.0) return 1.0;
+    return part * part * (3.0 - 2.0 * part);
+}
+
 static void set_timer(struct owe_scene *s, int fps) {
     struct itimerspec every = { 0 };
     if (s->timer_fd < 0 || fps == s->timer_fps) return;
@@ -117,7 +123,7 @@ void owe_scene_free(struct owe_scene *s) {
 
 /* The scene was cut from one picture. Another picture under the same name
  * would show its pieces in the wrong places, so the scene refuses it. */
-static int check_still(const struct owe_scene_desc *desc, const char *path, char *error, size_t len) {
+int owe_scene_check_still(const struct owe_scene_desc *desc, const char *path, char *error, size_t len) {
     struct AVSHA *sha;
     uint8_t digest[32], block[65536];
     char hex[65];
@@ -151,7 +157,7 @@ static int check_still(const struct owe_scene_desc *desc, const char *path, char
 /* A scene names its still the way the theme repositories do, <theme>/<name>.
  * Beside a theme's backgrounds the scene sits at scenes/<stem>/, so the still
  * is two directories up; failing that it is where Omarchy installs it. */
-static int find_still(const struct owe_scene_desc *desc, const char *scene_path, char *out, size_t len) {
+int owe_scene_find_still(const struct owe_scene_desc *desc, const char *scene_path, char *out, size_t len) {
     char copy[OWE_SCENE_PATH];
     const char *slash = strrchr(desc->still, '/');
     const char *name = slash ? slash + 1 : desc->still;
@@ -188,13 +194,13 @@ int owe_scene_load(struct owe_scene *s, const char *path, const char *still, boo
     if (!desc) return -1;
     if (owe_scene_desc_read(path, desc, error, error_len) != 0) goto fail;
     if (!still) {
-        if (find_still(desc, path, found, sizeof(found)) != 0) {
+        if (owe_scene_find_still(desc, path, found, sizeof(found)) != 0) {
             snprintf(error, error_len, "the scene's still, %s, was not found", desc->still);
             goto fail;
         }
         still = found;
     }
-    if (check_still(desc, still, error, error_len) != 0) goto fail;
+    if (owe_scene_check_still(desc, still, error, error_len) != 0) goto fail;
     owe_scene_unload(s);
     s->desc = desc;
     s->want_arrive = arrive && desc->arrive_seconds > 0;
@@ -354,39 +360,22 @@ void owe_scene_set_paused(struct owe_scene *s, bool paused) {
     }
 }
 
-static double smooth(double part) {
-    if (part <= 0.0) return 0.0;
-    if (part >= 1.0) return 1.0;
-    return part * part * (3.0 - 2.0 * part);
-}
-
-void owe_scene_render_output(struct owe_scene *s, struct owe_output *out) {
-    const struct owe_scene_desc *desc;
-    unsigned int still;
-    double t, into_still = 0.0;
-    int w = 0, h = 0, i;
+void owe_scene_draw(struct owe_egl *egl, struct owe_output *out, const struct owe_scene_desc *desc,
+                    const struct owe_scene_look *look, bool arriving, double t, double settling) {
+    double into_still = settling;
+    int w = look->still_w, h = look->still_h, i;
     float tall;
-    if (!s || !out || s->phase <= PHASE_LOADING) return;
-    desc = s->desc;
-    still = owe_still_texture(s->still, &w, &h);
-    if (!still || w <= 0 || h <= 0) return;
-    owe_egl_draw_texture(s->egl, out, still, 1.0f, w, h);
-    s->frames++;
-    s->frame_due = false;
-    if (s->phase == PHASE_RESTING) return;
-
-    t = seconds_between(&s->part_start, &s->frame_at);
+    if (!look->still || w <= 0 || h <= 0) return;
+    owe_egl_draw_texture(egl, out, look->still, 1.0f, w, h);
+    if (into_still >= 1.0) return;
     if (t < 0.0) t = 0.0;
     /* The arrive part's last moments settle into the still itself, so nothing
      * shifts when the idle part takes over: a piece drawn in its own colour
-     * is never the still to the last pixel. A paused scene settles the same
-     * way, from wherever its pieces are. */
-    if (s->arriving && desc->arrive_seconds - t < SETTLE) into_still = smooth(1.0 - (desc->arrive_seconds - t) / SETTLE);
-    if (s->phase == PHASE_SETTLING) {
-        double settled = smooth(seconds_between(&s->settle_start, &s->frame_at) / SETTLE);
-        if (settled > into_still) into_still = settled;
+     * is never the still to the last pixel. */
+    if (arriving && desc->arrive_seconds - t < SETTLE) {
+        double ending = smooth(1.0 - (desc->arrive_seconds - t) / SETTLE);
+        if (ending > into_still) into_still = ending;
     }
-
     /* Distances in a scene are shares of the still's height. */
     tall = (float)h / (float)w;
     /* Every patch first, then every piece: pieces that sit close together reach
@@ -395,34 +384,53 @@ void owe_scene_render_output(struct owe_scene *s, struct owe_output *out) {
      * what is behind it is then the other piece, not the still. */
     for (i = 0; i < desc->piece_count; i++) {
         const struct owe_scene_piece *piece = &desc->pieces[i];
-        const struct owe_scene_part *part = s->arriving ? &piece->arrive : &piece->idle;
+        const struct owe_scene_part *part = arriving ? &piece->arrive : &piece->idle;
         struct owe_piece_draw patch = { .still_w = w, .still_h = h, .at = piece->at, .size = 1.0f, .fade = 1.0f };
-        if (!part->listed || !s->behinds[i]) continue;
-        if (piece->on >= 0 && (s->arriving ? desc->pieces[piece->on].arrive.listed : desc->pieces[piece->on].idle.listed)) {
+        if (!part->listed || !look->behinds[i]) continue;
+        if (piece->on >= 0 && (arriving ? desc->pieces[piece->on].arrive.listed : desc->pieces[piece->on].idle.listed)) {
             continue;
         }
-        patch.shape = owe_still_texture(s->behinds[i], NULL, NULL);
-        owe_egl_draw_piece(s->egl, out, &patch);
+        patch.shape = look->behinds[i];
+        owe_egl_draw_piece(egl, out, &patch);
     }
     for (i = 0; i < desc->piece_count; i++) {
         const struct owe_scene_piece *piece = &desc->pieces[i];
-        const struct owe_scene_part *part = s->arriving ? &piece->arrive : &piece->idle;
+        const struct owe_scene_part *part = arriving ? &piece->arrive : &piece->idle;
         struct owe_piece_draw draw = { .still_w = w, .still_h = h, .at = piece->at };
-        if (!part->listed || !s->pictures[i]) continue;
-        draw.shape = owe_still_texture(s->pictures[i], NULL, NULL);
-        if (s->behinds[i] && !piece->own_colour) {
-            draw.still = still;
-            draw.behind = owe_still_texture(s->behinds[i], NULL, NULL);
+        if (!part->listed || !look->pictures[i]) continue;
+        draw.shape = look->pictures[i];
+        if (look->behinds[i] && !piece->own_colour) {
+            draw.still = look->still;
+            draw.behind = look->behinds[i];
         }
-        if (piece->inside >= 0 && s->masks[piece->inside]) {
-            draw.inside = owe_still_texture(s->masks[piece->inside], NULL, NULL);
+        if (piece->inside >= 0 && look->masks[piece->inside]) {
+            draw.inside = look->masks[piece->inside];
             draw.inside_at = desc->areas[piece->inside].at;
         }
         draw.dx = (piece->rest_x + owe_scene_offset(&part->x, t)) * tall;
         draw.dy = piece->rest_y + owe_scene_offset(&part->y, t);
         draw.size = owe_scene_level(&part->size, t);
         draw.fade = owe_scene_level(&part->fade, t);
-        owe_egl_draw_piece(s->egl, out, &draw);
+        owe_egl_draw_piece(egl, out, &draw);
     }
-    if (into_still > 0.0) owe_egl_draw_texture_overlay(s->egl, out, still, (float)into_still, w, h);
+    if (into_still > 0.0) owe_egl_draw_texture_overlay(egl, out, look->still, (float)into_still, w, h);
+}
+
+void owe_scene_render_output(struct owe_scene *s, struct owe_output *out) {
+    struct owe_scene_look look = { 0 };
+    double settling = 0.0;
+    int i;
+    if (!s || !out || s->phase <= PHASE_LOADING) return;
+    look.still = owe_still_texture(s->still, &look.still_w, &look.still_h);
+    for (i = 0; i < OWE_SCENE_MAX_PIECES; i++) {
+        look.pictures[i] = owe_still_texture(s->pictures[i], NULL, NULL);
+        look.behinds[i] = owe_still_texture(s->behinds[i], NULL, NULL);
+    }
+    for (i = 0; i < OWE_SCENE_MAX_AREAS; i++) look.masks[i] = owe_still_texture(s->masks[i], NULL, NULL);
+    /* A paused scene settles from wherever its pieces are; at rest it is the still. */
+    if (s->phase == PHASE_SETTLING) settling = smooth(seconds_between(&s->settle_start, &s->frame_at) / SETTLE);
+    if (s->phase == PHASE_RESTING) settling = 1.0;
+    owe_scene_draw(s->egl, out, s->desc, &look, s->arriving, seconds_between(&s->part_start, &s->frame_at), settling);
+    s->frames++;
+    s->frame_due = false;
 }

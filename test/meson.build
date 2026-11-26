@@ -126,3 +126,7 @@ scene_draw_test = executable('owe-scene-draw-test',
   c_args : ['-ffunction-sections', '-fdata-sections'],
   link_args : ['-Wl,--gc-sections'])
 test('scene-draw', scene_draw_test, env : ['LIBGL_ALWAYS_SOFTWARE=1'])
+
+test('scene-frame', find_program('python3'),
+  args : [files('scene_frame.py'), owe_render.full_path()],
+  depends : owe_render, env : ['LIBGL_ALWAYS_SOFTWARE=1'], timeout : 60)

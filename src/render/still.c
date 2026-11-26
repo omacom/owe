@@ -655,3 +655,7 @@ unsigned int owe_still_texture(struct owe_still *s, int *w, int *h) {
     if (h) *h = s->tex_h;
     return s->tex;
 }
+
+int owe_still_decode(const char *path, int max_w, int max_h, uint8_t **rgba, int *w, int *h) {
+    return decode_first_frame(path, max_w, max_h, rgba, w, h, NULL);
+}
