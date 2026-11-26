@@ -1,0 +1,23 @@
+// The scene for catppuccin-latte/1-color-fade: the pastel bands rise and fall
+// on slow waves. Nothing is cut out of the still. One effect of the scene's
+// own, a few lines of shader, moves the whole picture.
+{
+  "still": "catppuccin-latte/1-color-fade.webp",
+  "sha256": "c4cb211770713984e630ef6eebfb6cfb03169124c98765fd52f82ee0bfd36603",
+
+  // The whole picture. An area with no picture of its shape is its rectangle.
+  "areas": [
+    { "name": "picture", "at": [0, 0, 1, 1] }
+  ],
+
+  // The scene's own effect, and the values it has unless a part says otherwise.
+  "effects": [
+    { "name": "waves", "shader": "effects/waves.glsl", "values": { "amount": 0.016, "seconds": 16 } }
+  ],
+
+  // Repeats for as long as the desktop may move.
+  "idle": {
+    "frames_a_second": 24,
+    "picture": { "waves": {} }
+  }
+}
