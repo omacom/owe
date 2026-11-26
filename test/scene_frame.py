@@ -99,13 +99,26 @@ with tempfile.TemporaryDirectory(prefix="owe-scene-frame-") as tmp:
     check(draw(*common, "--out", root / "frame.png").returncode == 0 and (root / "frame.png").read_bytes()[:4] == b"\x89PNG",
           "a frame is written as a PNG too")
 
+    # What a scene holds, for whoever has to decide what to do with it.
+    def info(*args):
+        result = subprocess.run([render, "--scene-info", *map(str, args)], capture_output=True, text=True)
+        return result.returncode, json.loads(result.stdout or "{}")
+    code, told = info(root / "scene.jsonc", "--still", root / "still.png")
+    check(code == 0 and told.get("status") == "ok" and told.get("still_matches") is True and
+          told.get("arrive", {}).get("seconds") == 2 and told.get("idle", {}).get("frames_a_second") == 4,
+          "a scene's parts and its still are reported", json.dumps(told))
     png(root / "other.png", SIDE, SIDE, lambda x, y: GROUND)
+    code, told = info(root / "scene.jsonc", "--still", root / "other.png")
+    check(code == 0 and told.get("still_matches") is False, "a still the scene was not made for is reported", json.dumps(told))
     result = draw(root / "scene.jsonc", "--still", root / "other.png", "--size", f"{SIDE}x{SIDE}", "--out", root / "no.ppm")
     check(result.returncode != 0 and "not the picture the scene was made for" in result.stderr and not (root / "no.ppm").exists(),
           "a scene refuses a still it was not made for", result.stderr)
     (root / "pieces/square.png").unlink()
     result = draw(*common, "--out", root / "no.ppm")
     check(result.returncode != 0 and not (root / "no.ppm").exists(), "a scene with a picture missing draws nothing", result.stderr)
+    code, told = info(root / "scene.jsonc")
+    check(code == 1 and told.get("status") == "error" and "square" in told.get("message", ""),
+          "a scene with a picture missing is reported as one that will not play", json.dumps(told))
     check(draw(root / "scene.jsonc").returncode == 2, "a call with nowhere to write is refused")
 
 print("scene frames passed")

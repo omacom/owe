@@ -6,12 +6,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include <epoxy/gl.h>
 #include <libavcodec/avcodec.h>
 #include <libavutil/imgutils.h>
 
 #include "egl.h"
+#include "json.h"
 #include "log.h"
 #include "scene.h"
 #include "scene_desc.h"
@@ -225,4 +227,67 @@ done:
     out.egl_surface = NULL;
     owe_egl_free(egl);
     return status;
+}
+
+static int info_error(const char *message) {
+    char *quoted = owe_json_quote(message);
+    printf("{\"status\":\"error\",\"message\":%s}\n", quoted ? quoted : "\"\"");
+    free(quoted);
+    return 1;
+}
+
+int owe_scene_info_main(int argc, char **argv) {
+    static struct owe_scene_desc desc;
+    const char *scene = NULL, *still = NULL;
+    char found[OWE_SCENE_PATH] = "", error[1024] = "", message[OWE_SCENE_PATH + 256];
+    char *name, *path;
+    int i, idle = 0, arrive = 0;
+    bool matches;
+    for (i = 2; i < argc; i++) {
+        if (strcmp(argv[i], "--still") == 0 && i + 1 < argc) still = argv[++i];
+        else if (argv[i][0] != '-' && !scene) scene = argv[i];
+        else scene = NULL, i = argc;
+    }
+    if (!scene) {
+        fprintf(stderr, "Usage: owe-render --scene-info <scene.jsonc> [--still PATH]\n"
+                        "Reads a scene as the player would and prints what it holds as JSON, or why it\n"
+                        "will not play. --still names the picture it is meant to move.\n");
+        return 2;
+    }
+    if (owe_scene_desc_read(scene, &desc, error, sizeof(error)) != 0) return info_error(error);
+    for (i = 0; i < desc.piece_count; i++) {
+        const struct owe_scene_piece *piece = &desc.pieces[i];
+        const char *missing = access(piece->picture, R_OK) != 0 ? piece->picture :
+                              *piece->behind && access(piece->behind, R_OK) != 0 ? piece->behind : NULL;
+        if (missing) {
+            snprintf(message, sizeof(message), "piece \"%s\": its picture %s cannot be read", piece->name, missing);
+            return info_error(message);
+        }
+        idle += piece->idle.listed;
+        arrive += piece->arrive.listed;
+    }
+    for (i = 0; i < desc.area_count; i++) {
+        if (*desc.areas[i].mask && access(desc.areas[i].mask, R_OK) != 0) {
+            snprintf(message, sizeof(message), "area \"%s\": its shape %s cannot be read", desc.areas[i].name,
+                     desc.areas[i].mask);
+            return info_error(message);
+        }
+    }
+    if (!still && owe_scene_find_still(&desc, scene, found, sizeof(found)) == 0) still = found;
+    matches = still && owe_scene_check_still(&desc, still, error, sizeof(error)) == 0;
+    name = owe_json_quote(desc.still);
+    path = owe_json_quote(still ? still : "");
+    if (!name || !path) return 1;
+    printf("{\"status\":\"ok\",\"still\":%s,\"still_path\":%s,\"still_matches\":%s,\"pieces\":%d,\"areas\":%d,"
+           "\"idle\":{\"frames_a_second\":%d,\"pieces\":%d},",
+           name, path, matches ? "true" : "false", desc.piece_count, desc.area_count, desc.idle_fps, idle);
+    if (desc.arrive_seconds > 0) {
+        printf("\"arrive\":{\"seconds\":%.3f,\"frames_a_second\":%d,\"pieces\":%d}}\n", desc.arrive_seconds,
+               desc.arrive_fps, arrive);
+    } else {
+        printf("\"arrive\":null}\n");
+    }
+    free(name);
+    free(path);
+    return 0;
 }

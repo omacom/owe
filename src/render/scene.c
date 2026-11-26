@@ -1,5 +1,6 @@
 #include "scene.h"
 
+#include <fcntl.h>
 #include <libgen.h>
 #include <math.h>
 #include <stdint.h>
@@ -55,6 +56,8 @@ struct owe_scene {
     bool once;
     bool held;
     struct timespec held_at;
+    /* The scene's directory, held open while its pictures load; -1 after. */
+    int dir_fd;
     struct timespec part_start;
     struct timespec settle_start;
     /* The moment the frame being drawn shows, the same on every output. */
@@ -93,7 +96,13 @@ struct owe_scene *owe_scene_new(struct owe_wayland *wl, struct owe_egl *egl) {
     s->wl = wl;
     s->egl = egl;
     s->timer_fd = timerfd_create(CLOCK_MONOTONIC, TFD_NONBLOCK | TFD_CLOEXEC);
+    s->dir_fd = -1;
     return s;
+}
+
+static void close_dir(struct owe_scene *s) {
+    if (s->dir_fd >= 0) close(s->dir_fd);
+    s->dir_fd = -1;
 }
 
 void owe_scene_unload(struct owe_scene *s) {
@@ -113,6 +122,7 @@ void owe_scene_unload(struct owe_scene *s) {
     }
     free(s->desc);
     s->desc = NULL;
+    close_dir(s);
     s->phase = PHASE_NONE;
     s->frames = 0;
     s->frame_due = false;
@@ -192,15 +202,36 @@ static struct owe_still *start(struct owe_scene *s, const char *path, int max_w,
 int owe_scene_load(struct owe_scene *s, const char *path, const char *still, bool arrive, bool once, int max_w,
                    int max_h, char *error, size_t error_len) {
     struct owe_scene_desc *desc;
-    char found[OWE_SCENE_PATH];
+    char found[OWE_SCENE_PATH], copy[OWE_SCENE_PATH], name[OWE_SCENE_PATH], via[OWE_SCENE_PATH];
     bool used[OWE_SCENE_MAX_AREAS] = { false };
-    int i;
+    int i, dir_fd;
     if (!s || !path) return -1;
     desc = calloc(1, sizeof(*desc));
     if (!desc) return -1;
-    if (owe_scene_desc_read(path, desc, error, error_len) != 0) goto fail;
+    /* A theme being applied is staged in a directory that is renamed into
+     * place, and its scene may be asked for just before. Reading through the
+     * opened directory finds its pictures wherever it has moved to. */
+    snprintf(copy, sizeof(copy), "%s", path);
+    snprintf(name, sizeof(name), "%s", basename(copy));
+    snprintf(copy, sizeof(copy), "%s", path);
+    dir_fd = open(dirname(copy), O_PATH | O_DIRECTORY | O_CLOEXEC);
+    if (dir_fd < 0 || snprintf(via, sizeof(via), "/proc/self/fd/%d/%s", dir_fd, name) >= (int)sizeof(via)) {
+        snprintf(error, error_len, "%s: its directory cannot be opened", path);
+        if (dir_fd >= 0) close(dir_fd);
+        free(desc);
+        return -1;
+    }
+    if (owe_scene_desc_read(via, desc, error, error_len) != 0) {
+        /* Name the file as it was asked for. */
+        if (strncmp(error, via, strlen(via)) == 0) {
+            char rest[512];
+            snprintf(rest, sizeof(rest), "%s", error + strlen(via));
+            snprintf(error, error_len, "%s%s", path, rest);
+        }
+        goto fail;
+    }
     if (!still) {
-        if (owe_scene_find_still(desc, path, found, sizeof(found)) != 0) {
+        if (owe_scene_find_still(desc, via, found, sizeof(found)) != 0) {
             snprintf(error, error_len, "the scene's still, %s, was not found", desc->still);
             goto fail;
         }
@@ -213,6 +244,7 @@ int owe_scene_load(struct owe_scene *s, const char *path, const char *still, boo
     }
     owe_scene_unload(s);
     s->desc = desc;
+    s->dir_fd = dir_fd;
     s->want_arrive = (arrive || once) && desc->arrive_seconds > 0;
     s->once = once;
     s->held = false;
@@ -253,6 +285,7 @@ int owe_scene_load(struct owe_scene *s, const char *path, const char *still, boo
              s->want_arrive ? ", arriving" : "");
     return 0;
 fail:
+    close(dir_fd);
     free(desc);
     return -1;
 }
@@ -343,6 +376,7 @@ bool owe_scene_tick(struct owe_scene *s) {
         }
         for (i = 0; all > 0 && i < OWE_SCENE_MAX_AREAS; i++) all = loaded(s->masks[i]);
         if (all < 0) {
+            close_dir(s);
             snprintf(s->error, sizeof(s->error), "a picture of the scene could not be read");
             OWE_ERROR("scene: %s", s->error);
             s->phase = PHASE_NONE;
@@ -350,6 +384,7 @@ bool owe_scene_tick(struct owe_scene *s) {
             return false;
         }
         if (all == 0) return false;
+        close_dir(s);
         if (s->once) {
             /* An intro loaded paused waits on its first frame. */
             begin(s, PHASE_ARRIVE, &now);

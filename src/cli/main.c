@@ -200,13 +200,22 @@ static void usage(const char *argv0) {
             "  resume                  Clear manual pause\n"
             "  always-animate on|off   Force animation regardless of policy\n"
             "  intro [--start still|first-frame] [--refresh] [--hold] [--print-shown] <video>\n"
-            "                          Play a one-shot intro video and wait; --hold keeps\n"
+            "                          Play a one-shot intro video, or a scene's arrive\n"
+            "                          part, and wait; --hold keeps\n"
             "                          a login intro on its first frame until intro-play;\n"
             "                          --print-shown prints shown once its first frame is\n"
             "                          on screen\n"
             "  intro-play              Play an intro held on its first frame\n"
             "  warm                    Keep an idle renderer ready for one minute\n"
             "  intro-prepare <video>   Decode an intro offscreen, paused at its start\n"
+            "\n"
+            "Scenes:\n"
+            "  scene info <scene.jsonc> [--still PATH]\n"
+            "                          What a scene file holds, as JSON, or why it will\n"
+            "                          not play\n"
+            "  scene frame <scene.jsonc> --out <file> [--part idle|arrive] [--at SECONDS]\n"
+            "                          Draw a moment of a scene to a picture, with no\n"
+            "                          window; run it alone for every option\n"
             "\n"
             "State:\n"
             "  status                  Daemon status as JSON\n"
@@ -220,6 +229,47 @@ static void usage(const char *argv0) {
             "  raw <json>              Send raw JSON to the daemon\n"
             "  shutdown                Stop the daemon\n",
             argv0);
+}
+
+/* Scenes are read and drawn by the renderer; these run it with no daemon. */
+static int cmd_scene(int argc, char **argv) {
+    char self[PATH_MAX], cand[PATH_MAX + 64], flag[32];
+    char **args;
+    char *slash;
+    ssize_t n;
+    int i;
+    if (argc < 1 || (strcmp(argv[0], "info") != 0 && strcmp(argv[0], "frame") != 0)) {
+        fprintf(stderr, "owe scene info <scene.jsonc> [--still PATH]\n"
+                        "owe scene frame <scene.jsonc> --out <file or directory> [options]\n");
+        return 2;
+    }
+    args = calloc((size_t)argc + 2, sizeof(*args));
+    if (!args) return 1;
+    snprintf(flag, sizeof(flag), "--scene-%s", argv[0]);
+    args[0] = "owe-render";
+    args[1] = flag;
+    for (i = 1; i < argc; i++) args[i + 1] = argv[i];
+    /* The renderer beside this program, as the daemon finds it, or on the path. */
+    n = readlink("/proc/self/exe", self, sizeof(self) - 1);
+    if (n > 0) {
+        self[n] = '\0';
+        slash = strrchr(self, '/');
+        if (slash) {
+            *slash = '\0';
+            snprintf(cand, sizeof(cand), "%s/owe-render", self);
+            if (access(cand, X_OK) == 0) execv(cand, args);
+            slash = strrchr(self, '/');
+            if (slash) {
+                *slash = '\0';
+                snprintf(cand, sizeof(cand), "%s/render/owe-render", self);
+                if (access(cand, X_OK) == 0) execv(cand, args);
+            }
+        }
+    }
+    execvp("owe-render", args);
+    fprintf(stderr, "owe: owe-render was not found\n");
+    free(args);
+    return 1;
 }
 
 static int cmd_next(void) {
@@ -306,6 +356,9 @@ int main(int argc, char **argv) {
     }
     if (strcmp(cmd, "next") == 0) {
         return cmd_next();
+    }
+    if (strcmp(cmd, "scene") == 0) {
+        return cmd_scene(argc - 2, argv + 2);
     }
     if (strcmp(cmd, "current") == 0) {
         return cmd_current();

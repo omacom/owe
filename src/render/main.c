@@ -88,6 +88,7 @@ static void usage(const char *argv0) {
             "Usage: %s [options]\n"
             "  --socket PATH   IPC socket path (default: $XDG_RUNTIME_DIR/owe/render.sock)\n"
             "  --scene-frame   Draw moments of a scene to picture files; see --scene-frame alone\n"
+            "  --scene-info    Say what a scene file holds, or why it will not play\n"
             "  --verbose       Enable debug logging\n"
             "  --help          Show this help\n",
             argv0);
@@ -102,6 +103,9 @@ int main(int argc, char **argv) {
     /* Drawing a scene to a file needs no window, no socket and no daemon. */
     if (argc > 1 && strcmp(argv[1], "--scene-frame") == 0) {
         return owe_scene_frame_main(argc, argv);
+    }
+    if (argc > 1 && strcmp(argv[1], "--scene-info") == 0) {
+        return owe_scene_info_main(argc, argv);
     }
     if (owe_socket_path_render(socket_path, sizeof(socket_path)) != 0) {
         fprintf(stderr, "owe-render: cannot resolve socket path\n");
