@@ -19,6 +19,7 @@ void owe_mpv_set_muted(struct owe_mpv *mpv, bool muted) { mpv->muted = muted; }
 void owe_mpv_set_paused(struct owe_mpv *mpv, bool paused) { mpv->paused = paused; }
 void owe_mpv_stop(struct owe_mpv *mpv) { mpv->stopped = true; }
 void owe_still_unload(struct owe_still *still) { (void)still; }
+void owe_scene_unload(struct owe_scene *scene) { (void)scene; }
 void owe_still_cancel(struct owe_still *still) { cancelled = true; still->result = 0; }
 bool owe_still_busy(struct owe_still *still) { (void)still; return still_busy; }
 int owe_still_poll(struct owe_still *still) { return still->result; }

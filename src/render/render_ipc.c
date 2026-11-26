@@ -22,6 +22,7 @@
 #include "log.h"
 #include "mpv.h"
 #include "render.h"
+#include "scene.h"
 #include "still.h"
 #include "strutil.h"
 #include "wayland.h"
@@ -69,12 +70,17 @@ static void handle_status(struct owe_render_ipc *ipc, struct owe_ipc_client *c) 
     owe_app_t *app = owe_app_get();
     char *line = NULL;
     char *path = owe_json_quote(app ? app->current_path : "");
+    bool scene = app && strcmp(app->current_kind, "scene") == 0;
     char *error = owe_json_quote(*ipc->load_error ? ipc->load_error :
+                                scene ? owe_scene_error(app->scene) :
                                 app && !*ipc->pending_path && strcmp(app->current_kind, "video") == 0
                                     ? owe_mpv_error(app->mpv) : "");
     char *hwdec = owe_json_quote(owe_mpv_hwdec(app ? app->mpv : NULL));
+    /* A scene is ready once a frame of it has been drawn: its first frame is
+     * the still, so whoever shows that still can let go of it. */
     bool ready = app && !*ipc->pending_path && !*ipc->load_error &&
-                 (strcmp(app->current_kind, "still") == 0 ? owe_still_has_image(app->still) :
+                 (scene ? owe_scene_shown(app->scene) :
+                  strcmp(app->current_kind, "still") == 0 ? owe_still_has_image(app->still) :
                                                           owe_mpv_ready(app->mpv));
     char skipped[1024] = "";
     char *skipped_json = NULL;
@@ -111,7 +117,7 @@ static void handle_status(struct owe_render_ipc *ipc, struct owe_ipc_client *c) 
              "\"has_transition\":%s,\"transition_busy\":%s,\"transition_done\":%s,"
              "\"time_pos\":%.3f,\"hwdec\":%s,\"error\":%s,\"skipped\":%s,"
              "\"intro\":%s,\"eof\":%s,\"drm_dpms\":%s,\"swaps\":%" PRIu64 ",\"swap_failures\":%" PRIu64 ","
-             "\"presented\":%" PRIu64 "}",
+             "\"presented\":%" PRIu64 ",\"resting\":%s}",
              path, app ? app->current_kind : "",
              app && app->paused ? "true" : "false",
              ready ? "true" : "false",
@@ -121,12 +127,12 @@ static void handle_status(struct owe_render_ipc *ipc, struct owe_ipc_client *c) 
              app && app->transition && owe_still_has_image(app->transition) ? "true" : "false",
              app && app->transition && owe_still_busy(app->transition) ? "true" : "false",
              app && app->transition && owe_still_fade_done(app->transition) ? "true" : "false",
-             app && app->mpv ? owe_mpv_time_pos(app->mpv) : -1.0,
+             scene ? owe_scene_time(app->scene) : app && app->mpv ? owe_mpv_time_pos(app->mpv) : -1.0,
              hwdec, error, skipped_json,
              app && app->intro ? "true" : "false",
               app && app->mpv && owe_mpv_eof(app->mpv) ? "true" : "false",
               owe_drm_dpms_enabled() ? "true" : "false", swaps, swap_failures,
-              presented) >= 0)
+              presented, scene && owe_scene_resting(app->scene) ? "true" : "false") >= 0)
         client_send(c, line);
     free(line);
     free(path);
@@ -179,6 +185,44 @@ static void handle_load(struct owe_render_ipc *ipc, struct owe_ipc_client *c, yy
         send_err(c, "Invalid local media path");
         return;
     }
+    if (strcmp(kind, "scene") == 0) {
+        /* The still the scene belongs to, from whoever found the scene beside
+         * it; without one the scene's own name for its still is looked up. */
+        yyjson_val *vstill = yyjson_obj_get(root, "still");
+        const char *still = vstill && yyjson_is_str(vstill) ? yyjson_get_str(vstill) : NULL;
+        int max_w = 0;
+        int max_h = 0;
+        if (still && (!owe_json_path(vstill) || still[0] != '/' || stat(still, &st) != 0 || !S_ISREG(st.st_mode) ||
+                      access(still, R_OK) != 0)) {
+            send_err(c, "Invalid local still path");
+            return;
+        }
+        owe_wayland_outputs_max_size(app->wl, &max_w, &max_h);
+        ipc->load_error[0] = '\0';
+        if (owe_scene_load(app->scene, path, still, yyjson_get_bool(yyjson_obj_get(root, "arrive")),
+                           max_w > 0 ? max_w : 4096, max_h > 0 ? max_h : 4096, ipc->load_error,
+                           sizeof(ipc->load_error)) != 0) {
+            OWE_WARN("scene refused: %s", ipc->load_error);
+            /* What was playing keeps playing; the caller hears why. */
+            send_err(c, *ipc->load_error ? ipc->load_error : "scene load failed");
+            ipc->load_error[0] = '\0';
+            return;
+        }
+        /* A scene starts on its still, so it needs no picture to fade from. */
+        stop_feed(app);
+        owe_mpv_stop(app->mpv);
+        owe_still_unload(app->transition);
+        owe_still_unload(app->still);
+        pending_reply(ipc, 0, "load superseded");
+        app->preparing = false;
+        app->intro = false;
+        app->intro_waiting = false;
+        owe_scene_set_paused(app->scene, app->paused);
+        snprintf(app->current_path, sizeof(app->current_path), "%s", path);
+        snprintf(app->current_kind, sizeof(app->current_kind), "scene");
+        send_ok(c, NULL);
+        return;
+    }
     if (strcmp(kind, "video") == 0) {
         yyjson_val *vonce = yyjson_obj_get(root, "once");
         yyjson_val *vmute = yyjson_obj_get(root, "mute");
@@ -196,6 +240,7 @@ static void handle_load(struct owe_render_ipc *ipc, struct owe_ipc_client *c, yy
             send_err(c, "video load failed");
             return;
         }
+        owe_scene_unload(app->scene);
         if (once) owe_wayland_mark_intro(app->wl);
         ipc->load_error[0] = '\0';
         owe_mpv_set_muted(app->mpv, mute || app->feeding);
@@ -362,12 +407,16 @@ static void handle_command(void *context, struct owe_ipc_client *c, const char *
             stop_feed(app);
             app->paused = true;
             owe_mpv_set_paused(app->mpv, true);
+            /* A scene does not freeze where it is: it settles to its still. */
+            owe_scene_set_paused(app->scene, true);
+            owe_app_request_render();
         }
         send_ok(c, NULL);
     } else if (strcmp(cmd, "resume") == 0) {
         if (app) {
             app->paused = false;
             owe_mpv_set_paused(app->mpv, false);
+            owe_scene_set_paused(app->scene, false);
             owe_app_request_render();
         }
         send_ok(c, NULL);
@@ -388,6 +437,7 @@ static void handle_command(void *context, struct owe_ipc_client *c, const char *
         if (app) {
             stop_feed(app);
             owe_mpv_stop(app->mpv);
+            owe_scene_unload(app->scene);
             owe_still_unload(app->transition);
             owe_still_unload(app->still);
             app->current_path[0] = '\0';
@@ -554,6 +604,7 @@ void owe_render_ipc_poll_still(struct owe_render_ipc *ipc) {
     if (rc > 0) {
         stop_feed(app);
         owe_mpv_stop(app->mpv);
+        owe_scene_unload(app->scene);
         owe_still_unload(app->transition);
         snprintf(app->current_path, sizeof(app->current_path), "%s", ipc->pending_path);
         snprintf(app->current_kind, sizeof(app->current_kind), "still");

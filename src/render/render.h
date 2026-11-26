@@ -8,6 +8,7 @@ struct owe_mpv;
 struct owe_still;
 struct owe_render_ipc;
 struct owe_feed;
+struct owe_scene;
 
 typedef struct owe_app {
     struct owe_wayland *wl;
@@ -17,6 +18,7 @@ typedef struct owe_app {
     struct owe_still *transition;
     struct owe_render_ipc *ipc;
     struct owe_feed *feed;
+    struct owe_scene *scene;
     bool running;
     bool paused;
     bool feeding;

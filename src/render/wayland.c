@@ -11,6 +11,7 @@
 #include "log.h"
 #include "mpv.h"
 #include "render.h"
+#include "scene.h"
 #include "still.h"
 #include "fractional-scale-v1-client-protocol.h"
 #include "viewporter-client-protocol.h"
@@ -660,7 +661,10 @@ void owe_wayland_render_pending(struct owe_wayland *wl) {
                 continue;
             }
             out->frame_pending = 0;
-            if (app->intro_waiting && app->transition &&
+            if (owe_scene_ready(app->scene)) {
+                /* A scene draws its still and its pieces over it: an opaque frame. */
+                owe_scene_render_output(app->scene, out);
+            } else if (app->intro_waiting && app->transition &&
                 owe_still_has_image(app->transition)) {
                 owe_still_render_opaque(app->transition, out);
                 opaque = owe_still_opaque(app->transition);
@@ -712,7 +716,7 @@ void owe_wayland_render_pending(struct owe_wayland *wl) {
             /* Request the callback before the commit that triggers it, then
              * pace on the compositor. While it stops presenting frames, no
              * callback arrives and no swap can block in Mesa. */
-            if (need_frame_cb || want_video) {
+            if (need_frame_cb || want_video || owe_scene_needs_frames(app->scene)) {
                 if (!out->frame_callback) {
                     cb = wl_surface_frame(out->surface);
                     if (cb) {

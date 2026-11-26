@@ -5,6 +5,7 @@ render_sources = files(
   'mpv.c',
   'still.c',
   'scene_desc.c',
+  'scene.c',
   'render_ipc.c',
   'feed.c',
 )

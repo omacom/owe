@@ -19,6 +19,7 @@
 #include "render_ipc.h"
 #include "common_ipc.h"
 #include "mpv.h"
+#include "scene.h"
 #include "still.h"
 #include "wayland.h"
 
@@ -71,6 +72,7 @@ static void on_signal(int sig) {
 static void cleanup(void) {
     owe_render_ipc_free(g_app.ipc);
     owe_feed_free(g_app.feed);
+    owe_scene_free(g_app.scene);
     owe_still_free(g_app.transition);
     owe_still_free(g_app.still);
     owe_mpv_free(g_app.mpv);
@@ -178,6 +180,13 @@ int main(int argc, char **argv) {
         return fail_init();
     }
 
+    g_app.scene = owe_scene_new(g_app.wl, g_app.egl);
+    if (!g_app.scene) {
+        OWE_ERROR("scene init failed");
+        cleanup();
+        return fail_init();
+    }
+
     OWE_INFO("ready, socket=%s", socket_path);
 
     while (g_app.running) {
@@ -203,7 +212,8 @@ int main(int argc, char **argv) {
         int mpvfd = owe_mpv_fd(g_app.mpv);
         int stillfd = owe_still_fd(g_app.still);
         int transitionfd = owe_still_fd(g_app.transition);
-        struct pollfd pfds[7 + OWE_IPC_MAX_CLIENTS + OWE_FEED_MAX_CLIENTS];
+        int scenefd = owe_scene_fd(g_app.scene);
+        struct pollfd pfds[8 + OWE_IPC_MAX_CLIENTS + OWE_FEED_MAX_CLIENTS];
         int n = 0;
         int rc;
         bool mpv_ready = false;
@@ -237,6 +247,11 @@ int main(int argc, char **argv) {
         }
         if (transitionfd >= 0) {
             pfds[n].fd = transitionfd;
+            pfds[n].events = POLLIN;
+            n++;
+        }
+        if (scenefd >= 0) {
+            pfds[n].fd = scenefd;
             pfds[n].events = POLLIN;
             n++;
         }
@@ -280,6 +295,8 @@ int main(int argc, char **argv) {
             }
         }
         if (!g_app.running) break;
+        /* A scene draws when its own timer says so, not when the display does. */
+        if (owe_scene_tick(g_app.scene)) owe_app_request_render();
         owe_render_ipc_poll_clients(g_app.ipc);
         owe_render_ipc_poll_still(g_app.ipc);
         if (owe_still_busy(g_app.transition)) {
