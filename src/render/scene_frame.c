@@ -83,9 +83,10 @@ static bool ends_with(const char *text, const char *end) {
 }
 
 /* A picture of the scene as a texture, or 0. */
-static unsigned int texture(struct owe_egl *egl, const char *path, int max_w, int max_h, int *w, int *h) {
+static unsigned int texture(struct owe_egl *egl, const char *path, int max_w, int max_h, int *w, int *h,
+                            bool *opaque) {
     uint8_t *rgba = NULL;
-    int pw = 0, ph = 0;
+    int pw = 0, ph = 0, i;
     unsigned int tex;
     if (!*path) return 0;
     if (owe_still_decode(path, max_w, max_h, &rgba, &pw, &ph) != 0 || !rgba) {
@@ -93,6 +94,10 @@ static unsigned int texture(struct owe_egl *egl, const char *path, int max_w, in
         return 0;
     }
     tex = owe_egl_tex_from_rgba(egl, rgba, pw, ph);
+    if (opaque) {
+        *opaque = true;
+        for (i = 0; *opaque && i < pw * ph; i++) *opaque = rgba[(size_t)i * 4 + 3] == 255;
+    }
     free(rgba);
     if (w) *w = pw;
     if (h) *h = ph;
@@ -109,7 +114,7 @@ int owe_scene_frame_main(int argc, char **argv) {
     char found[OWE_SCENE_PATH], error[512] = "", file[OWE_SCENE_PATH + 32];
     double at = 0.0, settling = 0.0;
     int frames = 1, fps = 0, width = 1920, height = 1080, i, k, status = 1;
-    bool ppm = false, arriving;
+    bool ppm = false, arriving, used[OWE_SCENE_MAX_AREAS] = { false };
     uint8_t *pixels = NULL, *upright = NULL;
     void *surface = NULL;
 
@@ -182,18 +187,27 @@ int owe_scene_frame_main(int argc, char **argv) {
     out.scale = 1;
     if (owe_egl_prepare_output(egl, &out) != 0) goto done;
 
-    look.still = texture(egl, still, width, height, &look.still_w, &look.still_h);
+    look.still = texture(egl, still, width, height, &look.still_w, &look.still_h, NULL);
     if (!look.still) goto done;
     for (i = 0; i < desc.piece_count; i++) {
         const struct owe_scene_piece *piece = &desc.pieces[i];
         if (!(arriving ? piece->arrive.listed : piece->idle.listed)) continue;
-        look.pictures[i] = texture(egl, piece->picture, 16384, 16384, NULL, NULL);
+        look.pictures[i] = texture(egl, piece->picture, 16384, 16384, NULL, NULL, NULL);
         if (!look.pictures[i]) goto done;
-        if (*piece->behind && !(look.behinds[i] = texture(egl, piece->behind, 16384, 16384, NULL, NULL))) goto done;
-        if (piece->inside >= 0 && !look.masks[piece->inside]) {
-            look.masks[piece->inside] = texture(egl, desc.areas[piece->inside].mask, 16384, 16384, NULL, NULL);
-            if (!look.masks[piece->inside]) goto done;
-        }
+        if (*piece->behind && !(look.behinds[i] = texture(egl, piece->behind, 16384, 16384, NULL, NULL, NULL))) goto done;
+        if (piece->inside >= 0) used[piece->inside] = true;
+    }
+    for (i = 0; i < (arriving ? desc.arrive_use_count : desc.idle_use_count); i++) {
+        used[(arriving ? desc.arrive_uses : desc.idle_uses)[i].area] = true;
+    }
+    for (i = 0; i < desc.area_count; i++) {
+        if (!used[i]) continue;
+        look.masks[i] = texture(egl, desc.areas[i].mask, 16384, 16384, NULL, NULL, &look.mask_grey[i]);
+        if (!look.masks[i]) goto done;
+    }
+    if (owe_scene_build_effects(egl, &desc, look.effects, error, sizeof(error)) != 0) {
+        fprintf(stderr, "owe-render: %s\n", error);
+        goto done;
     }
 
     if (frames > 1 && mkdir(target, 0755) != 0 && errno != EEXIST) {
@@ -224,6 +238,7 @@ int owe_scene_frame_main(int argc, char **argv) {
 done:
     free(pixels);
     free(upright);
+    owe_scene_free_effects(look.effects);
     out.egl_surface = NULL;
     owe_egl_free(egl);
     return status;

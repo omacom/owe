@@ -93,6 +93,26 @@ int main(void) {
     CHECK(read_text("{\"pieces\":[]}", &desc, error, sizeof(error)) != 0);
     CHECK(read_text("not json", &desc, error, sizeof(error)) != 0);
 
+    /* Effects work on areas: one of OWE's by its name, with OWE's values unless the part says otherwise,
+     * and one of the scene's own, a shader file with its values. */
+    CHECK(read_text("{\"still\":\"a/b.png\",\"areas\":[{\"name\":\"sky\",\"mask\":\"sky.png\",\"at\":[0,0,1,0.5]}],"
+                    "\"effects\":[{\"name\":\"haze\",\"shader\":\"fx/haze.glsl\",\"values\":{\"seconds\":20,\"tint\":[1,0.5,0]}}],"
+                    "\"idle\":{\"sky\":{\"twinkle\":{\"amount\":0.2,\"seconds\":4},\"haze\":{}}},"
+                    "\"arrive\":{\"seconds\":3,\"sky\":{\"haze\":{\"strength\":{\"from\":0,\"after\":1,\"for\":1}}}}}",
+                    &desc, error, sizeof(error)) == 0);
+    CHECK(desc.effect_count == 2 && strcmp(desc.effects[0].name, "haze") == 0 && strstr(desc.effects[0].shader, "/fx/haze.glsl"));
+    CHECK(NEAR(desc.effects[0].seconds, 20) && desc.effects[0].value_count == 1 && desc.effects[0].values[0].count == 3);
+    CHECK(strcmp(desc.effects[1].name, "twinkle") == 0 && !*desc.effects[1].shader && desc.effects[1].value_count == 2);
+    CHECK(desc.idle_use_count == 2 && desc.idle_uses[0].effect == 1 && desc.idle_uses[0].area == 0 && NEAR(desc.idle_uses[0].seconds, 4));
+    CHECK(desc.idle_uses[0].value_count == 1 && strcmp(desc.idle_uses[0].values[0].name, "amount") == 0 && NEAR(desc.idle_uses[0].values[0].v[0], 0.2));
+    CHECK(NEAR(desc.idle_uses[1].seconds, 20) && NEAR(owe_scene_level(&desc.idle_uses[1].strength, 0), 1));
+    CHECK(desc.arrive_use_count == 1 && NEAR(owe_scene_level(&desc.arrive_uses[0].strength, 0.5), 0) && NEAR(owe_scene_level(&desc.arrive_uses[0].strength, 2.5), 1));
+    /* An effect nobody has, a shader outside the scene, a value whose name would break a shader. */
+    CHECK(read_text("{\"still\":\"a/b.png\",\"areas\":[{\"name\":\"sky\",\"mask\":\"sky.png\",\"at\":[0,0,1,1]}],\"idle\":{\"sky\":{\"sparkle\":{}}}}", &desc, error, sizeof(error)) != 0);
+    CHECK(strstr(error, "\"sparkle\""));
+    CHECK(read_text("{\"still\":\"a/b.png\",\"effects\":[{\"name\":\"haze\",\"shader\":\"../haze.glsl\"}]}", &desc, error, sizeof(error)) != 0);
+    CHECK(read_text("{\"still\":\"a/b.png\",\"areas\":[{\"name\":\"sky\",\"mask\":\"sky.png\",\"at\":[0,0,1,1]}],\"idle\":{\"sky\":{\"glow\":{\"a; discard\":1}}}}", &desc, error, sizeof(error)) != 0);
+
     unlink(file);
     rmdir(dir);
     puts("scene description passed");

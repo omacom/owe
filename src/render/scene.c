@@ -18,6 +18,7 @@
 #include "egl.h"
 #include "log.h"
 #include "scene_desc.h"
+#include "scene_effects.h"
 #include "still.h"
 #include "wayland.h"
 
@@ -58,6 +59,7 @@ struct owe_scene {
     struct timespec held_at;
     /* The scene's directory, held open while its pictures load; -1 after. */
     int dir_fd;
+    struct owe_effect *effects[OWE_SCENE_MAX_EFFECTS];
     struct timespec part_start;
     struct timespec settle_start;
     /* The moment the frame being drawn shows, the same on every output. */
@@ -119,6 +121,11 @@ void owe_scene_unload(struct owe_scene *s) {
     for (i = 0; i < OWE_SCENE_MAX_AREAS; i++) {
         owe_still_free(s->masks[i]);
         s->masks[i] = NULL;
+    }
+    for (i = 0; i < OWE_SCENE_MAX_EFFECTS; i++) {
+        if (!s->effects[i]) continue;
+        owe_egl_make_current(s->egl);
+        owe_scene_free_effects(s->effects);
     }
     free(s->desc);
     s->desc = NULL;
@@ -268,6 +275,8 @@ int owe_scene_load(struct owe_scene *s, const char *path, const char *still, boo
         }
         if (piece->inside >= 0) used[piece->inside] = true;
     }
+    for (i = 0; i < desc->idle_use_count; i++) used[desc->idle_uses[i].area] = true;
+    for (i = 0; s->want_arrive && i < desc->arrive_use_count; i++) used[desc->arrive_uses[i].area] = true;
     for (i = 0; i < desc->area_count; i++) {
         if (!used[i]) continue;
         s->masks[i] = start(s, desc->areas[i].mask, 16384, 16384);
@@ -384,6 +393,15 @@ bool owe_scene_tick(struct owe_scene *s) {
             return false;
         }
         if (all == 0) return false;
+        /* Its shaders are read and compiled now that its pictures are in. */
+        owe_egl_make_current(s->egl);
+        if (owe_scene_build_effects(s->egl, s->desc, s->effects, s->error, sizeof(s->error)) != 0) {
+            close_dir(s);
+            OWE_ERROR("scene: %s", s->error);
+            s->phase = PHASE_NONE;
+            set_timer(s, 0);
+            return false;
+        }
         close_dir(s);
         if (s->once) {
             /* An intro loaded paused waits on its first frame. */
@@ -457,6 +475,117 @@ void owe_scene_set_paused(struct owe_scene *s, bool paused) {
     }
 }
 
+/* A shader file of the scene's own: small, and text. The caller frees it. */
+static char *read_shader(const char *path) {
+    enum { LIMIT = 64 * 1024 };
+    FILE *f = fopen(path, "rb");
+    char *text = f ? malloc(LIMIT + 1) : NULL;
+    size_t n = 0;
+    if (text) {
+        n = fread(text, 1, LIMIT + 1, f);
+        if (n > LIMIT || memchr(text, 0, n)) {
+            free(text);
+            text = NULL;
+        } else {
+            text[n] = '\0';
+        }
+    }
+    if (f) fclose(f);
+    return text;
+}
+
+/* Every value a scene gives an effect must be one its shader takes, with as
+ * many numbers: a name spelt wrong would otherwise do nothing, silently. */
+static int check_values(struct owe_effect *fx, const char *effect, const struct owe_scene_value *values, int count,
+                        char *error, size_t len) {
+    int i;
+    for (i = 0; i < count; i++) {
+        int takes = owe_egl_effect_value(fx, values[i].name);
+        if (takes == 0) {
+            snprintf(error, len, "effect \"%s\" has no value \"%s\", or never uses it", effect, values[i].name);
+            return -1;
+        }
+        if (takes != values[i].count) {
+            snprintf(error, len, "effect \"%s\": \"%s\" takes %d number%s, and is given %d", effect, values[i].name,
+                     takes, takes == 1 ? "" : "s", values[i].count);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+void owe_scene_free_effects(struct owe_effect **effects) {
+    int i;
+    for (i = 0; i < OWE_SCENE_MAX_EFFECTS; i++) {
+        owe_egl_effect_free(effects[i]);
+        effects[i] = NULL;
+    }
+}
+
+int owe_scene_build_effects(struct owe_egl *egl, const struct owe_scene_desc *desc, struct owe_effect **effects,
+                            char *error, size_t len) {
+    int i, k;
+    for (i = 0; i < desc->effect_count; i++) {
+        const struct owe_scene_effect *effect = &desc->effects[i];
+        const struct owe_scene_builtin *builtin = *effect->shader ? NULL : owe_scene_builtin(effect->name);
+        char *own = *effect->shader ? read_shader(effect->shader) : NULL;
+        char said[768] = "";
+        if (!builtin && !own) {
+            snprintf(error, len, "effect \"%s\": its shader cannot be read, or is larger than 64 KiB", effect->name);
+            goto fail;
+        }
+        effects[i] = owe_egl_effect_new(egl, builtin ? builtin->source : own, said, sizeof(said));
+        free(own);
+        if (!effects[i]) {
+            snprintf(error, len, "effect \"%s\" does not compile: %s", effect->name, said);
+            goto fail;
+        }
+        if (check_values(effects[i], effect->name, effect->values, effect->value_count, error, len) != 0) goto fail;
+        for (k = 0; k < desc->idle_use_count; k++) {
+            const struct owe_scene_use *use = &desc->idle_uses[k];
+            if (use->effect == i && check_values(effects[i], effect->name, use->values, use->value_count, error, len) != 0) goto fail;
+        }
+        for (k = 0; k < desc->arrive_use_count; k++) {
+            const struct owe_scene_use *use = &desc->arrive_uses[k];
+            if (use->effect == i && check_values(effects[i], effect->name, use->values, use->value_count, error, len) != 0) goto fail;
+        }
+    }
+    return 0;
+fail:
+    owe_scene_free_effects(effects);
+    return -1;
+}
+
+/* The effects at work in one part, each over its area of the still. */
+static void draw_effects(struct owe_egl *egl, struct owe_output *out, const struct owe_scene_desc *desc,
+                         const struct owe_scene_look *look, bool arriving, double t) {
+    const struct owe_scene_use *uses = arriving ? desc->arrive_uses : desc->idle_uses;
+    int count = arriving ? desc->arrive_use_count : desc->idle_use_count;
+    int i, k;
+    for (i = 0; i < count; i++) {
+        const struct owe_scene_use *use = &uses[i];
+        const struct owe_scene_effect *effect = &desc->effects[use->effect];
+        struct owe_effect_value values[OWE_SCENE_MAX_VALUES * 2];
+        struct owe_effect_draw draw = { .still = look->still, .mask = look->masks[use->area], .still_w = look->still_w,
+                                        .still_h = look->still_h, .at = desc->areas[use->area].at,
+                                        .mask_grey = look->mask_grey[use->area], .seconds = use->seconds,
+                                        .values = values };
+        if (!look->effects[use->effect] || !draw.mask) continue;
+        draw.strength = owe_scene_level(&use->strength, t);
+        /* The idle part starts at rest: an effect comes up from the still. */
+        if (!arriving) draw.strength *= (float)smooth(t / SETTLE);
+        draw.phase = (float)(fmod(t, use->seconds) / use->seconds);
+        /* What the effect says, then what this part says in its place. */
+        for (k = 0; k < effect->value_count; k++) {
+            values[draw.value_count++] = (struct owe_effect_value){ effect->values[k].name, effect->values[k].v, effect->values[k].count };
+        }
+        for (k = 0; k < use->value_count; k++) {
+            values[draw.value_count++] = (struct owe_effect_value){ use->values[k].name, use->values[k].v, use->values[k].count };
+        }
+        owe_egl_draw_effect(egl, out, look->effects[use->effect], &draw);
+    }
+}
+
 void owe_scene_draw(struct owe_egl *egl, struct owe_output *out, const struct owe_scene_desc *desc,
                     const struct owe_scene_look *look, bool arriving, double t, double settling) {
     double into_still = settling;
@@ -473,6 +602,7 @@ void owe_scene_draw(struct owe_egl *egl, struct owe_output *out, const struct ow
         double ending = smooth(1.0 - (desc->arrive_seconds - t) / SETTLE);
         if (ending > into_still) into_still = ending;
     }
+    draw_effects(egl, out, desc, look, arriving, t);
     /* Distances in a scene are shares of the still's height. */
     tall = (float)h / (float)w;
     /* Every patch first, then every piece: pieces that sit close together reach
@@ -503,6 +633,7 @@ void owe_scene_draw(struct owe_egl *egl, struct owe_output *out, const struct ow
         if (piece->inside >= 0 && look->masks[piece->inside]) {
             draw.inside = look->masks[piece->inside];
             draw.inside_at = desc->areas[piece->inside].at;
+            draw.inside_grey = look->mask_grey[piece->inside];
         }
         draw.dx = (piece->rest_x + owe_scene_offset(&part->x, t)) * tall;
         draw.dy = piece->rest_y + owe_scene_offset(&part->y, t);
@@ -523,7 +654,11 @@ void owe_scene_render_output(struct owe_scene *s, struct owe_output *out) {
         look.pictures[i] = owe_still_texture(s->pictures[i], NULL, NULL);
         look.behinds[i] = owe_still_texture(s->behinds[i], NULL, NULL);
     }
-    for (i = 0; i < OWE_SCENE_MAX_AREAS; i++) look.masks[i] = owe_still_texture(s->masks[i], NULL, NULL);
+    for (i = 0; i < OWE_SCENE_MAX_AREAS; i++) {
+        look.masks[i] = owe_still_texture(s->masks[i], NULL, NULL);
+        look.mask_grey[i] = s->masks[i] && owe_still_opaque(s->masks[i]);
+    }
+    memcpy(look.effects, s->effects, sizeof(look.effects));
     /* A paused scene settles from wherever its pieces are; at rest it is the still. */
     if (s->phase == PHASE_SETTLING) settling = smooth(seconds_between(&s->settle_start, &s->frame_at) / SETTLE);
     if (s->phase == PHASE_RESTING || s->phase == PHASE_ENDED) settling = 1.0;

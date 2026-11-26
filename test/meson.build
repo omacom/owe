@@ -95,7 +95,7 @@ render_feed_test = executable('owe-render-feed-test',
 test('render-feed', render_feed_test)
 
 transition_test = executable('owe-transition-test',
-  files('transition.c', '../src/render/still.c', '../src/render/scene.c', '../src/render/scene_desc.c',
+  files('transition.c', '../src/render/still.c', '../src/render/scene.c', '../src/render/scene_desc.c', '../src/render/scene_effects.c',
     '../src/render/render_ipc.c', '../src/render/feed.c') + common_sources + yyjson_sources +
     [layer_shell_client_h, layer_shell_c, xdg_shell_c, viewporter_client_h, viewporter_c,
      fractional_scale_client_h, fractional_scale_c],
@@ -114,13 +114,13 @@ executable('owe-live-test', files('live.c') + common_sources + yyjson_sources,
   include_directories : [common_inc, yyjson_inc])
 
 scene_desc_test = executable('owe-scene-desc-test',
-  files('scene_desc.c', '../src/render/scene_desc.c') + yyjson_sources,
+  files('scene_desc.c', '../src/render/scene_desc.c', '../src/render/scene_effects.c') + yyjson_sources,
   include_directories : [yyjson_inc],
   dependencies : [m_dep])
 test('scene-desc', scene_desc_test)
 
 scene_draw_test = executable('owe-scene-draw-test',
-  files('scene_draw.c', '../src/common/log.c'),
+  files('scene_draw.c', '../src/render/scene_effects.c', '../src/common/log.c'),
   include_directories : [common_inc, include_directories('../src/render')],
   dependencies : [egl_dep, epoxy_dep, wayland_egl, m_dep],
   c_args : ['-ffunction-sections', '-fdata-sections'],

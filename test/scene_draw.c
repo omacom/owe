@@ -1,4 +1,5 @@
 #include "../src/render/egl.c"
+#include "../src/render/scene_effects.h"
 #include <stdio.h>
 
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #x); exit(1); } } while (0)
@@ -151,6 +152,40 @@ static void check_api(EGLDisplay display, bool gles) {
     owe_egl_draw_piece(&egl, &out, &gone);
     read_screen();
     CHECK(is(seen(24, 34), 200, 10, 10) && is(seen(2, 2), 40, 60, 80));
+    CHECK(glGetError() == GL_NO_ERROR);
+
+    /* Every effect OWE has compiles under both, and takes the values it says it takes. */
+    const struct owe_scene_builtin *builtin;
+    char said[512];
+    for (int i = 0; (builtin = owe_scene_builtin_at(i)); i++) {
+        struct owe_effect *fx = owe_egl_effect_new(&egl, builtin->source, said, sizeof(said));
+        if (!fx) fprintf(stderr, "%s: %s\n", builtin->name, said);
+        CHECK(fx);
+        for (int k = 0; k < builtin->value_count; k++) {
+            CHECK(owe_egl_effect_value(fx, builtin->values[k].name) == builtin->values[k].count);
+        }
+        owe_egl_effect_free(fx);
+    }
+    /* An effect redraws its area by the area's shape: the left half of the piece's place here, at half strength. */
+    struct owe_effect *fill = owe_egl_effect_new(&egl, "uniform vec3 colour;\nvec4 effect(vec2 uv) { return vec4(colour, 1.0); }\n", said, sizeof(said));
+    CHECK(fill && owe_egl_effect_value(fill, "colour") == 3 && owe_egl_effect_value(fill, "color") == 0);
+    const float blue[] = {0, 0, 1};
+    struct owe_effect_value values[] = {{"colour", blue, 3}};
+    struct owe_effect_draw redraw = {.still = still, .mask = left, .still_w = SIDE, .still_h = SIDE, .at = at, .strength = 0.5f,
+                                     .seconds = 1, .values = values, .value_count = 1};
+    owe_egl_draw_texture(&egl, &out, still, 1.0f, SIDE, SIDE);
+    owe_egl_draw_effect(&egl, &out, fill, &redraw);
+    read_screen();
+    CHECK(abs(seen(18, 28)[0] - 20) <= 1 && abs(seen(18, 28)[1] - 30) <= 1 && abs(seen(18, 28)[2] - 168) <= 1);
+    CHECK(is(seen(26, 28), 40, 60, 80) && is(seen(10, 28), 40, 60, 80));
+    /* With no strength it draws nothing, and a shader that is wrong is refused with the compiler's words. */
+    redraw.strength = 0.0f;
+    owe_egl_draw_texture(&egl, &out, still, 1.0f, SIDE, SIDE);
+    owe_egl_draw_effect(&egl, &out, fill, &redraw);
+    read_screen();
+    CHECK(is(seen(18, 28), 40, 60, 80));
+    owe_egl_effect_free(fill);
+    CHECK(!owe_egl_effect_new(&egl, "vec4 effect(vec2 uv) { return 1; }\n", said, sizeof(said)) && *said);
     CHECK(glGetError() == GL_NO_ERROR);
 
     for (size_t i = 0; i < sizeof(all) / sizeof(*all); i++) owe_egl_tex_free(&egl, all[i]);

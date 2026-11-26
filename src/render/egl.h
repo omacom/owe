@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 struct owe_egl;
@@ -40,11 +42,43 @@ struct owe_piece_draw {
     int still_h;
     const float *at;         /* where the piece was cut from the still */
     const float *inside_at;  /* where the shape sits in the still */
+    bool inside_grey;        /* the shape is its picture's brightness, not its alpha */
     float dx;                /* how far it is moved, as shares of the still's width and height */
     float dy;
     float size;              /* 1 is life size */
     float fade;              /* 1 is fully there */
 };
 void owe_egl_draw_piece(struct owe_egl *egl, struct owe_output *out, const struct owe_piece_draw *d);
+
+/* An effect: a shader that redraws an area of the still. scene_effects.c sets
+ * out what its source is given and what it must write. The context must be
+ * current to make or free one. */
+struct owe_effect;
+struct owe_effect_value {
+    const char *name;
+    const float *v;
+    int count;
+};
+struct owe_effect_draw {
+    unsigned int still;
+    unsigned int mask;   /* the area's shape */
+    int still_w;
+    int still_h;
+    const float *at;     /* where the area sits in the still */
+    bool mask_grey;      /* the shape is its picture's brightness, not its alpha */
+    float strength;      /* 0 leaves the still as it is */
+    float phase;         /* 0 to 1 through the effect's cycle */
+    float seconds;       /* the length of that cycle */
+    const struct owe_effect_value *values;
+    int value_count;
+};
+/* NULL with the compiler's words in `error` when the source will not compile. */
+struct owe_effect *owe_egl_effect_new(struct owe_egl *egl, const char *source, char *error, size_t error_len);
+void owe_egl_effect_free(struct owe_effect *fx);
+/* How many numbers the value `name` of the effect takes, 1 to 4; 0 when its
+ * shader has no such value, or never uses it. */
+int owe_egl_effect_value(struct owe_effect *fx, const char *name);
+void owe_egl_draw_effect(struct owe_egl *egl, struct owe_output *out, struct owe_effect *fx,
+                         const struct owe_effect_draw *d);
 void owe_egl_draw_texture_overlay(struct owe_egl *egl, struct owe_output *out, unsigned int tex,
                                   float alpha, int tex_w, int tex_h);

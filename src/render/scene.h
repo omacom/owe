@@ -69,6 +69,8 @@ struct owe_scene_look {
     unsigned int pictures[32];
     unsigned int behinds[32];
     unsigned int masks[8];
+    bool mask_grey[8];           /* a shape with no transparency is its brightness */
+    struct owe_effect *effects[8]; /* compiled, in the order the scene lists them */
 };
 
 /* Draw one moment of a scene: `t` seconds into its arrive part or its idle
@@ -76,6 +78,13 @@ struct owe_scene_look {
  * does. The same code draws a playing scene and a frame written to a file. */
 void owe_scene_draw(struct owe_egl *egl, struct owe_output *out, const struct owe_scene_desc *desc,
                     const struct owe_scene_look *look, bool arriving, double t, double settling);
+
+/* Compile the effects a scene uses and check the values it gives them. The
+ * context must be current. 0, or -1 with the reason in `error`. */
+struct owe_effect;
+int owe_scene_build_effects(struct owe_egl *egl, const struct owe_scene_desc *desc, struct owe_effect **effects,
+                            char *error, size_t len);
+void owe_scene_free_effects(struct owe_effect **effects);
 
 /* Where the still a scene names is, for a scene file at `scene_path`. */
 int owe_scene_find_still(const struct owe_scene_desc *desc, const char *scene_path, char *out, size_t len);

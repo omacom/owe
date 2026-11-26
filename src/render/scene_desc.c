@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "scene_effects.h"
 #include "yyjson.h"
 
 static int fail(char *error, size_t len, const char *fmt, ...) {
@@ -95,7 +96,116 @@ static int find_piece(const struct owe_scene_desc *desc, const char *name) {
     return -1;
 }
 
-/* One part of the scene: what each piece it lists does. */
+static int find_area(const struct owe_scene_desc *desc, const char *name) {
+    int i;
+    for (i = 0; name && i < desc->area_count; i++) {
+        if (strcmp(desc->areas[i].name, name) == 0) return i;
+    }
+    return -1;
+}
+
+/* A value's name becomes a name in a shader, and must not be one the player
+ * uses itself. */
+static bool value_name_ok(const char *name) {
+    static const char *taken[] = { "phase", "seconds", "pixel", "aspect", "area", "strength", "still", "mask",
+                                   "grain", "cloud", "effect", "main", NULL };
+    size_t i, n = name ? strlen(name) : 0;
+    if (n == 0 || n >= OWE_SCENE_VALUE_NAME || name[0] < 'a' || name[0] > 'z') return false;
+    for (i = 0; i < n; i++) {
+        if (!((name[i] >= 'a' && name[i] <= 'z') || (name[i] >= '0' && name[i] <= '9') || name[i] == '_')) return false;
+    }
+    if (strncmp(name, "owe_", 4) == 0 || strncmp(name, "gl_", 3) == 0) return false;
+    for (i = 0; taken[i]; i++) {
+        if (strcmp(name, taken[i]) == 0) return false;
+    }
+    return true;
+}
+
+/* The values in `obj`, but for the keys the player reads itself. */
+static int read_values(yyjson_val *obj, struct owe_scene_value *values, int *count) {
+    yyjson_obj_iter iter;
+    yyjson_val *key;
+    yyjson_obj_iter_init(obj, &iter);
+    while ((key = yyjson_obj_iter_next(&iter))) {
+        const char *name = yyjson_get_str(key);
+        yyjson_val *v = yyjson_obj_iter_get_val(key);
+        struct owe_scene_value *value;
+        size_t i, n;
+        if (strcmp(name, "seconds") == 0 || strcmp(name, "strength") == 0) continue;
+        if (!value_name_ok(name) || *count == OWE_SCENE_MAX_VALUES) return -1;
+        value = &values[(*count)++];
+        memset(value, 0, sizeof(*value));
+        snprintf(value->name, sizeof(value->name), "%s", name);
+        if (yyjson_is_num(v)) {
+            value->v[0] = (float)yyjson_get_num(v);
+            value->count = 1;
+            continue;
+        }
+        n = yyjson_arr_size(v);
+        if (!yyjson_is_arr(v) || n < 1 || n > 4) return -1;
+        for (i = 0; i < n; i++) {
+            yyjson_val *one = yyjson_arr_get(v, i);
+            if (!yyjson_is_num(one)) return -1;
+            value->v[i] = (float)yyjson_get_num(one);
+        }
+        value->count = (int)n;
+    }
+    return 0;
+}
+
+/* The effect by that name: one the scene has listed or used already, or one
+ * of OWE's, which is then listed. */
+static int find_effect(struct owe_scene_desc *desc, const char *name) {
+    const struct owe_scene_builtin *builtin;
+    struct owe_scene_effect *effect;
+    int i;
+    for (i = 0; i < desc->effect_count; i++) {
+        if (strcmp(desc->effects[i].name, name) == 0) return i;
+    }
+    builtin = owe_scene_builtin(name);
+    if (!builtin || desc->effect_count == OWE_SCENE_MAX_EFFECTS) return -1;
+    effect = &desc->effects[desc->effect_count];
+    snprintf(effect->name, sizeof(effect->name), "%s", name);
+    effect->seconds = builtin->seconds;
+    memcpy(effect->values, builtin->values, sizeof(effect->values));
+    effect->value_count = builtin->value_count;
+    return desc->effect_count++;
+}
+
+/* The effects one part of the scene puts to work on an area. */
+static int read_uses(yyjson_val *effects, struct owe_scene_desc *desc, int area, bool arrive, char *error, size_t len) {
+    struct owe_scene_use *uses = arrive ? desc->arrive_uses : desc->idle_uses;
+    int *count = arrive ? &desc->arrive_use_count : &desc->idle_use_count;
+    const char *part = arrive ? "arrive" : "idle";
+    const char *where = desc->areas[area].name;
+    yyjson_obj_iter iter;
+    yyjson_val *key;
+    yyjson_obj_iter_init(effects, &iter);
+    while ((key = yyjson_obj_iter_next(&iter))) {
+        const char *name = yyjson_get_str(key);
+        yyjson_val *settings = yyjson_obj_iter_get_val(key);
+        struct owe_scene_use *use;
+        int effect = find_effect(desc, name);
+        if (effect < 0) {
+            return fail(error, len, "\"%s\" puts \"%s\" to work on \"%s\", which is not an effect of OWE's or the scene's",
+                        part, name, where);
+        }
+        if (!yyjson_is_obj(settings)) return fail(error, len, "\"%s\" on \"%s\" in \"%s\" is not a list of values", name, where, part);
+        if (*count == OWE_SCENE_MAX_USES) return fail(error, len, "\"%s\" has more than %d effects at work", part, OWE_SCENE_MAX_USES);
+        use = &uses[(*count)++];
+        use->area = area;
+        use->effect = effect;
+        use->seconds = number(settings, "seconds", desc->effects[effect].seconds);
+        if (use->seconds <= 0 || read_motion(yyjson_obj_get(settings, "strength"), &use->strength) != 0 ||
+            read_values(settings, use->values, &use->value_count) != 0) {
+            return fail(error, len, "\"%s\" on \"%s\" in \"%s\" has a value that cannot be read", name, where, part);
+        }
+    }
+    return 0;
+}
+
+/* One part of the scene: what each piece it lists does, and which effects
+ * work on each area it lists. */
 static int read_part(yyjson_val *section, struct owe_scene_desc *desc, bool arrive, char *error, size_t len) {
     yyjson_obj_iter iter;
     yyjson_val *key;
@@ -109,7 +219,14 @@ static int read_part(yyjson_val *section, struct owe_scene_desc *desc, bool arri
         int index;
         if (strcmp(name, "frames_a_second") == 0 || strcmp(name, "seconds") == 0) continue;
         index = find_piece(desc, name);
-        if (index < 0) return fail(error, len, "\"%s\" moves \"%s\", which is not one of the pieces", arrive ? "arrive" : "idle", name);
+        if (index < 0) {
+            int area = find_area(desc, name);
+            if (area < 0 || !yyjson_is_obj(moves)) {
+                return fail(error, len, "\"%s\" lists \"%s\", which is not one of the pieces or areas", arrive ? "arrive" : "idle", name);
+            }
+            if (read_uses(moves, desc, area, arrive, error, len) != 0) return -1;
+            continue;
+        }
         part = arrive ? &desc->pieces[index].arrive : &desc->pieces[index].idle;
         part->listed = true;
         if (read_motion(yyjson_obj_get(moves, "x"), &part->x) != 0 || read_motion(yyjson_obj_get(moves, "y"), &part->y) != 0 ||
@@ -164,8 +281,8 @@ int owe_scene_desc_read(const char *path, struct owe_scene_desc *desc, char *err
             fail(error, error_len, "more than %d areas", OWE_SCENE_MAX_AREAS);
             goto done;
         }
-        if (!name || !*name || strlen(name) >= OWE_SCENE_NAME) {
-            fail(error, error_len, "an area has no name");
+        if (!name || !*name || strlen(name) >= OWE_SCENE_NAME || find_area(desc, name) >= 0) {
+            fail(error, error_len, "an area has no name, or two share one");
             goto done;
         }
         snprintf(area->name, sizeof(area->name), "%s", name);
@@ -194,8 +311,8 @@ int owe_scene_desc_read(const char *path, struct owe_scene_desc *desc, char *err
             fail(error, error_len, "more than %d pieces", OWE_SCENE_MAX_PIECES);
             goto done;
         }
-        if (!name || !*name || strlen(name) >= OWE_SCENE_NAME || find_piece(desc, name) >= 0) {
-            fail(error, error_len, "a piece has no name, or two share one");
+        if (!name || !*name || strlen(name) >= OWE_SCENE_NAME || find_piece(desc, name) >= 0 || find_area(desc, name) >= 0) {
+            fail(error, error_len, "a piece has no name, or shares one with another piece or an area");
             goto done;
         }
         snprintf(piece->name, sizeof(piece->name), "%s", name);
@@ -226,6 +343,40 @@ int owe_scene_desc_read(const char *path, struct owe_scene_desc *desc, char *err
             goto done;
         }
         desc->piece_count++;
+    }
+
+    /* Effects of the scene's own, beside OWE's: each a shader file. */
+    list = yyjson_obj_get(root, "effects");
+    yyjson_arr_iter_init(list, &iter);
+    while ((entry = yyjson_arr_iter_next(&iter))) {
+        struct owe_scene_effect *effect = &desc->effects[desc->effect_count];
+        const char *name = yyjson_get_str(yyjson_obj_get(entry, "name"));
+        yyjson_val *values = yyjson_obj_get(entry, "values");
+        if (desc->effect_count == OWE_SCENE_MAX_EFFECTS) {
+            fail(error, error_len, "more than %d effects", OWE_SCENE_MAX_EFFECTS);
+            goto done;
+        }
+        if (!name || !*name || strlen(name) >= OWE_SCENE_NAME || owe_scene_builtin(name)) {
+            fail(error, error_len, "an effect has no name, or the name of one of OWE's");
+            goto done;
+        }
+        for (i = 0; i < desc->effect_count; i++) {
+            if (strcmp(desc->effects[i].name, name) == 0) {
+                fail(error, error_len, "two effects are named \"%s\"", name);
+                goto done;
+            }
+        }
+        snprintf(effect->name, sizeof(effect->name), "%s", name);
+        if (own_file(dir, yyjson_get_str(yyjson_obj_get(entry, "shader")), effect->shader, sizeof(effect->shader)) != 0) {
+            fail(error, error_len, "effect \"%s\": \"shader\" must be a file of the scene's own", name);
+            goto done;
+        }
+        effect->seconds = number(values, "seconds", 10);
+        if (effect->seconds <= 0 || (values && (!yyjson_is_obj(values) || read_values(values, effect->values, &effect->value_count) != 0))) {
+            fail(error, error_len, "effect \"%s\" has a value that cannot be read", name);
+            goto done;
+        }
+        desc->effect_count++;
     }
 
     idle = yyjson_obj_get(root, "idle");

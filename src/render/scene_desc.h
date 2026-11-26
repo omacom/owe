@@ -6,13 +6,18 @@
 /* What a scene file says, read and checked, with nothing loaded or drawn.
  *
  * A scene belongs to one still. With every piece at home it is that still.
- * Pieces are cut from the still and move over it; an area is a shape in the
- * still a piece can be kept inside. A scene has an idle part that repeats and
- * may have an arrive part that plays once and ends at rest. */
+ * Pieces are cut from the still and move over it. An area is a shape in the
+ * still: a piece can be kept inside it, and an effect can work on it. A scene
+ * has an idle part that repeats and may have an arrive part that plays once
+ * and ends at rest. */
 
 #define OWE_SCENE_MAX_PIECES 32
 #define OWE_SCENE_MAX_AREAS 8
 #define OWE_SCENE_MAX_TIMES 8
+#define OWE_SCENE_MAX_EFFECTS 8
+#define OWE_SCENE_MAX_USES 8
+#define OWE_SCENE_MAX_VALUES 8
+#define OWE_SCENE_VALUE_NAME 32
 #define OWE_SCENE_NAME 64
 #define OWE_SCENE_PATH 4096
 
@@ -73,6 +78,32 @@ struct owe_scene_piece {
     struct owe_scene_part arrive;
 };
 
+/* A value an effect's shader takes: one number, or up to four. */
+struct owe_scene_value {
+    char name[OWE_SCENE_VALUE_NAME];
+    float v[4];
+    int count;
+};
+
+/* An effect the scene uses: one of OWE's, or a shader of the scene's own. */
+struct owe_scene_effect {
+    char name[OWE_SCENE_NAME];
+    char shader[OWE_SCENE_PATH]; /* the scene's own file; empty for one of OWE's */
+    float seconds;               /* one cycle, unless a part says otherwise */
+    struct owe_scene_value values[OWE_SCENE_MAX_VALUES]; /* unless a part says otherwise */
+    int value_count;
+};
+
+/* An effect at work on an area in one part of the scene. */
+struct owe_scene_use {
+    int area;
+    int effect;
+    float seconds;
+    struct owe_scene_motion strength; /* 1 at rest: the effect in full */
+    struct owe_scene_value values[OWE_SCENE_MAX_VALUES];
+    int value_count;
+};
+
 struct owe_scene_desc {
     char still[OWE_SCENE_PATH]; /* as the file names it */
     char sha256[65];            /* of the still, lower-case hex; may be empty */
@@ -80,6 +111,12 @@ struct owe_scene_desc {
     int area_count;
     struct owe_scene_piece pieces[OWE_SCENE_MAX_PIECES];
     int piece_count;
+    struct owe_scene_effect effects[OWE_SCENE_MAX_EFFECTS];
+    int effect_count;
+    struct owe_scene_use idle_uses[OWE_SCENE_MAX_USES];
+    int idle_use_count;
+    struct owe_scene_use arrive_uses[OWE_SCENE_MAX_USES];
+    int arrive_use_count;
     int idle_fps;
     int arrive_fps;
     double arrive_seconds; /* 0 when the scene has no arrive part */

@@ -99,6 +99,50 @@ with tempfile.TemporaryDirectory(prefix="owe-scene-frame-") as tmp:
     check(draw(*common, "--out", root / "frame.png").returncode == 0 and (root / "frame.png").read_bytes()[:4] == b"\x89PNG",
           "a frame is written as a PNG too")
 
+    # Effects redraw an area of the still. One of the scene's own is a small shader beside it.
+    (root / "fx").mkdir()
+    (root / "fx/paint.glsl").write_text("uniform vec3 colour;\nvec4 effect(vec2 uv) { return vec4(colour, 1.0); }\n")
+    # The area is the top left quarter; its shape is its left half, white on black.
+    png(root / "pieces/corner.png", 8, 8, lambda x, y: (255, 255, 255) if x < 4 else (0, 0, 0))
+    painted = dict(scene, areas=[{"name": "corner", "mask": "pieces/corner.png", "at": [0, 0, 0.25, 0.25]}],
+                   effects=[{"name": "paint", "shader": "fx/paint.glsl", "values": {"colour": [0, 0, 1]}}],
+                   idle={"frames_a_second": 4, "corner": {"paint": {}}},
+                   arrive={"seconds": 2, "corner": {"paint": {"colour": [0, 1, 0], "strength": {"from": 0, "after": 1, "for": 0.5}}}})
+    (root / "painted.jsonc").write_text(json.dumps(painted))
+    effect = [root / "painted.jsonc", "--still", root / "still.png", "--size", f"{SIDE}x{SIDE}"]
+    result = draw(*effect, "--out", root / "fx-rest.ppm")
+    check(result.returncode == 0, "a scene with an effect of its own is drawn", result.stderr)
+    seen = ppm(root / "fx-rest.ppm")
+    check(all(near(seen(x, y), still(x, y)) for y in range(SIDE) for x in range(SIDE)),
+          "an effect starts from the still: at rest the scene is its still, to the pixel")
+    check(draw(*effect, "--at", 1, "--out", root / "fx-on.ppm").returncode == 0, "an effect at work is drawn")
+    seen = ppm(root / "fx-on.ppm")
+    check(near(seen(3, 5), (0, 0, 255)) and near(seen(12, 5), GROUND) and near(seen(3, 20), GROUND) and near(seen(40, 40), GROUND),
+          "an effect redraws its area where its shape is white, and nothing else",
+          str([seen(3, 5), seen(12, 5), seen(3, 20), seen(40, 40)]))
+    # It is up half a second after it sets off at 1, just before the part's last moments settle into the still.
+    check(draw(*effect, "--part", "arrive", "--at", 0.5, "--out", root / "fx-before.ppm").returncode == 0 and
+          draw(*effect, "--part", "arrive", "--at", 1.55, "--out", root / "fx-after.ppm").returncode == 0, "an effect in the arrive part is drawn")
+    check(near(ppm(root / "fx-before.ppm")(3, 5), GROUND) and near(ppm(root / "fx-after.ppm")(3, 5), (0, 255, 0)),
+          "a part gives an effect its own values, and brings it up when it says", str(ppm(root / "fx-after.ppm")(3, 5)))
+    # One of OWE's: a glow a quarter through its cycle is the still, brighter by its amount.
+    glowing = dict(painted, effects=[], idle={"frames_a_second": 4, "corner": {"glow": {"amount": 0.5, "seconds": 4}}}, arrive={"seconds": 0})
+    del glowing["arrive"]
+    (root / "glowing.jsonc").write_text(json.dumps(glowing))
+    result = draw(root / "glowing.jsonc", "--still", root / "still.png", "--size", f"{SIDE}x{SIDE}", "--at", 1, "--out", root / "glow.ppm")
+    check(result.returncode == 0 and near(ppm(root / "glow.ppm")(3, 5), tuple(round(v * 1.5) for v in GROUND)),
+          "one of OWE's effects works by its name", result.stderr + str(ppm(root / "glow.ppm")(3, 5)))
+    # A shader that will not compile is refused, with the line that is wrong; so is a value its shader does not take.
+    (root / "fx/paint.glsl").write_text("uniform vec3 colour;\nvec4 effect(vec2 uv) {\n  return colour;\n}\n")
+    result = draw(*effect, "--out", root / "no.ppm")
+    check(result.returncode != 0 and "paint" in result.stderr and not (root / "no.ppm").exists(),
+          "a scene whose shader does not compile draws nothing, and says which", result.stderr)
+    (root / "fx/paint.glsl").write_text("uniform vec3 colour;\nvec4 effect(vec2 uv) { return vec4(colour, 1.0); }\n")
+    painted["idle"]["corner"]["paint"] = {"color": [1, 0, 0]}
+    (root / "painted.jsonc").write_text(json.dumps(painted))
+    result = draw(*effect, "--out", root / "no.ppm")
+    check(result.returncode != 0 and "color" in result.stderr, "a value its shader does not take is named", result.stderr)
+
     # What a scene holds, for whoever has to decide what to do with it.
     def info(*args):
         result = subprocess.run([render, "--scene-info", *map(str, args)], capture_output=True, text=True)

@@ -42,7 +42,7 @@ struct owe_gl_piece {
     GLint fade_loc;
     GLint inside_pos_loc;
     GLint inside_size_loc;
-    GLint inside_on_loc;
+    GLint inside_on_loc, inside_grey_loc;
     GLint from_still_loc;
     int ready;
 };
@@ -592,6 +592,7 @@ static const char *piece_fs_src = "in vec2 vuv;\n"
                                   "uniform vec2 inside_pos;\n"
                                   "uniform vec2 inside_size;\n"
                                   "uniform float inside_on;\n"
+                                  "uniform float inside_grey;\n"
                                   "uniform float from_still;\n"
                                   "out vec4 frag;\n"
                                   "float within(vec2 v) {\n"
@@ -606,7 +607,8 @@ static const char *piece_fs_src = "in vec2 vuv;\n"
                                   "  float keep = fade * within(uv);\n"
                                   "  if (inside_on > 0.5) {\n"
                                   "    vec2 k = (place - inside_pos) / inside_size;\n"
-                                  "    keep *= texture(inside, k).a * within(k);\n"
+                                  "    vec4 shape_here = texture(inside, k);\n"
+                                  "    keep *= (inside_grey > 0.5 ? shape_here.r : shape_here.a) * within(k);\n"
                                   "  }\n"
                                   "  if (from_still > 0.5) {\n"
                                   "    vec3 seen = texture(still, home).rgb;\n"
@@ -656,6 +658,7 @@ static int piece_init(struct owe_gl_piece *p, bool gles) {
     p->inside_pos_loc = glGetUniformLocation(p->prog, "inside_pos");
     p->inside_size_loc = glGetUniformLocation(p->prog, "inside_size");
     p->inside_on_loc = glGetUniformLocation(p->prog, "inside_on");
+    p->inside_grey_loc = glGetUniformLocation(p->prog, "inside_grey");
     p->from_still_loc = glGetUniformLocation(p->prog, "from_still");
     glUseProgram(p->prog);
     glUniform1i(p->shape_loc, 0);
@@ -665,6 +668,20 @@ static int piece_init(struct owe_gl_piece *p, bool gles) {
     glUseProgram(0);
     p->ready = 1;
     return 0;
+}
+
+/* The still covers the output, cropped at its middle, as owe_egl_draw_texture
+ * draws it: which part of it the output shows. */
+static void still_fit(int still_w, int still_h, int out_w, int out_h, float *scale_u, float *scale_v, float *off_u,
+                      float *off_v) {
+    float src_aspect = (float)still_w / (float)still_h;
+    float dst_aspect = (float)out_w / (float)out_h;
+    *scale_u = 1.0f;
+    *scale_v = 1.0f;
+    if (dst_aspect > src_aspect) *scale_v = src_aspect / dst_aspect;
+    else *scale_u = dst_aspect / src_aspect;
+    *off_u = (1.0f - *scale_u) * 0.5f;
+    *off_v = (1.0f - *scale_v) * 0.5f;
 }
 
 void owe_egl_draw_piece(struct owe_egl *egl, struct owe_output *out, const struct owe_piece_draw *d) {
@@ -680,15 +697,7 @@ void owe_egl_draw_piece(struct owe_egl *egl, struct owe_output *out, const struc
     if (!p->ready && piece_init(p, egl->gles) != 0) return;
     owe_output_buffer_size(out, &out_w, &out_h);
     if (out_w <= 0 || out_h <= 0) return;
-    /* The still covers the output, cropped at its middle, as owe_egl_draw_texture draws it. */
-    {
-        float src_aspect = (float)d->still_w / (float)d->still_h;
-        float dst_aspect = (float)out_w / (float)out_h;
-        if (dst_aspect > src_aspect) scale_v = src_aspect / dst_aspect;
-        else scale_u = dst_aspect / src_aspect;
-    }
-    off_u = (1.0f - scale_u) * 0.5f;
-    off_v = (1.0f - scale_v) * 0.5f;
+    still_fit(d->still_w, d->still_h, out_w, out_h, &scale_u, &scale_v, &off_u, &off_v);
     /* Only the part of the output the piece can reach is drawn to: its place,
      * grown when it is larger than life, and moved. */
     reach = d->size > 1.0f ? (d->size - 1.0f) * 0.5f : 0.0f;
@@ -723,6 +732,7 @@ void owe_egl_draw_piece(struct owe_egl *egl, struct owe_output *out, const struc
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, d->shape);
     glUniform1f(p->inside_on_loc, d->inside ? 1.0f : 0.0f);
+    glUniform1f(p->inside_grey_loc, d->inside_grey ? 1.0f : 0.0f);
     glUniform1f(p->from_still_loc, d->still && d->behind ? 1.0f : 0.0f);
     glUniform2f(p->uv_offset_loc, off_u, off_v);
     glUniform2f(p->uv_scale_loc, scale_u, scale_v);
@@ -737,4 +747,195 @@ void owe_egl_draw_piece(struct owe_egl *egl, struct owe_output *out, const struc
     glUseProgram(0);
     glDisable(GL_SCISSOR_TEST);
     glDisable(GL_BLEND);
+}
+
+/* An effect: a shader of a scene's that redraws an area of the still. What it
+ * is given and what it must write is set out in scene_effects.c. */
+struct owe_effect {
+    GLuint prog;
+    GLint still_loc, mask_loc, uv_offset_loc, uv_scale_loc, strength_loc, grey_loc, area_loc, phase_loc, seconds_loc,
+        pixel_loc, aspect_loc;
+};
+
+static const char *effect_before = "in vec2 vuv;\n"
+                                   "out vec4 frag;\n"
+                                   "uniform sampler2D owe_still;\n"
+                                   "uniform sampler2D owe_mask;\n"
+                                   "uniform vec2 owe_uv_offset;\n"
+                                   "uniform vec2 owe_uv_scale;\n"
+                                   "uniform float owe_strength;\n"
+                                   "uniform float owe_grey;\n"
+                                   "uniform vec4 area;\n"
+                                   "uniform float phase;\n"
+                                   "uniform float seconds;\n"
+                                   "uniform vec2 pixel;\n"
+                                   "uniform float aspect;\n"
+                                   "vec4 still(vec2 uv) { return texture(owe_still, uv); }\n"
+                                   "float mask(vec2 uv) {\n"
+                                   "  vec2 k = (uv - area.xy) / area.zw;\n"
+                                   "  vec4 m = texture(owe_mask, k);\n"
+                                   "  return (owe_grey > 0.5 ? m.r : m.a) * step(0.0, k.x) * step(k.x, 1.0) * step(0.0, k.y) * step(k.y, 1.0);\n"
+                                   "}\n"
+                                   "float grain(vec2 p) { return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }\n"
+                                   "float cloud(vec2 p) {\n"
+                                   "  vec2 i = floor(p);\n"
+                                   "  vec2 f = fract(p);\n"
+                                   "  f = f * f * (3.0 - 2.0 * f);\n"
+                                   "  return mix(mix(grain(i), grain(i + vec2(1.0, 0.0)), f.x),\n"
+                                   "             mix(grain(i + vec2(0.0, 1.0)), grain(i + vec2(1.0, 1.0)), f.x), f.y);\n"
+                                   "}\n"
+                                   /* Lines of the effect's own are counted from its first. */
+                                   "#line 1\n";
+
+/* The effect's answer goes into the still by the area's shape and the
+ * strength the player gives it: none of either leaves the still as it is. */
+static const char *effect_after = "\nvoid main() {\n"
+                                  "  vec2 uv = vuv * owe_uv_scale + owe_uv_offset;\n"
+                                  "  vec3 was = still(uv).rgb;\n"
+                                  "  frag = vec4(mix(was, effect(uv).rgb, mask(uv) * owe_strength), 1.0);\n"
+                                  "}\n";
+
+struct owe_effect *owe_egl_effect_new(struct owe_egl *egl, const char *source, char *error, size_t error_len) {
+    const char *parts[] = { NULL, effect_before, source, effect_after };
+    struct owe_effect *fx;
+    GLuint vs, fs;
+    GLint ok = 0;
+    GLsizei n = 0;
+    if (error && error_len) error[0] = '\0';
+    if (!egl || !source) return NULL;
+    parts[0] = egl->gles ? glsl_es_header : glsl_header;
+    vs = compile_shader(GL_VERTEX_SHADER, egl->gles, vs_src);
+    fs = glCreateShader(GL_FRAGMENT_SHADER);
+    fx = calloc(1, sizeof(*fx));
+    if (!vs || !fs || !fx) goto fail;
+    glShaderSource(fs, 4, parts, NULL);
+    glCompileShader(fs);
+    glGetShaderiv(fs, GL_COMPILE_STATUS, &ok);
+    if (!ok) {
+        /* The driver's own words: they name the line. */
+        if (error && error_len) {
+            glGetShaderInfoLog(fs, (GLsizei)error_len - 1, &n, error);
+            error[n] = '\0';
+            while (n > 0 && (error[n - 1] == '\n' || error[n - 1] == ' ')) error[--n] = '\0';
+        }
+        goto fail;
+    }
+    fx->prog = glCreateProgram();
+    glAttachShader(fx->prog, vs);
+    glAttachShader(fx->prog, fs);
+    glBindAttribLocation(fx->prog, 0, "pos");
+    glBindAttribLocation(fx->prog, 1, "uv");
+    glLinkProgram(fx->prog);
+    glGetProgramiv(fx->prog, GL_LINK_STATUS, &ok);
+    if (!ok) {
+        if (error && error_len) {
+            glGetProgramInfoLog(fx->prog, (GLsizei)error_len - 1, &n, error);
+            error[n] = '\0';
+        }
+        glDeleteProgram(fx->prog);
+        goto fail;
+    }
+    glDeleteShader(vs);
+    glDeleteShader(fs);
+    fx->still_loc = glGetUniformLocation(fx->prog, "owe_still");
+    fx->mask_loc = glGetUniformLocation(fx->prog, "owe_mask");
+    fx->uv_offset_loc = glGetUniformLocation(fx->prog, "owe_uv_offset");
+    fx->uv_scale_loc = glGetUniformLocation(fx->prog, "owe_uv_scale");
+    fx->strength_loc = glGetUniformLocation(fx->prog, "owe_strength");
+    fx->grey_loc = glGetUniformLocation(fx->prog, "owe_grey");
+    fx->area_loc = glGetUniformLocation(fx->prog, "area");
+    fx->phase_loc = glGetUniformLocation(fx->prog, "phase");
+    fx->seconds_loc = glGetUniformLocation(fx->prog, "seconds");
+    fx->pixel_loc = glGetUniformLocation(fx->prog, "pixel");
+    fx->aspect_loc = glGetUniformLocation(fx->prog, "aspect");
+    glUseProgram(fx->prog);
+    glUniform1i(fx->still_loc, 0);
+    glUniform1i(fx->mask_loc, 1);
+    glUseProgram(0);
+    return fx;
+fail:
+    if (vs) glDeleteShader(vs);
+    if (fs) glDeleteShader(fs);
+    free(fx);
+    return NULL;
+}
+
+void owe_egl_effect_free(struct owe_effect *fx) {
+    if (!fx) return;
+    glDeleteProgram(fx->prog);
+    free(fx);
+}
+
+int owe_egl_effect_value(struct owe_effect *fx, const char *name) {
+    GLint count = 0, i;
+    if (!fx || !name) return 0;
+    glGetProgramiv(fx->prog, GL_ACTIVE_UNIFORMS, &count);
+    for (i = 0; i < count; i++) {
+        char found[128];
+        GLsizei len = 0;
+        GLint size = 0;
+        GLenum type = 0;
+        glGetActiveUniform(fx->prog, (GLuint)i, sizeof(found), &len, &size, &type, found);
+        if (strcmp(found, name) != 0) continue;
+        return type == GL_FLOAT ? 1 : type == GL_FLOAT_VEC2 ? 2 : type == GL_FLOAT_VEC3 ? 3 : type == GL_FLOAT_VEC4 ? 4 : 0;
+    }
+    return 0;
+}
+
+void owe_egl_draw_effect(struct owe_egl *egl, struct owe_output *out, struct owe_effect *fx,
+                         const struct owe_effect_draw *d) {
+    int out_w, out_h, i;
+    float scale_u, scale_v, off_u, off_v, left, right, top, bottom;
+    if (!egl || !out || !fx || !d || !d->still || !d->mask || d->still_w <= 0 || d->still_h <= 0) return;
+    if (d->strength <= 0.0f) return;
+    if (owe_egl_prepare_output(egl, out) != 0) return;
+    owe_output_buffer_size(out, &out_w, &out_h);
+    if (out_w <= 0 || out_h <= 0) return;
+    still_fit(d->still_w, d->still_h, out_w, out_h, &scale_u, &scale_v, &off_u, &off_v);
+    /* Only the area is drawn to. */
+    left = (d->at[0] - off_u) / scale_u * (float)out_w - 1.0f;
+    right = (d->at[0] + d->at[2] - off_u) / scale_u * (float)out_w + 1.0f;
+    top = (d->at[1] - off_v) / scale_v * (float)out_h - 1.0f;
+    bottom = (d->at[1] + d->at[3] - off_v) / scale_v * (float)out_h + 1.0f;
+    if (left < 0) left = 0;
+    if (top < 0) top = 0;
+    if (right > (float)out_w) right = (float)out_w;
+    if (bottom > (float)out_h) bottom = (float)out_h;
+    if (right <= left || bottom <= top) return;
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
+    glEnable(GL_SCISSOR_TEST);
+    glScissor((GLint)floorf(left), (GLint)floorf((float)out_h - bottom), (GLsizei)ceilf(right - left),
+              (GLsizei)ceilf(bottom - top));
+    glUseProgram(fx->prog);
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, d->mask);
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, d->still);
+    glUniform2f(fx->uv_offset_loc, off_u, off_v);
+    glUniform2f(fx->uv_scale_loc, scale_u, scale_v);
+    glUniform1f(fx->strength_loc, d->strength > 1.0f ? 1.0f : d->strength);
+    glUniform1f(fx->grey_loc, d->mask_grey ? 1.0f : 0.0f);
+    glUniform4f(fx->area_loc, d->at[0], d->at[1], d->at[2], d->at[3]);
+    glUniform1f(fx->phase_loc, d->phase);
+    glUniform1f(fx->seconds_loc, d->seconds);
+    glUniform2f(fx->pixel_loc, 1.0f / (float)d->still_w, 1.0f / (float)d->still_h);
+    glUniform1f(fx->aspect_loc, (float)d->still_w / (float)d->still_h);
+    for (i = 0; i < d->value_count; i++) {
+        GLint where = glGetUniformLocation(fx->prog, d->values[i].name);
+        const float *v = d->values[i].v;
+        if (where < 0) continue;
+        switch (d->values[i].count) {
+        case 1: glUniform1f(where, v[0]); break;
+        case 2: glUniform2f(where, v[0], v[1]); break;
+        case 3: glUniform3f(where, v[0], v[1], v[2]); break;
+        case 4: glUniform4f(where, v[0], v[1], v[2], v[3]); break;
+        default: break;
+        }
+    }
+    glBindVertexArray(egl->blit.vao);
+    glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    glBindVertexArray(0);
+    glUseProgram(0);
+    glDisable(GL_SCISSOR_TEST);
 }
