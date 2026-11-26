@@ -1,4 +1,33 @@
+#include <stdbool.h>
+#include <epoxy/gl.h>
+#include <EGL/egl.h>
+#include <wayland-egl.h>
+
+/* Record whether a window is given its size before or after its surface is
+ * first made current. */
+static int window_resizes;
+static int resized_w;
+static int resized_h;
+static bool current_before_resize;
+static EGLSurface watched_surface;
+static EGLBoolean test_make_current(EGLDisplay display, EGLSurface draw, EGLSurface read, EGLContext context) {
+    if (draw == watched_surface && draw != EGL_NO_SURFACE && !window_resizes) current_before_resize = true;
+    return eglMakeCurrent(display, draw, read, context);
+}
+static void test_window_resize(struct wl_egl_window *window, int width, int height, int dx, int dy) {
+    (void)window;
+    (void)dx;
+    (void)dy;
+    window_resizes++;
+    resized_w = width;
+    resized_h = height;
+}
+
+#define eglMakeCurrent test_make_current
+#define wl_egl_window_resize test_window_resize
 #include "../src/render/egl.c"
+#undef eglMakeCurrent
+#undef wl_egl_window_resize
 #include <stdio.h>
 
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #x); exit(1); } } while (0)
@@ -66,6 +95,25 @@ static void check_api(EGLDisplay display, bool gles) {
     owe_egl_tex_free(&egl, texture);
     CHECK(glGetError() == GL_NO_ERROR);
     owe_egl_destroy_output(&egl, &drawn);
+    /* A new output's window must have its size before its surface is first made
+     * current. Mesa takes the surface's first buffer at the size the window has
+     * then, so a later resize leaves the first frame in the 64x64 the window is
+     * created with. */
+    EGLSurface fresh = eglCreatePbufferSurface(display, config, size);
+    CHECK(fresh != EGL_NO_SURFACE);
+    owe_output_t sized = {.egl_surface = fresh, .egl_window = (struct wl_egl_window *)&sized,
+                          .egl_w = 64, .egl_h = 64, .width = 1920, .height = 1080, .scale = 1};
+    watched_surface = fresh;
+    window_resizes = 0;
+    current_before_resize = false;
+    CHECK(owe_egl_prepare_output(&egl, &sized) == 0);
+    CHECK(window_resizes == 1 && resized_w == 1920 && resized_h == 1080);
+    CHECK(!current_before_resize);
+    CHECK(owe_egl_prepare_output(&egl, &sized) == 0);
+    CHECK(window_resizes == 1);
+    watched_surface = EGL_NO_SURFACE;
+    sized.egl_window = NULL;
+    owe_egl_destroy_output(&egl, &sized);
     glDeleteBuffers(1, &egl.blit.vbo);
     glDeleteVertexArrays(1, &egl.blit.vao);
     glDeleteProgram(egl.blit.prog);
