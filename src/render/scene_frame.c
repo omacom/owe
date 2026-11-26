@@ -192,7 +192,7 @@ int owe_scene_frame_main(int argc, char **argv) {
     for (i = 0; i < desc.piece_count; i++) {
         const struct owe_scene_piece *piece = &desc.pieces[i];
         if (!(arriving ? piece->arrive.listed : piece->idle.listed)) continue;
-        look.pictures[i] = texture(egl, piece->picture, 16384, 16384, NULL, NULL, NULL);
+        look.pictures[i] = texture(egl, piece->picture, 16384, 16384, NULL, NULL, &look.picture_grey[i]);
         if (!look.pictures[i]) goto done;
         if (*piece->behind && !(look.behinds[i] = texture(egl, piece->behind, 16384, 16384, NULL, NULL, NULL))) goto done;
         if (piece->inside >= 0) used[piece->inside] = true;

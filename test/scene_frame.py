@@ -82,6 +82,14 @@ with tempfile.TemporaryDirectory(prefix="owe-scene-frame-") as tmp:
     check(near(seen(21, 33), GROUND) and near(seen(25, 33), RED) and near(seen(30, 33), RED) and near(seen(32, 33), GROUND),
           "a quarter through its swing the piece is four pixels over", str([seen(x, 33) for x in (21, 25, 30, 32)]))
 
+    # A piece that takes its colour from the still needs only a shape: a grey picture, white where it is solid, does as well.
+    png(root / "pieces/square-shape.png", CUT, CUT, lambda x, y: (solid(x, y),) * 3)
+    shaped = json.loads(json.dumps(scene))
+    shaped["pieces"][0]["picture"] = "pieces/square-shape.png"
+    (root / "shaped.jsonc").write_text(json.dumps(shaped))
+    check(draw(root / "shaped.jsonc", *common[1:], "--at", 1, "--out", root / "shaped.ppm").returncode == 0, "a piece with a grey shape is drawn")
+    check((root / "shaped.ppm").read_bytes() == (root / "moved.ppm").read_bytes(), "a grey shape draws the piece as a cut-out one does")
+
     check(draw(*common, "--at", 0, "--frames", 3, "--ppm", "--out", root / "run").returncode == 0, "three frames are drawn")
     check(sorted(p.name for p in (root / "run").iterdir()) == ["0000.ppm", "0001.ppm", "0002.ppm"], "frames are numbered files")
     # At four frames a second the second frame is a quarter of a second in, where the swing is about a pixel and a half out.

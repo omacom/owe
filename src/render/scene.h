@@ -70,6 +70,7 @@ struct owe_scene_look {
     unsigned int behinds[32];
     unsigned int masks[8];
     bool mask_grey[8];           /* a shape with no transparency is its brightness */
+    bool picture_grey[32];       /* and so is a piece's picture, when the piece takes its colour from the still */
     struct owe_effect *effects[8]; /* compiled, in the order the scene lists them */
 };
 

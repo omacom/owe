@@ -35,6 +35,7 @@ void owe_egl_draw_texture(struct owe_egl *egl, struct owe_output *out, unsigned 
  * of the still: left, top, width and height. */
 struct owe_piece_draw {
     unsigned int shape;      /* the piece's picture: where it is, and its colour if it has its own */
+    bool shape_grey;         /* the picture is only a shape: its brightness is how solid the piece is */
     unsigned int still;      /* the still, for a piece that takes its colour from it; else 0 */
     unsigned int behind;     /* what the still shows where that piece was; goes with `still` */
     unsigned int inside;     /* a shape the piece is kept inside; 0 with inside_at for the whole of that place */

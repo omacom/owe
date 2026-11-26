@@ -44,6 +44,7 @@ struct owe_gl_piece {
     GLint inside_size_loc;
     GLint inside_on_loc, inside_grey_loc;
     GLint from_still_loc;
+    GLint shape_grey_loc;
     int ready;
 };
 
@@ -596,6 +597,7 @@ static const char *piece_fs_src = "in vec2 vuv;\n"
                                   "uniform float inside_on;\n"
                                   "uniform float inside_grey;\n"
                                   "uniform float from_still;\n"
+                                  "uniform float shape_grey;\n"
                                   "out vec4 frag;\n"
                                   "float within(vec2 v) {\n"
                                   "  return step(0.0, v.x) * step(v.x, 1.0) * step(0.0, v.y) * step(v.y, 1.0);\n"
@@ -606,6 +608,7 @@ static const char *piece_fs_src = "in vec2 vuv;\n"
                                   "  vec2 home = middle + (place - shift - middle) / size;\n"
                                   "  vec2 uv = (home - at_pos) / at_size;\n"
                                   "  vec4 piece = texture(shape, uv);\n"
+                                  "  if (shape_grey > 0.5) piece = vec4(1.0, 1.0, 1.0, piece.r);\n"
                                   "  float keep = fade * within(uv);\n"
                                   "  if (inside_on > 0.5) {\n"
                                   "    vec2 k = (place - inside_pos) / inside_size;\n"
@@ -662,6 +665,7 @@ static int piece_init(struct owe_gl_piece *p, bool gles) {
     p->inside_on_loc = glGetUniformLocation(p->prog, "inside_on");
     p->inside_grey_loc = glGetUniformLocation(p->prog, "inside_grey");
     p->from_still_loc = glGetUniformLocation(p->prog, "from_still");
+    p->shape_grey_loc = glGetUniformLocation(p->prog, "shape_grey");
     glUseProgram(p->prog);
     glUniform1i(p->shape_loc, 0);
     glUniform1i(p->still_loc, 1);
@@ -743,6 +747,7 @@ void owe_egl_draw_piece(struct owe_egl *egl, struct owe_output *out, const struc
     glUniform1f(p->inside_on_loc, d->inside_at ? 1.0f : 0.0f);
     glUniform1f(p->inside_grey_loc, d->inside_grey || !d->inside ? 1.0f : 0.0f);
     glUniform1f(p->from_still_loc, d->still && d->behind ? 1.0f : 0.0f);
+    glUniform1f(p->shape_grey_loc, d->shape_grey ? 1.0f : 0.0f);
     glUniform2f(p->uv_offset_loc, off_u, off_v);
     glUniform2f(p->uv_scale_loc, scale_u, scale_v);
     glUniform2f(p->at_pos_loc, d->at[0], d->at[1]);

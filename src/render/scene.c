@@ -630,6 +630,8 @@ void owe_scene_draw(struct owe_egl *egl, struct owe_output *out, const struct ow
         if (look->behinds[i] && !piece->own_colour) {
             draw.still = look->still;
             draw.behind = look->behinds[i];
+            /* Its picture need only be its shape, and may be a grey one. */
+            draw.shape_grey = look->picture_grey[i];
         }
         if (piece->inside >= 0) {
             draw.inside = look->masks[piece->inside];
@@ -653,6 +655,7 @@ void owe_scene_render_output(struct owe_scene *s, struct owe_output *out) {
     look.still = owe_still_texture(s->still, &look.still_w, &look.still_h);
     for (i = 0; i < OWE_SCENE_MAX_PIECES; i++) {
         look.pictures[i] = owe_still_texture(s->pictures[i], NULL, NULL);
+        look.picture_grey[i] = s->pictures[i] && owe_still_opaque(s->pictures[i]);
         look.behinds[i] = owe_still_texture(s->behinds[i], NULL, NULL);
     }
     for (i = 0; i < OWE_SCENE_MAX_AREAS; i++) {
