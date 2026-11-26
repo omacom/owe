@@ -244,7 +244,7 @@ static int daemon_poll_timeout_ms(int64_t now, int64_t tick_ms, bool have_job,
     int timeout = -1;
     if ((g_app.intro_active && (g_app.intro_phase == OWE_INTRO_PREPARING ||
                                 (!g_app.intro_shown && !g_app.intro_renderer_lost))) ||
-        g_app.handoff_pending || g_app.transition_release_pending) {
+        g_app.handoff_pending || g_app.transition_release_pending || g_app.scene_settle_until_ms) {
         return 16;
     }
     if (have_job || g_app.media_pending || g_app.intro_active ||
@@ -1377,6 +1377,8 @@ void owed_app_apply_policy(void) {
                 OWE_INFO("engine: shell");
                 return;
             }
+            /* The scene is settling to its still; the shell takes over next. */
+            if (app->scene_settle_until_ms) return;
             if (shell_starting()) return;
         } else {
             resync_shell();
@@ -1597,6 +1599,7 @@ static void set_source(const char *path, owe_media_kind_t kind) {
         app->transition_from[0] = '\0';
     }
     app->source_generation++;
+    app->scene_settle_until_ms = 0;
     app->shell_retry_at_ms = 0;
     app->renderer_retry_at_ms = 0;
     snprintf(app->source_path, sizeof(app->source_path), "%s", path);

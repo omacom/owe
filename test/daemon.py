@@ -42,6 +42,7 @@ showing = False
 pending = None
 intro_end = None
 transition_end = None
+resting_at = None
 while True:
     client, _ = server.accept()
     with client:
@@ -54,7 +55,7 @@ while True:
         if not data:
             continue
         request = json.loads(data)
-        log.write(json.dumps(request) + "\\n")
+        log.write(json.dumps(dict(request, at=time.monotonic())) + "\\n")
         log.flush()
         command = request["cmd"]
         reply = {"status": "ok"}
@@ -83,13 +84,14 @@ while True:
                     state["ready"] = False
                 else:
                     state["ready"] = request["kind"] in ("video", "scene")
-            state["resting"] = False
+            resting_at = None
         elif command == "pause":
             state["paused"] = True
-            state["resting"] = state["kind"] == "scene"
+            # A scene takes a moment to settle to its still.
+            resting_at = time.monotonic() + 0.3 if state["kind"] == "scene" else None
         elif command == "resume":
             state["paused"] = False
-            state["resting"] = False
+            resting_at = None
         elif command == "cancel-load":
             pending = None
         elif command == "intro-show":
@@ -119,6 +121,7 @@ while True:
                 state.update(path=pending[1], kind=pending[2], ready=True)
                 pending = None
             reply = dict(state)
+            reply["resting"] = bool(resting_at and time.monotonic() >= resting_at)
             if pending:
                 reply["ready"] = False
         try:
@@ -395,9 +398,15 @@ def main():
                 marker = len(commands_path.read_text().splitlines())
                 check(call(daemon_socket, "set", path=str(root / "backgrounds/road.png"))["status"] == "ok",
                       "daemon accepts another still while a scene plays")
-                time.sleep(1)
-                since = [json.loads(line).get("cmd") for line in commands_path.read_text().splitlines()[marker:]]
-                check("pause" in since, "a scene is asked to settle before it gives way", json.dumps(since))
+                time.sleep(1.5)
+                since = [json.loads(line) for line in commands_path.read_text().splitlines()[marker:]]
+                paused = [entry["at"] for entry in since if entry["cmd"] == "pause"]
+                check(paused, "a scene is asked to settle before it gives way", json.dumps(since))
+                # The shell cannot take the still in this run, so the renderer is given it, and
+                # only once the scene has settled: a still loaded sooner would cut the scene off.
+                taken = [entry["at"] for entry in since if entry["cmd"] == "load" and entry.get("kind") == "still"]
+                check(taken and taken[0] - paused[0] >= 0.25, "nothing replaces a scene until it has settled",
+                      json.dumps(since))
 
                 # A scene the renderer will not take leaves the still to its loop.
                 (root / "backgrounds/scenes/noscene-pond").mkdir(parents=True)
