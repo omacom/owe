@@ -801,12 +801,13 @@ static const char *effect_before = "in vec2 vuv;\n"
                                    /* Lines of the effect's own are counted from its first. */
                                    "#line 1\n";
 
-/* The effect's answer goes into the still by the area's shape and the
- * strength the player gives it: none of either leaves the still as it is. */
+/* The effect's answer goes over what is already drawn, by the area's shape
+ * and the strength the player gives it: none of either leaves what is there
+ * as it is, so effects whose areas overlap each keep their own work. */
 static const char *effect_after = "\nvoid main() {\n"
                                   "  vec2 uv = vuv * owe_uv_scale + owe_uv_offset;\n"
-                                  "  vec3 was = still(uv).rgb;\n"
-                                  "  frag = vec4(mix(was, effect(uv).rgb, mask(uv) * owe_strength), 1.0);\n"
+                                  "  float share = clamp(mask(uv) * owe_strength, 0.0, 1.0);\n"
+                                  "  frag = vec4(clamp(effect(uv).rgb, 0.0, 1.0) * share, share);\n"
                                   "}\n";
 
 struct owe_effect *owe_egl_effect_new(struct owe_egl *egl, const char *source, char *error, size_t error_len) {
@@ -917,7 +918,8 @@ void owe_egl_draw_effect(struct owe_egl *egl, struct owe_output *out, struct owe
     if (bottom > (float)out_h) bottom = (float)out_h;
     if (right <= left || bottom <= top) return;
     glDisable(GL_DEPTH_TEST);
-    glDisable(GL_BLEND);
+    glEnable(GL_BLEND);
+    glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE);
     glEnable(GL_SCISSOR_TEST);
     glScissor((GLint)floorf(left), (GLint)floorf((float)out_h - bottom), (GLsizei)ceilf(right - left),
               (GLsizei)ceilf(bottom - top));
@@ -952,4 +954,5 @@ void owe_egl_draw_effect(struct owe_egl *egl, struct owe_output *out, struct owe
     glBindVertexArray(0);
     glUseProgram(0);
     glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_BLEND);
 }

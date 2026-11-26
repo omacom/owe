@@ -116,7 +116,7 @@ The shader writes one function, `vec4 effect(vec2 uv)`: the colour at a place in
 | `vec4 area` | The area's left, top, width and height. |
 | `float grain(vec2 p)`, `float cloud(vec2 p)` | A fixed random number for each `p`, and the same made smooth. |
 
-The player mixes the effect's answer into the still by the area's shape, so an effect cannot reach outside its area, and fades it in and out, so it starts and stops at the still. The source must be valid as both GLSL 1.50 and GLSL ES 3.00. A shader that does not compile, or a value its shader does not take, refuses the scene and says why.
+The player lays the effect's answer over what is already drawn, by the area's shape, so an effect cannot reach outside its area and effects on overlapping areas each keep their own work. It fades an effect in and out, so it starts and stops at the still. The source must be valid as both GLSL 1.50 and GLSL ES 3.00. A shader that does not compile, or a value its shader does not take, refuses the scene and says why.
 
 ## What the player holds a scene to
 

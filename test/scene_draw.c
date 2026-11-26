@@ -178,6 +178,21 @@ static void check_api(EGLDisplay display, bool gles) {
     read_screen();
     CHECK(abs(seen(18, 28)[0] - 20) <= 1 && abs(seen(18, 28)[1] - 30) <= 1 && abs(seen(18, 28)[2] - 168) <= 1);
     CHECK(is(seen(26, 28), 40, 60, 80) && is(seen(10, 28), 40, 60, 80));
+    /* A second effect whose area overlaps leaves the first one's work wherever its own shape is empty:
+     * here its place is half a cut to the left, so its empty right half lies over what the first painted. */
+    const float beside[4] = {8.0f / SIDE, 26.0f / SIDE, (float)CUT / SIDE, (float)CUT / SIDE};
+    const float red[] = {1, 0, 0};
+    struct owe_effect_value second[] = {{"colour", red, 3}};
+    struct owe_effect_draw over = redraw;
+    redraw.strength = 1.0f;
+    over.strength = 1.0f;
+    over.at = beside;
+    over.values = second;
+    owe_egl_draw_texture(&egl, &out, still, 1.0f, SIDE, SIDE);
+    owe_egl_draw_effect(&egl, &out, fill, &redraw);
+    owe_egl_draw_effect(&egl, &out, fill, &over);
+    read_screen();
+    CHECK(is(seen(18, 28), 0, 0, 255) && is(seen(10, 28), 255, 0, 0));
     /* With no strength it draws nothing, and a shader that is wrong is refused with the compiler's words. */
     redraw.strength = 0.0f;
     owe_egl_draw_texture(&egl, &out, still, 1.0f, SIDE, SIDE);
