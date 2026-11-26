@@ -112,3 +112,9 @@ test('transition', transition_test, timeout : 90,
 # This test needs an explicitly started daemon and a video wallpaper.
 executable('owe-live-test', files('live.c') + common_sources + yyjson_sources,
   include_directories : [common_inc, yyjson_inc])
+
+scene_desc_test = executable('owe-scene-desc-test',
+  files('scene_desc.c', '../src/render/scene_desc.c') + yyjson_sources,
+  include_directories : [yyjson_inc],
+  dependencies : [m_dep])
+test('scene-desc', scene_desc_test)
