@@ -60,6 +60,8 @@ const char *owe_kind_to_string(owe_media_kind_t kind) {
         return "video";
     case OWE_KIND_GIF:
         return "gif";
+    case OWE_KIND_SCENE:
+        return "scene";
     default:
         return "unknown";
     }

@@ -61,6 +61,8 @@ static bool battery_poster_active(void) {
 #define THEME_LOOP_DELAY_MS 1500
 
 static void set_source(const char *path, owe_media_kind_t kind);
+/* The longest a scene is waited for to settle to its still. */
+#define SCENE_SETTLE_MS 1000
 #define SHELL_START_RETRY_MS 1000
 #define SHELL_RESYNC_RETRY_MS 5000
 /* How long an intro held on its first frame waits to be asked to play. */
@@ -103,7 +105,8 @@ static int load_if_needed(const char *path, const char *kind) {
         return 0;
     }
     if (owed_supervisor_load(app->supervisor, path, kind,
-                             strcmp(kind, "video") == 0 ? app->transition_from : NULL,
+                             strcmp(kind, "video") == 0 ? app->transition_from :
+                             strcmp(kind, "scene") == 0 ? app->loop_still : NULL,
                              app->handoff_pending) != 0) {
         OWE_ERROR("renderer load failed: %s", path);
         /* The renderer keeps its previous media after a rejected load, so
@@ -285,11 +288,34 @@ static int daemon_poll_timeout_ms(int64_t now, int64_t tick_ms, bool have_job,
 
 /* Let the shell draw the background and release the renderer, so a still
  * costs only the daemon. */
+/* A scene paused has settled to its still and stopped drawing. */
+static bool scene_resting(void) {
+    char reply[OWE_IPC_MAX_LINE];
+    yyjson_doc *doc;
+    bool resting;
+    if (owed_supervisor_send(g_app.supervisor, "{\"cmd\":\"status\"}", reply, sizeof(reply)) != 0) return true;
+    doc = yyjson_read(reply, strlen(reply), 0);
+    resting = !doc || yyjson_get_bool(yyjson_obj_get(yyjson_doc_get_root(doc), "resting"));
+    yyjson_doc_free(doc);
+    return resting;
+}
+
 static int switch_to_shell(void) {
     owed_app_t *app = &g_app;
     int64_t now = monotonic_ms();
     bool held = false;
     if (now < app->shell_retry_at_ms) return -1;
+    /* A scene's pieces are wherever they have got to. It settles to its still
+     * first, a few tenths of a second, so the shell's still takes over from
+     * the same picture and nothing jumps. */
+    if (strcmp(app->loaded_kind, "scene") == 0 && owed_render_is_alive(app->supervisor)) {
+        if (!app->scene_settle_until_ms) {
+            if (app->render_paused != 1 && owed_supervisor_pause(app->supervisor) == 0) app->render_paused = 1;
+            app->scene_settle_until_ms = now + SCENE_SETTLE_MS;
+        }
+        if (now < app->scene_settle_until_ms && !scene_resting()) return -1;
+    }
+    app->scene_settle_until_ms = 0;
     /* The shell call can take seconds, and the renderer parks 2 seconds after
      * it. Hold the current video frame for that time instead of decoding and
      * committing new frames under the shell's still. */
@@ -1282,6 +1308,14 @@ static void process_theme_loop(void) {
     if (*app->loop_still && strcmp(app->fail_path, app->loop_path) == 0) {
         copy_path(app->loop_failed, sizeof(app->loop_failed), app->loop_path);
     }
+    /* A scene that will not play leaves the still to its video loop. */
+    if (app->loop_kind == OWE_KIND_SCENE && *app->loop_video && !*app->loop_still &&
+        strcmp(app->loop_failed, app->loop_path) == 0) {
+        OWE_INFO("the scene did not play, trying the theme loop");
+        copy_path(app->loop_path, sizeof(app->loop_path), app->loop_video);
+        app->loop_kind = OWE_KIND_VIDEO;
+        app->loop_failed[0] = '\0';
+    }
     want = !(app->hypr && owed_hypr_animations_off(app->hypr)) &&
            !owed_power_on_battery(app->power) &&
            strcmp(app->loop_failed, app->loop_path) != 0;
@@ -1295,8 +1329,8 @@ static void process_theme_loop(void) {
         }
     } else if (want && monotonic_ms() >= app->loop_at_ms && strcmp(app->source_kind, "still") == 0) {
         copy_path(app->loop_still, sizeof(app->loop_still), app->source_path);
-        OWE_INFO("theme loop: %s", app->loop_path);
-        set_source(app->loop_path, OWE_KIND_VIDEO);
+        OWE_INFO("theme %s: %s", app->loop_kind == OWE_KIND_SCENE ? "scene" : "loop", app->loop_path);
+        set_source(app->loop_path, app->loop_kind);
     }
 }
 
@@ -1381,6 +1415,11 @@ void owed_app_apply_policy(void) {
     }
     copy_path(video, sizeof(video), app->source_path);
 
+    if (strcmp(app->source_kind, "scene") == 0) {
+        app->fail_path[0] = '\0';
+        finish_media(app->source_path, "scene");
+        return;
+    }
     if (strcmp(app->source_kind, "gif") == 0) {
         if (owed_transcode_gif_path(app->source_path, app->config.gif_fps, app->config.gif_crf,
                                     app->config.transcode_max_width,
@@ -1513,8 +1552,18 @@ void owed_app_on_background_changed(const char *resolved_path) {
     }
     app->loop_still[0] = '\0';
     app->loop_failed[0] = '\0';
-    if (kind != OWE_KIND_STILL || owe_theme_loop_for(resolved_path, app->loop_path, sizeof(app->loop_path)) != 0) {
-        app->loop_path[0] = '\0';
+    /* A still's scene moves it in place of its video loop. The loop is kept
+     * to fall back on if the scene will not play. */
+    app->loop_path[0] = '\0';
+    app->loop_video[0] = '\0';
+    if (kind == OWE_KIND_STILL) {
+        if (owe_theme_loop_for(resolved_path, app->loop_video, sizeof(app->loop_video)) != 0) app->loop_video[0] = '\0';
+        if (owe_theme_scene_for(resolved_path, app->loop_path, sizeof(app->loop_path)) == 0) {
+            app->loop_kind = OWE_KIND_SCENE;
+        } else {
+            copy_path(app->loop_path, sizeof(app->loop_path), app->loop_video);
+            app->loop_kind = OWE_KIND_VIDEO;
+        }
     }
     app->loop_at_ms = monotonic_ms() + THEME_LOOP_DELAY_MS;
     set_source(resolved_path, kind);
@@ -1565,7 +1614,7 @@ void owed_app_on_policy_changed(void) {
 
 static void apply_manual_pause(void) {
     owed_app_t *app = &g_app;
-    if (strcmp(app->loaded_kind, "video") != 0 || !*app->loaded_path) {
+    if ((strcmp(app->loaded_kind, "video") != 0 && strcmp(app->loaded_kind, "scene") != 0) || !*app->loaded_path) {
         return;
     }
     apply_playback_state();

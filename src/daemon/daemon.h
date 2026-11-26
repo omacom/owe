@@ -1,5 +1,6 @@
 #pragma once
 
+#include "strutil.h"
 #include <stdbool.h>
 #include <stdint.h>
 #include <time.h>
@@ -75,6 +76,12 @@ typedef struct owed_app {
     /* The linked still's theme loop, the still while that loop is the source,
      * a loop that failed, and when a newly linked still may start its loop. */
     char loop_path[4096];
+    /* What loop_path is: a scene, or a video. */
+    owe_media_kind_t loop_kind;
+    /* The still's video loop, kept to fall back on when its scene will not play. */
+    char loop_video[4096];
+    /* A scene was asked to settle to its still before the shell takes over. */
+    int64_t scene_settle_until_ms;
     char loop_still[4096];
     char loop_failed[4096];
     int64_t loop_at_ms;

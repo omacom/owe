@@ -66,7 +66,8 @@ while True:
             state["eof"] = False
             state.update(has_transition=bool(request.get("from")), transition_busy=False,
                          transition_done=False)
-            if "reject" in request["path"]:
+            # A still's scene and its loop share its name, so a scene alone is refused by its kind.
+            if "reject" in request["path"] or (request["kind"] == "scene" and "noscene" in request["path"]):
                 reply = {"status": "error", "message": "rejected"}
             elif "slow" in request["path"]:
                 if request.get("async"):
@@ -81,11 +82,14 @@ while True:
                     state["error"] = "decode failed"
                     state["ready"] = False
                 else:
-                    state["ready"] = request["kind"] == "video"
+                    state["ready"] = request["kind"] in ("video", "scene")
+            state["resting"] = False
         elif command == "pause":
             state["paused"] = True
+            state["resting"] = state["kind"] == "scene"
         elif command == "resume":
             state["paused"] = False
+            state["resting"] = False
         elif command == "cancel-load":
             pending = None
         elif command == "intro-show":
@@ -348,6 +352,65 @@ def main():
                         break
                     time.sleep(0.1)
                 check(retried, "choosing a still again retries its failed loop")
+
+                def loads():
+                    return [json.loads(line) for line in commands_path.read_text().splitlines()
+                            if json.loads(line).get("cmd") == "load"]
+
+                def wait_for_load(suffix, seconds=8):
+                    deadline = time.monotonic() + seconds
+                    while time.monotonic() < deadline:
+                        if loads() and loads()[-1].get("path", "").endswith(suffix):
+                            return loads()[-1]
+                        time.sleep(0.1)
+                    return None
+
+                # The checks above leave the wallpaper paused by hand. A scene that
+                # is paused is already at rest, so it plays for these.
+                was_paused = call(daemon_socket, "status")["manual_pause"]
+                check(call(daemon_socket, "resume")["status"] == "ok", "resume accepted before the scene checks")
+
+                # A still with a scene beside it has the scene move it, even when
+                # it has a video loop too, and the scene is given its still.
+                (root / "backgrounds/scenes/lake").mkdir(parents=True)
+                (root / "backgrounds/lake.png").write_bytes(b"test")
+                (root / "backgrounds/scenes/lake/scene.jsonc").write_text("{}")
+                (root / "backgrounds/loops/lake.mp4").write_bytes(b"test")
+                check(call(daemon_socket, "set", path=str(root / "backgrounds/lake.png"))["status"] == "ok",
+                      "daemon accepts a still with a scene")
+                load = wait_for_load("backgrounds/scenes/lake/scene.jsonc")
+                check(load is not None, "a still with a scene plays the scene, not its loop",
+                      json.dumps(loads()[-3:]))
+                check(load["kind"] == "scene" and load.get("still", "").endswith("backgrounds/lake.png"),
+                      "the scene is loaded with the still it belongs to", json.dumps(load))
+                check(os.readlink(current / "background").endswith("backgrounds/lake.png"),
+                      "the background link keeps naming the scene's still")
+                deadline = time.monotonic() + 4
+                while time.monotonic() < deadline and not call(daemon_socket, "status")["media_ready"]:
+                    time.sleep(0.1)
+                check(call(daemon_socket, "status")["media_ready"], "the scene becomes ready")
+
+                # Before the shell takes the background back, a scene is told to
+                # settle to its still, so the two show the same picture.
+                marker = len(commands_path.read_text().splitlines())
+                check(call(daemon_socket, "set", path=str(root / "backgrounds/road.png"))["status"] == "ok",
+                      "daemon accepts another still while a scene plays")
+                time.sleep(1)
+                since = [json.loads(line).get("cmd") for line in commands_path.read_text().splitlines()[marker:]]
+                check("pause" in since, "a scene is asked to settle before it gives way", json.dumps(since))
+
+                # A scene the renderer will not take leaves the still to its loop.
+                (root / "backgrounds/scenes/noscene-pond").mkdir(parents=True)
+                (root / "backgrounds/noscene-pond.png").write_bytes(b"test")
+                (root / "backgrounds/scenes/noscene-pond/scene.jsonc").write_text("{}")
+                (root / "backgrounds/loops/noscene-pond.mp4").write_bytes(b"test")
+                check(call(daemon_socket, "set", path=str(root / "backgrounds/noscene-pond.png"))["status"] == "ok",
+                      "daemon accepts a still whose scene is broken")
+                load = wait_for_load("backgrounds/loops/noscene-pond.mp4", 12)
+                check(load is not None and load["kind"] == "video", "a scene that will not play falls back to the loop",
+                      json.dumps(loads()[-4:]))
+                if was_paused:
+                    check(call(daemon_socket, "pause")["status"] == "ok", "pause accepted after the scene checks")
 
                 check(call(daemon_socket, "set", path=str(root / "slow.png"))["status"] == "ok",
                       "daemon accepts a slow fallback still")

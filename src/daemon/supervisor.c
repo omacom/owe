@@ -265,7 +265,11 @@ int owed_supervisor_load(struct owed_supervisor *s, const char *path, const char
     char *qf = from && *from ? owe_json_quote(from) : NULL;
     int rc = -1;
     if (qp && qk) {
-        if (qf) {
+        if (strcmp(kind, "scene") == 0) {
+            /* A scene is loaded with the still it belongs to, and starts on it. */
+            if (qf && asprintf(&line, "{\"cmd\":\"load\",\"path\":%s,\"kind\":%s,\"still\":%s}", qp, qk, qf) >= 0)
+                rc = owed_supervisor_send(s, line, reply, sizeof(reply));
+        } else if (qf) {
             if (asprintf(&line, "{\"cmd\":\"load\",\"path\":%s,\"kind\":%s,\"from\":%s,\"hold\":%s}",
                          qp, qk, qf, hold ? "true" : "false") >= 0)
                 rc = owed_supervisor_send(s, line, reply, sizeof(reply));

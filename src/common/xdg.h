@@ -18,5 +18,8 @@ int owe_omarchy_background_link(char *buf, size_t len);
 /* The theme loop beside a still: dir/<stem>.<ext> plays dir/loops/<stem>.mp4
  * in its place, when that file exists. */
 int owe_theme_loop_for(const char *still, char *buf, size_t len);
+/* The scene beside a still: dir/<stem>.<ext> has dir/scenes/<stem>/scene.jsonc
+ * move it, when that file exists. */
+int owe_theme_scene_for(const char *still, char *buf, size_t len);
 
 int owe_mkdir_p(const char *path);
