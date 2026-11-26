@@ -206,6 +206,83 @@ bool owed_app_renderer_expected(void) {
     return g_app.engine == OWE_ENGINE_RENDERER;
 }
 
+static bool need_periodic_tick(void) {
+    return (g_app.hypr && owed_hypr_event_fd(g_app.hypr) < 0) ||
+           g_app.engine == OWE_ENGINE_RENDERER ||
+           owed_render_is_alive(g_app.supervisor);
+}
+
+void owed_app_refresh_monitors_if_idle(void) {
+    if (g_app.hypr && !need_periodic_tick()) {
+        owed_hypr_refresh_monitors(g_app.hypr);
+    }
+}
+
+static void clamp_deadline(int *timeout_ms, int64_t now, int64_t deadline) {
+    int64_t left;
+    if (deadline <= 0) {
+        return;
+    }
+    left = deadline - now;
+    if (left <= 0) {
+        *timeout_ms = 0;
+        return;
+    }
+    if (left > INT_MAX) {
+        left = INT_MAX;
+    }
+    if (*timeout_ms < 0 || left < *timeout_ms) {
+        *timeout_ms = (int)left;
+    }
+}
+
+static int daemon_poll_timeout_ms(int64_t now, int64_t tick_ms, bool have_job,
+                                  bool have_ipc_clients) {
+    int timeout = -1;
+    if ((g_app.intro_active && (g_app.intro_phase == OWE_INTRO_PREPARING ||
+                                (!g_app.intro_shown && !g_app.intro_renderer_lost))) ||
+        g_app.handoff_pending || g_app.transition_release_pending) {
+        return 16;
+    }
+    if (have_job || g_app.media_pending || g_app.intro_active ||
+        owed_supervisor_starting(g_app.supervisor)) {
+        return 200;
+    }
+    if (need_periodic_tick()) {
+        clamp_deadline(&timeout, now, tick_ms ? tick_ms + 2000 : now);
+    }
+    clamp_deadline(&timeout, now, g_app.shell_stop_at_ms);
+    if (g_app.shell_resync ||
+        (strcmp(g_app.source_kind, "still") == 0 && g_app.engine != OWE_ENGINE_SHELL)) {
+        clamp_deadline(&timeout, now, g_app.shell_retry_at_ms);
+    }
+    if (g_app.engine != OWE_ENGINE_RENDERER && *g_app.source_kind &&
+        strcmp(g_app.source_kind, "still") != 0) {
+        clamp_deadline(&timeout, now, g_app.renderer_retry_at_ms);
+    }
+    clamp_deadline(&timeout, now, g_app.renderer_warm_until_ms);
+    if (g_app.login_intro_until_ms > 0 && g_app.engine == OWE_ENGINE_NONE) {
+        clamp_deadline(&timeout, now, g_app.login_intro_until_ms);
+    }
+    if (g_app.shell_enabled == -1 && g_app.shell_start_until_ms > now) {
+        clamp_deadline(&timeout, now, g_app.shell_start_until_ms);
+    }
+    if (*g_app.loop_path && !*g_app.loop_still && !g_app.intro_active &&
+        !g_app.login_intro_until_ms && strcmp(g_app.source_kind, "still") == 0 &&
+        !(g_app.hypr && owed_hypr_animations_off(g_app.hypr)) &&
+        !owed_power_on_battery(g_app.power) &&
+        strcmp(g_app.loop_failed, g_app.loop_path) != 0) {
+        clamp_deadline(&timeout, now, g_app.loop_at_ms);
+    }
+    if (g_app.power && owed_power_fd_system(g_app.power) < 0) {
+        clamp_deadline(&timeout, now, owed_power_retry_at_ms(g_app.power));
+    }
+    if (have_ipc_clients && (timeout < 0 || timeout > 1000)) {
+        timeout = 1000;
+    }
+    return timeout;
+}
+
 /* Let the shell draw the background and release the renderer, so a still
  * costs only the daemon. */
 static int switch_to_shell(void) {
@@ -602,6 +679,7 @@ done:
 
 static int warm_renderer(bool startup) {
     owed_app_t *app = &g_app;
+    owed_app_refresh_monitors_if_idle();
     if (!app->supervisor || app->intro_active ||
         (startup ? app->engine != OWE_ENGINE_NONE :
                    (app->engine != OWE_ENGINE_SHELL || app->shell_enabled != 1)) ||
@@ -671,6 +749,7 @@ int owed_app_start_intro(const char *path, bool from_still, bool hold) {
     if (!path || !*path || !app->supervisor || app->intro_active) {
         return -1;
     }
+    owed_app_refresh_monitors_if_idle();
     /* A waiting login intro is answered once, played or not. */
     login = login_intro_waiting();
     shell_has_still = (app->engine == OWE_ENGINE_SHELL && app->shell_enabled == 1) || login;
@@ -1725,18 +1804,13 @@ int main(int argc, char **argv) {
             pfds[n].events = POLLIN;
             n++;
         }
-        n += owed_ipc_pollfds(g_app.ipc, &pfds[n]);
+        int n_ipc_clients = owed_ipc_pollfds(g_app.ipc, &pfds[n]);
+        n += n_ipc_clients;
 
-        /* Catch the first decoded frame promptly; coarse playback polling is
-         * enough once the shell has handed the background to the renderer.
-         * The shell's still stays on screen until that frame, so a slow poll
-         * delays the switch. */
+        /* Catch the first decoded frame promptly; sleep until the next event
+         * or deadline when the shell holds a still and no renderer is running. */
         rc = poll(pfds, (nfds_t)n,
-                  (g_app.intro_active && (g_app.intro_phase == OWE_INTRO_PREPARING ||
-                                           (!g_app.intro_shown && !g_app.intro_renderer_lost))) ||
-                          g_app.handoff_pending || g_app.transition_release_pending ? 16 :
-                  (have_job || g_app.media_pending || g_app.intro_active ||
-                   owed_supervisor_starting(g_app.supervisor)) ? 200 : 1000);
+                  daemon_poll_timeout_ms(monotonic_ms(), tick_ms, have_job, n_ipc_clients > 0));
         if (rc < 0) {
             if (errno == EINTR) {
                 continue;
@@ -1797,13 +1871,17 @@ int main(int argc, char **argv) {
             owed_app_on_renderer_restarted();
         owed_app_apply_policy();
 
-        if (every_ms(&tick_ms, 2000)) {
-            owed_hypr_tick(g_app.hypr);
-            if (blocklist_active() != blocklisted) {
-                blocklisted = !blocklisted;
-                owed_policy_set_blocklisted(g_app.policy, blocklisted);
-                apply_manual_pause();
+        if (need_periodic_tick()) {
+            if (every_ms(&tick_ms, 2000)) {
+                owed_hypr_tick(g_app.hypr);
+                if (g_app.engine == OWE_ENGINE_RENDERER && blocklist_active() != blocklisted) {
+                    blocklisted = !blocklisted;
+                    owed_policy_set_blocklisted(g_app.policy, blocklisted);
+                    apply_manual_pause();
+                }
             }
+        } else {
+            tick_ms = 0;
         }
     }
 

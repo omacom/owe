@@ -135,6 +135,7 @@ void owed_app_on_renderer_restarted(void);
 void owed_app_apply_policy(void);
 const char *owed_app_engine(void);
 bool owed_app_renderer_expected(void);
+void owed_app_refresh_monitors_if_idle(void);
 
 int owed_app_start_intro(const char *path, bool from_still, bool hold);
 int owed_app_play_intro(void);
