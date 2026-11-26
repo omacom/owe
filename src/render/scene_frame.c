@@ -201,7 +201,7 @@ int owe_scene_frame_main(int argc, char **argv) {
         used[(arriving ? desc.arrive_uses : desc.idle_uses)[i].area] = true;
     }
     for (i = 0; i < desc.area_count; i++) {
-        if (!used[i]) continue;
+        if (!used[i] || !*desc.areas[i].mask) continue;
         look.masks[i] = texture(egl, desc.areas[i].mask, 16384, 16384, NULL, NULL, &look.mask_grey[i]);
         if (!look.masks[i]) goto done;
     }

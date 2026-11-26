@@ -60,7 +60,7 @@ struct owe_scene_part {
 
 struct owe_scene_area {
     char name[OWE_SCENE_NAME];
-    char mask[OWE_SCENE_PATH];
+    char mask[OWE_SCENE_PATH]; /* a picture of its shape; empty for the whole rectangle */
     float at[4]; /* left, top, width, height, as shares of the still */
 };
 

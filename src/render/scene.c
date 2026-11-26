@@ -278,7 +278,8 @@ int owe_scene_load(struct owe_scene *s, const char *path, const char *still, boo
     for (i = 0; i < desc->idle_use_count; i++) used[desc->idle_uses[i].area] = true;
     for (i = 0; s->want_arrive && i < desc->arrive_use_count; i++) used[desc->arrive_uses[i].area] = true;
     for (i = 0; i < desc->area_count; i++) {
-        if (!used[i]) continue;
+        /* An area with no picture of its shape is its whole rectangle. */
+        if (!used[i] || !*desc->areas[i].mask) continue;
         s->masks[i] = start(s, desc->areas[i].mask, 16384, 16384);
         if (!s->masks[i]) {
             snprintf(error, error_len, "the shape of area \"%s\" cannot be loaded", desc->areas[i].name);
@@ -570,7 +571,7 @@ static void draw_effects(struct owe_egl *egl, struct owe_output *out, const stru
                                         .still_h = look->still_h, .at = desc->areas[use->area].at,
                                         .mask_grey = look->mask_grey[use->area], .seconds = use->seconds,
                                         .values = values };
-        if (!look->effects[use->effect] || !draw.mask) continue;
+        if (!look->effects[use->effect]) continue;
         draw.strength = owe_scene_level(&use->strength, t);
         /* The idle part starts at rest: an effect comes up from the still. */
         if (!arriving) draw.strength *= (float)smooth(t / SETTLE);
@@ -630,7 +631,7 @@ void owe_scene_draw(struct owe_egl *egl, struct owe_output *out, const struct ow
             draw.still = look->still;
             draw.behind = look->behinds[i];
         }
-        if (piece->inside >= 0 && look->masks[piece->inside]) {
+        if (piece->inside >= 0) {
             draw.inside = look->masks[piece->inside];
             draw.inside_at = desc->areas[piece->inside].at;
             draw.inside_grey = look->mask_grey[piece->inside];

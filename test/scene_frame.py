@@ -125,6 +125,13 @@ with tempfile.TemporaryDirectory(prefix="owe-scene-frame-") as tmp:
           draw(*effect, "--part", "arrive", "--at", 1.55, "--out", root / "fx-after.ppm").returncode == 0, "an effect in the arrive part is drawn")
     check(near(ppm(root / "fx-before.ppm")(3, 5), GROUND) and near(ppm(root / "fx-after.ppm")(3, 5), (0, 255, 0)),
           "a part gives an effect its own values, and brings it up when it says", str(ppm(root / "fx-after.ppm")(3, 5)))
+    # An area with no picture of its shape is its whole rectangle.
+    whole = dict(painted, areas=[{"name": "corner", "at": [0, 0, 0.25, 0.25]}])
+    (root / "whole.jsonc").write_text(json.dumps(whole))
+    result = draw(root / "whole.jsonc", "--still", root / "still.png", "--size", f"{SIDE}x{SIDE}", "--at", 1, "--out", root / "whole.ppm")
+    seen = ppm(root / "whole.ppm") if result.returncode == 0 else None
+    check(seen and near(seen(3, 5), (0, 0, 255)) and near(seen(12, 5), (0, 0, 255)) and near(seen(20, 5), GROUND),
+          "an area with no shape picture is its whole rectangle", result.stderr)
     # One of OWE's: a glow a quarter through its cycle is the still, brighter by its amount.
     glowing = dict(painted, effects=[], idle={"frames_a_second": 4, "corner": {"glow": {"amount": 0.5, "seconds": 4}}}, arrive={"seconds": 0})
     del glowing["arrive"]

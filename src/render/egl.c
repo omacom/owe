@@ -54,6 +54,7 @@ struct owe_egl {
     EGLSurface current;
     struct owe_gl_prog blit;
     struct owe_gl_piece piece;
+    GLuint white; /* one white pixel: the shape of an area that has no picture */
     bool gles;
 };
 
@@ -310,6 +311,7 @@ void owe_egl_free(struct owe_egl *egl) {
         glDeleteProgram(egl->blit.prog);
     }
     if (egl->piece.ready) glDeleteProgram(egl->piece.prog);
+    if (egl->white) glDeleteTextures(1, &egl->white);
     /* EGL defers deletion while a context remains current on a thread. */
     eglMakeCurrent(egl->display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
     if (egl->context != EGL_NO_CONTEXT) {
@@ -670,6 +672,13 @@ static int piece_init(struct owe_gl_piece *p, bool gles) {
     return 0;
 }
 
+/* An area with no picture of its shape is its whole rectangle. */
+static GLuint whole_shape(struct owe_egl *egl) {
+    static const uint8_t pixel[4] = { 255, 255, 255, 255 };
+    if (!egl->white) egl->white = owe_egl_tex_from_rgba(egl, pixel, 1, 1);
+    return egl->white;
+}
+
 /* The still covers the output, cropped at its middle, as owe_egl_draw_texture
  * draws it: which part of it the output shows. */
 static void still_fit(int still_w, int still_h, int out_w, int out_h, float *scale_u, float *scale_v, float *off_u,
@@ -717,9 +726,9 @@ void owe_egl_draw_piece(struct owe_egl *egl, struct owe_output *out, const struc
     glScissor((GLint)floorf(left), (GLint)floorf((float)out_h - bottom), (GLsizei)ceilf(right - left),
               (GLsizei)ceilf(bottom - top));
     glUseProgram(p->prog);
-    if (d->inside) {
+    if (d->inside_at) {
         glActiveTexture(GL_TEXTURE3);
-        glBindTexture(GL_TEXTURE_2D, d->inside);
+        glBindTexture(GL_TEXTURE_2D, d->inside ? d->inside : whole_shape(egl));
         glUniform2f(p->inside_pos_loc, d->inside_at[0], d->inside_at[1]);
         glUniform2f(p->inside_size_loc, d->inside_at[2], d->inside_at[3]);
     }
@@ -731,8 +740,8 @@ void owe_egl_draw_piece(struct owe_egl *egl, struct owe_output *out, const struc
     }
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, d->shape);
-    glUniform1f(p->inside_on_loc, d->inside ? 1.0f : 0.0f);
-    glUniform1f(p->inside_grey_loc, d->inside_grey ? 1.0f : 0.0f);
+    glUniform1f(p->inside_on_loc, d->inside_at ? 1.0f : 0.0f);
+    glUniform1f(p->inside_grey_loc, d->inside_grey || !d->inside ? 1.0f : 0.0f);
     glUniform1f(p->from_still_loc, d->still && d->behind ? 1.0f : 0.0f);
     glUniform2f(p->uv_offset_loc, off_u, off_v);
     glUniform2f(p->uv_scale_loc, scale_u, scale_v);
@@ -886,7 +895,7 @@ void owe_egl_draw_effect(struct owe_egl *egl, struct owe_output *out, struct owe
                          const struct owe_effect_draw *d) {
     int out_w, out_h, i;
     float scale_u, scale_v, off_u, off_v, left, right, top, bottom;
-    if (!egl || !out || !fx || !d || !d->still || !d->mask || d->still_w <= 0 || d->still_h <= 0) return;
+    if (!egl || !out || !fx || !d || !d->still || d->still_w <= 0 || d->still_h <= 0) return;
     if (d->strength <= 0.0f) return;
     if (owe_egl_prepare_output(egl, out) != 0) return;
     owe_output_buffer_size(out, &out_w, &out_h);
@@ -909,13 +918,13 @@ void owe_egl_draw_effect(struct owe_egl *egl, struct owe_output *out, struct owe
               (GLsizei)ceilf(bottom - top));
     glUseProgram(fx->prog);
     glActiveTexture(GL_TEXTURE1);
-    glBindTexture(GL_TEXTURE_2D, d->mask);
+    glBindTexture(GL_TEXTURE_2D, d->mask ? d->mask : whole_shape(egl));
     glActiveTexture(GL_TEXTURE0);
     glBindTexture(GL_TEXTURE_2D, d->still);
     glUniform2f(fx->uv_offset_loc, off_u, off_v);
     glUniform2f(fx->uv_scale_loc, scale_u, scale_v);
     glUniform1f(fx->strength_loc, d->strength > 1.0f ? 1.0f : d->strength);
-    glUniform1f(fx->grey_loc, d->mask_grey ? 1.0f : 0.0f);
+    glUniform1f(fx->grey_loc, d->mask_grey || !d->mask ? 1.0f : 0.0f);
     glUniform4f(fx->area_loc, d->at[0], d->at[1], d->at[2], d->at[3]);
     glUniform1f(fx->phase_loc, d->phase);
     glUniform1f(fx->seconds_loc, d->seconds);

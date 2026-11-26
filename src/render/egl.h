@@ -37,11 +37,11 @@ struct owe_piece_draw {
     unsigned int shape;      /* the piece's picture: where it is, and its colour if it has its own */
     unsigned int still;      /* the still, for a piece that takes its colour from it; else 0 */
     unsigned int behind;     /* what the still shows where that piece was; goes with `still` */
-    unsigned int inside;     /* a shape the piece is kept inside, or 0 */
+    unsigned int inside;     /* a shape the piece is kept inside; 0 with inside_at for the whole of that place */
     int still_w;
     int still_h;
     const float *at;         /* where the piece was cut from the still */
-    const float *inside_at;  /* where the shape sits in the still */
+    const float *inside_at;  /* where the shape sits in the still; NULL when the piece is kept inside nothing */
     bool inside_grey;        /* the shape is its picture's brightness, not its alpha */
     float dx;                /* how far it is moved, as shares of the still's width and height */
     float dy;
@@ -61,7 +61,7 @@ struct owe_effect_value {
 };
 struct owe_effect_draw {
     unsigned int still;
-    unsigned int mask;   /* the area's shape */
+    unsigned int mask;   /* the area's shape, or 0 for the whole of its place */
     int still_w;
     int still_h;
     const float *at;     /* where the area sits in the still */

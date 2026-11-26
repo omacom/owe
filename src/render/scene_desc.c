@@ -286,7 +286,9 @@ int owe_scene_desc_read(const char *path, struct owe_scene_desc *desc, char *err
             goto done;
         }
         snprintf(area->name, sizeof(area->name), "%s", name);
-        if (own_file(dir, yyjson_get_str(yyjson_obj_get(entry, "mask")), area->mask, sizeof(area->mask)) != 0) {
+        /* With no picture of its shape, an area is its whole rectangle. */
+        if (yyjson_obj_get(entry, "mask") &&
+            own_file(dir, yyjson_get_str(yyjson_obj_get(entry, "mask")), area->mask, sizeof(area->mask)) != 0) {
             fail(error, error_len, "area \"%s\": \"mask\" must be a file of the scene's own", name);
             goto done;
         }
