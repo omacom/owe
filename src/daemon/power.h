@@ -1,12 +1,14 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stdint.h>
 
 struct owed_power;
 
 struct owed_power *owed_power_new(void);
 void owed_power_free(struct owed_power *p);
 int owed_power_fd_system(struct owed_power *p);
+int64_t owed_power_retry_at_ms(struct owed_power *p);
 int owed_power_poll(struct owed_power *p);
 
 bool owed_power_on_battery(struct owed_power *p);

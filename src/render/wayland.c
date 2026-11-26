@@ -755,6 +755,17 @@ void owe_wayland_render_pending(struct owe_wayland *wl) {
     wl_display_flush(wl->display);
 }
 
+bool owe_wayland_has_pending_retry(struct owe_wayland *wl) {
+    owe_output_t *out;
+    for (out = wl ? wl->outputs : NULL; out; out = out->next) {
+        if (out->configured && out->egl_surface && out->frame_pending &&
+            out->frame_ready && !out->skip_render) {
+            return true;
+        }
+    }
+    return false;
+}
+
 owe_output_t *owe_wayland_outputs(struct owe_wayland *wl) {
     return wl ? wl->outputs : NULL;
 }

@@ -124,6 +124,7 @@ void owed_power_free(struct owed_power *p) {
 }
 
 int owed_power_fd_system(struct owed_power *p) { return p && p->system ? sd_bus_get_fd(p->system) : -1; }
+int64_t owed_power_retry_at_ms(struct owed_power *p) { return p && !p->system ? p->retry_at_ms : 0; }
 int owed_power_poll(struct owed_power *p) {
     if (!p) return 0;
     if (!p->system && power_now_ms() >= p->retry_at_ms) {

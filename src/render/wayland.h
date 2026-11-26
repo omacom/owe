@@ -61,6 +61,7 @@ void owe_wayland_flush(struct owe_wayland *wl);
 
 void owe_wayland_request_render(void *opaque);
 void owe_wayland_render_pending(struct owe_wayland *wl);
+bool owe_wayland_has_pending_retry(struct owe_wayland *wl);
 void owe_wayland_set_skipped(struct owe_wayland *wl, const char *names);
 void owe_wayland_skipped_list(struct owe_wayland *wl, char *out, size_t out_len);
 

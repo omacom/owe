@@ -4,8 +4,8 @@
 
 #define CHECK(x) do { if (!(x)) { fprintf(stderr, "%s:%d: %s\n", __FILE__, __LINE__, #x); exit(1); } } while (0)
 
-struct owed_power { bool locked; bool sleeping; bool battery; };
-struct owed_hypr { bool locked; bool off; bool fullscreen; };
+struct owed_power { bool locked; bool sleeping; bool battery; int fd; int64_t retry_at; };
+struct owed_hypr { bool locked; bool off; bool fullscreen; int event_fd; int monitor_refreshes; };
 struct owed_supervisor { int starts; int stops; bool feeding; bool paused; bool fail_start; bool fail_load; int loads; bool down; bool last_hold; bool late_ready; };
 static char covered_names[1024];
 static int skip_sends;
@@ -36,11 +36,15 @@ int owed_supervisor_send(struct owed_supervisor *s, const char *line, char *repl
 bool owed_power_locked(struct owed_power *p) { return p && p->locked; }
 bool owed_power_sleeping(struct owed_power *p) { return p && p->sleeping; }
 bool owed_power_on_battery(struct owed_power *p) { return p && p->battery; }
+int owed_power_fd_system(struct owed_power *p) { return p ? p->fd : -1; }
+int64_t owed_power_retry_at_ms(struct owed_power *p) { return p && p->fd < 0 ? p->retry_at : 0; }
 bool owed_hypr_locked(struct owed_hypr *h) { return h && h->locked; }
 bool owed_hypr_all_monitors_off(struct owed_hypr *h) { return h && h->off; }
 bool owed_hypr_any_fullscreen(struct owed_hypr *h) { return h && h->fullscreen; }
 bool owed_hypr_any_window_visible(struct owed_hypr *h) { (void)h; return false; }
 bool owed_hypr_animations_off(struct owed_hypr *h) { (void)h; return false; }
+int owed_hypr_event_fd(struct owed_hypr *h) { return h ? h->event_fd : -1; }
+void owed_hypr_refresh_monitors(struct owed_hypr *h) { if (h) h->monitor_refreshes++; }
 int owed_render_is_alive(struct owed_supervisor *s) { return s != NULL && !s->down; }
 int owed_supervisor_feed_start(struct owed_supervisor *s) {
     s->starts++;
@@ -994,6 +998,81 @@ int main(void) {
         owed_app_apply_policy();
         CHECK(g_app.engine == OWE_ENGINE_RENDERER && g_app.shell_enabled == 0);
         CHECK(renderer.loads == loads + 2 && !strcmp(g_app.loaded_path, "/after-fallback.mp4"));
+    }
+
+    /* Idle poll timeout: an idle shell still with no renderer and live event
+     * fds must sleep indefinitely (-1) instead of waking on a fixed timer. */
+    {
+        int64_t now = 100000;
+        strcpy(g_app.source_path, "/idle.webp");
+        strcpy(g_app.source_kind, "still");
+        g_app.engine = OWE_ENGINE_SHELL;
+        g_app.shell_enabled = 1;
+        g_app.handoff_pending = false;
+        g_app.transition_release_pending = false;
+        g_app.media_pending = false;
+        g_app.intro_active = 0;
+        g_app.shell_stop_at_ms = 0;
+        g_app.shell_retry_at_ms = 0;
+        g_app.renderer_retry_at_ms = 0;
+        g_app.renderer_warm_until_ms = 0;
+        g_app.login_intro_until_ms = 0;
+        g_app.shell_start_until_ms = 0;
+        g_app.loop_path[0] = '\0';
+        g_app.loop_still[0] = '\0';
+        g_app.loop_failed[0] = '\0';
+        g_app.loop_at_ms = 0;
+        renderer.down = true;
+        renderer.late_ready = false;
+        hypr.event_fd = 10;
+        power.fd = 11;
+        power.battery = false;
+        CHECK(daemon_poll_timeout_ms(now, 0, false, false) == -1);
+
+        /* Stale renderer_retry_at_ms while on a still must not spin poll(0). */
+        g_app.renderer_retry_at_ms = now - 5000;
+        CHECK(daemon_poll_timeout_ms(now, 0, false, false) == -1);
+        g_app.renderer_retry_at_ms = 0;
+
+        /* Connected IPC client bounds timeout for idle client expiry. */
+        CHECK(daemon_poll_timeout_ms(now, 0, false, true) == 1000);
+
+        /* Theme loop delay wakes on AC, but stays asleep (-1) on battery. */
+        strcpy(g_app.loop_path, "/loop.mp4");
+        g_app.loop_at_ms = now + 750;
+        CHECK(daemon_poll_timeout_ms(now, 0, false, false) == 750);
+        power.battery = true;
+        CHECK(daemon_poll_timeout_ms(now, 0, false, false) == -1);
+        power.battery = false;
+        g_app.loop_path[0] = '\0';
+
+        /* One-shot shell stop and warm deadlines wake at the exact deadline. */
+        g_app.shell_stop_at_ms = now + 1200;
+        CHECK(daemon_poll_timeout_ms(now, 0, false, false) == 1200);
+        g_app.shell_stop_at_ms = 0;
+
+        /* Disconnected Hyprland or power bus falls back to reconnect timers. */
+        hypr.event_fd = -1;
+        CHECK(daemon_poll_timeout_ms(now, now - 500, false, false) == 1500);
+        hypr.event_fd = 10;
+        power.fd = -1;
+        power.retry_at = now + 12000;
+        CHECK(daemon_poll_timeout_ms(now, 0, false, false) == 12000);
+        power.fd = 11;
+
+        /* Active renderer keeps the 2000 ms monitor/blocklist tick. */
+        renderer.down = false;
+        g_app.engine = OWE_ENGINE_RENDERER;
+        CHECK(daemon_poll_timeout_ms(now, now - 400, false, false) == 1600);
+
+        /* Idle on-demand monitor refresh runs only when periodic ticks are off. */
+        hypr.monitor_refreshes = 0;
+        owed_app_refresh_monitors_if_idle();
+        CHECK(hypr.monitor_refreshes == 0);
+        g_app.engine = OWE_ENGINE_SHELL;
+        renderer.down = true;
+        owed_app_refresh_monitors_if_idle();
+        CHECK(hypr.monitor_refreshes == 1);
     }
 
     owed_policy_free(g_app.policy);

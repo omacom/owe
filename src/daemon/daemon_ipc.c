@@ -56,6 +56,7 @@ static void send_err(struct owe_ipc_client *c, const char *msg) {
 
 static void handle_status(struct owe_ipc_client *c) {
     owed_app_t *app = owed_app_get();
+    owed_app_refresh_monitors_if_idle();
     char *line = NULL;
     char *source = owe_json_quote(app->source_path);
     char *loaded = owe_json_quote(app->loaded_path);
