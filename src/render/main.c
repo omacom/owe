@@ -246,7 +246,9 @@ int main(int argc, char **argv) {
         n += n_feed_clients;
         rc = poll(pfds, (nfds_t)n,
                   (owe_still_busy(g_app.still) || owe_still_busy(g_app.transition)) ? 200 :
-                  (n_ipc_clients > 0 || n_feed_clients > 0) ? 1000 : -1);
+                  (n_ipc_clients > 0 || n_feed_clients > 0 ||
+                   (!g_app.feeding && !g_app.preparing &&
+                    owe_wayland_has_pending_retry(g_app.wl))) ? 1000 : -1);
         if (rc < 0) {
             if (errno == EINTR) {
                 continue;

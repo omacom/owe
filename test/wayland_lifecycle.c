@@ -92,6 +92,20 @@ int main(void) {
     CHECK(wl.output_count == 2);
     registry_global_remove(&wl, NULL, 1);
     CHECK(wl.output_count == 1 && wl.outputs->registry_name == 7);
+    /* Pending retry reports true only when a configured, unskipped, ready output
+     * still has a frame pending (e.g. after DRM-off deferral or swap failure). */
+    wl.outputs->configured = 1;
+    wl.outputs->frame_ready = 1;
+    wl.outputs->frame_pending = 0;
+    wl.outputs->skip_render = 0;
+    CHECK(!owe_wayland_has_pending_retry(&wl));
+    wl.outputs->frame_pending = 1;
+    CHECK(owe_wayland_has_pending_retry(&wl));
+    wl.outputs->frame_ready = 0;
+    CHECK(!owe_wayland_has_pending_retry(&wl));
+    wl.outputs->frame_ready = 1;
+    wl.outputs->skip_render = 1;
+    CHECK(!owe_wayland_has_pending_retry(&wl));
     owe_wayland_destroy_outputs(&wl);
     wl_compositor_destroy(wl.compositor);
     zwlr_layer_shell_v1_destroy(wl.layer_shell);
