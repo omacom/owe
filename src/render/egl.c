@@ -322,6 +322,16 @@ int owe_egl_prepare_output(struct owe_egl *egl, struct owe_output *out) {
     if (!egl || !out || !out->egl_surface) {
         return -1;
     }
+    /* Size the window before the surface is first made current. Mesa takes a
+     * surface's first buffer at the size the window has then, and a resize that
+     * comes later waits for the next swap, so the first frame would be drawn
+     * into the 64x64 the window is created with. */
+    owe_output_buffer_size(out, &w, &h);
+    if (out->egl_window && (out->egl_w != w || out->egl_h != h)) {
+        wl_egl_window_resize((struct wl_egl_window *)out->egl_window, w, h, 0, 0);
+        out->egl_w = w;
+        out->egl_h = h;
+    }
     if (egl->current != (EGLSurface)out->egl_surface) {
         if (!eglMakeCurrent(egl->display, (EGLSurface)out->egl_surface,
                             (EGLSurface)out->egl_surface, egl->context)) {
@@ -344,12 +354,6 @@ int owe_egl_prepare_output(struct owe_egl *egl, struct owe_output *out) {
         glReadBuffer(GL_BACK);
     }
     if (!egl->blit.ready && blit_init(&egl->blit, egl->gles) != 0) return -1;
-    owe_output_buffer_size(out, &w, &h);
-    if (out->egl_window && (out->egl_w != w || out->egl_h != h)) {
-        wl_egl_window_resize((struct wl_egl_window *)out->egl_window, w, h, 0, 0);
-        out->egl_w = w;
-        out->egl_h = h;
-    }
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
     glViewport(0, 0, w, h);
     return 0;
