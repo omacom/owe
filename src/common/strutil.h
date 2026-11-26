@@ -13,6 +13,10 @@ typedef enum {
 } owe_media_kind_t;
 
 owe_media_kind_t owe_kind_from_path(const char *path);
+/* A scene file, by its name. A scene is found beside a still or named as an
+ * intro; it is never a background of its own, so owe_kind_from_path does not
+ * know it. */
+bool owe_path_is_scene(const char *path);
 const char *owe_kind_to_string(owe_media_kind_t kind);
 
 bool owe_has_suffix_ci(const char *path, const char *suffix);

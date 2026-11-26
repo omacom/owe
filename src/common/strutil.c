@@ -52,6 +52,10 @@ owe_media_kind_t owe_kind_from_path(const char *path) {
     return OWE_KIND_UNKNOWN;
 }
 
+bool owe_path_is_scene(const char *path) {
+    return path && owe_has_suffix_ci(path, ".jsonc");
+}
+
 const char *owe_kind_to_string(owe_media_kind_t kind) {
     switch (kind) {
     case OWE_KIND_STILL:

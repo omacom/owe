@@ -733,10 +733,14 @@ static int prepare_intro(const char *path, bool startup) {
         return 0;
     }
     /* The staged directory can move while the decoder starts. Keep this
-     * opened inode available until it has produced the first playback frame. */
+     * opened inode available until it has produced the first playback frame.
+     * A scene is read whole as it loads, with the pictures beside it, so it
+     * goes by its own path; the opened file still tells whether the scene
+     * asked for later is this one. */
     snprintf(fd_path, sizeof(fd_path), "/proc/%ld/fd/%d", (long)getpid(), fd);
-    quoted = owe_json_quote(fd_path);
-    if (quoted && asprintf(&line, "{\"cmd\":\"load\",\"kind\":\"video\",\"prepare\":true,\"mute\":true,\"path\":%s}", quoted) >= 0 &&
+    quoted = owe_json_quote(owe_path_is_scene(path) ? path : fd_path);
+    if (quoted && asprintf(&line, "{\"cmd\":\"load\",\"kind\":\"%s\",\"prepare\":true,\"mute\":true,\"path\":%s}",
+                           owe_path_is_scene(path) ? "scene" : "video", quoted) >= 0 &&
         owed_supervisor_send(g_app.supervisor, line, reply, sizeof(reply)) == 0 && owe_json_ok(reply)) {
         clear_prepared_intro();
         g_app.intro_prepared = true;
@@ -833,10 +837,15 @@ int owed_app_start_intro(const char *path, bool from_still, bool hold) {
             goto fail;
         }
         /* Starting on the first frame there is no outgoing still to prepare, so a new
-         * renderer surface stays unmapped until the intro's first frame. */
-        if (asprintf(&line, "{\"cmd\":\"load\",\"path\":%s,\"kind\":\"video\","
-                            "\"once\":true,\"mute\":true%s%s}", quoted,
-                     from_still ? ",\"from\":" : "", from_still ? from : "") < 0) {
+         * renderer surface stays unmapped until the intro's first frame. A
+         * scene plays its arrive part, and only for the still it was made for. */
+        if (owe_path_is_scene(path)
+                ? asprintf(&line, "{\"cmd\":\"load\",\"path\":%s,\"kind\":\"scene\",\"once\":true,"
+                                  "\"still\":%s%s%s}", quoted, from,
+                           from_still ? ",\"from\":" : "", from_still ? from : "") < 0
+                : asprintf(&line, "{\"cmd\":\"load\",\"path\":%s,\"kind\":\"video\","
+                                  "\"once\":true,\"mute\":true%s%s}", quoted,
+                           from_still ? ",\"from\":" : "", from_still ? from : "") < 0) {
             goto fail;
         }
         free(quoted);

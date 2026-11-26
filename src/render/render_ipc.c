@@ -77,9 +77,10 @@ static void handle_status(struct owe_render_ipc *ipc, struct owe_ipc_client *c) 
                                     ? owe_mpv_error(app->mpv) : "");
     char *hwdec = owe_json_quote(owe_mpv_hwdec(app ? app->mpv : NULL));
     /* A scene is ready once a frame of it has been drawn: its first frame is
-     * the still, so whoever shows that still can let go of it. */
+     * the still, so whoever shows that still can let go of it. One prepared
+     * as an intro is drawn only once it is started, and is ready when loaded. */
     bool ready = app && !*ipc->pending_path && !*ipc->load_error &&
-                 (scene ? owe_scene_shown(app->scene) :
+                 (scene ? owe_scene_ready(app->scene) && (app->preparing || owe_scene_shown(app->scene)) :
                   strcmp(app->current_kind, "still") == 0 ? owe_still_has_image(app->still) :
                                                           owe_mpv_ready(app->mpv));
     char skipped[1024] = "";
@@ -130,6 +131,7 @@ static void handle_status(struct owe_render_ipc *ipc, struct owe_ipc_client *c) 
              scene ? owe_scene_time(app->scene) : app && app->mpv ? owe_mpv_time_pos(app->mpv) : -1.0,
              hwdec, error, skipped_json,
              app && app->intro ? "true" : "false",
+              scene ? (owe_scene_ended(app->scene) ? "true" : "false") :
               app && app->mpv && owe_mpv_eof(app->mpv) ? "true" : "false",
               owe_drm_dpms_enabled() ? "true" : "false", swaps, swap_failures,
               presented, scene && owe_scene_resting(app->scene) ? "true" : "false") >= 0)
@@ -165,6 +167,27 @@ static void stop_feed(owe_app_t *app) {
     }
 }
 
+/* A still that was just on screen fades out over what comes in, so a switch
+ * to something that moves keeps its transition. */
+static void start_transition(owe_app_t *app, const char *from, bool hold) {
+    if (*from && !app->feeding && app->fade_ms > 0 && app->transition) {
+        int max_w = 0;
+        int max_h = 0;
+        owe_still_unload(app->transition);
+        owe_wayland_outputs_max_size(app->wl, &max_w, &max_h);
+        if (owe_still_start(app->transition, from, max_w > 0 ? max_w : 4096,
+                            max_h > 0 ? max_h : 4096) == 0) {
+            owe_still_set_fade_out(app->transition, app->fade_ms);
+            /* The shell's identical still covers the renderer until owed
+             * releases it, so the fade waits for transition-start. */
+            owe_still_set_held(app->transition, hold);
+            OWE_INFO("transition from %s", from);
+        }
+    } else if (app->transition) {
+        owe_still_unload(app->transition);
+    }
+}
+
 static void handle_load(struct owe_render_ipc *ipc, struct owe_ipc_client *c, yyjson_val *root) {
     owe_app_t *app = owe_app_get();
     yyjson_val *vpath;
@@ -189,9 +212,20 @@ static void handle_load(struct owe_render_ipc *ipc, struct owe_ipc_client *c, yy
         /* The still the scene belongs to, from whoever found the scene beside
          * it; without one the scene's own name for its still is looked up. */
         yyjson_val *vstill = yyjson_obj_get(root, "still");
+        yyjson_val *vfrom = yyjson_obj_get(root, "from");
         const char *still = vstill && yyjson_is_str(vstill) ? yyjson_get_str(vstill) : NULL;
+        const char *from = vfrom && yyjson_is_str(vfrom) ? yyjson_get_str(vfrom) : "";
+        /* Played once, a scene stands in for an intro video and takes the
+         * same instructions: prepared paused and unseen, or from a still. */
+        bool prepare = yyjson_get_bool(yyjson_obj_get(root, "prepare"));
+        bool once = prepare || yyjson_get_bool(yyjson_obj_get(root, "once"));
         int max_w = 0;
         int max_h = 0;
+        if (vfrom && (!owe_json_path(vfrom) || from[0] != '/' || stat(from, &st) != 0 ||
+                      !S_ISREG(st.st_mode) || access(from, R_OK) != 0)) {
+            OWE_WARN("Transition image is not a readable local file");
+            from = "";
+        }
         if (still && (!owe_json_path(vstill) || still[0] != '/' || stat(still, &st) != 0 || !S_ISREG(st.st_mode) ||
                       access(still, R_OK) != 0)) {
             send_err(c, "Invalid local still path");
@@ -199,7 +233,7 @@ static void handle_load(struct owe_render_ipc *ipc, struct owe_ipc_client *c, yy
         }
         owe_wayland_outputs_max_size(app->wl, &max_w, &max_h);
         ipc->load_error[0] = '\0';
-        if (owe_scene_load(app->scene, path, still, yyjson_get_bool(yyjson_obj_get(root, "arrive")),
+        if (owe_scene_load(app->scene, path, still, yyjson_get_bool(yyjson_obj_get(root, "arrive")), once,
                            max_w > 0 ? max_w : 4096, max_h > 0 ? max_h : 4096, ipc->load_error,
                            sizeof(ipc->load_error)) != 0) {
             OWE_WARN("scene refused: %s", ipc->load_error);
@@ -208,15 +242,19 @@ static void handle_load(struct owe_render_ipc *ipc, struct owe_ipc_client *c, yy
             ipc->load_error[0] = '\0';
             return;
         }
-        /* A scene starts on its still, so it needs no picture to fade from. */
         stop_feed(app);
         owe_mpv_stop(app->mpv);
-        owe_still_unload(app->transition);
+        if (once) owe_wayland_mark_intro(app->wl);
+        app->preparing = prepare;
+        if (prepare) app->paused = true;
+        else if (once) app->paused = false;
+        app->intro = once;
+        app->intro_waiting = once && *from;
+        /* A scene that idles starts on its still and needs no picture to fade
+         * from. An intro starts somewhere else, and fades from the still. */
+        start_transition(app, once ? from : "", yyjson_get_bool(yyjson_obj_get(root, "hold")));
         owe_still_unload(app->still);
         pending_reply(ipc, 0, "load superseded");
-        app->preparing = false;
-        app->intro = false;
-        app->intro_waiting = false;
         owe_scene_set_paused(app->scene, app->paused);
         snprintf(app->current_path, sizeof(app->current_path), "%s", path);
         snprintf(app->current_kind, sizeof(app->current_kind), "scene");
@@ -254,24 +292,7 @@ static void handle_load(struct owe_render_ipc *ipc, struct owe_ipc_client *c, yy
         }
         app->intro = once;
         app->intro_waiting = once && *from;
-        /* A still that was just on screen fades out over the incoming video,
-         * so a background switch to a video keeps its transition. */
-        if (*from && !app->feeding && app->fade_ms > 0 && app->transition) {
-            int max_w = 0;
-            int max_h = 0;
-            owe_still_unload(app->transition);
-            owe_wayland_outputs_max_size(app->wl, &max_w, &max_h);
-            if (owe_still_start(app->transition, from, max_w > 0 ? max_w : 4096,
-                                max_h > 0 ? max_h : 4096) == 0) {
-                owe_still_set_fade_out(app->transition, app->fade_ms);
-                /* The shell's identical still covers the renderer until owed
-                 * releases it, so the fade waits for transition-start. */
-                owe_still_set_held(app->transition, yyjson_get_bool(yyjson_obj_get(root, "hold")));
-                OWE_INFO("transition from %s", from);
-            }
-        } else if (app->transition) {
-            owe_still_unload(app->transition);
-        }
+        start_transition(app, from, yyjson_get_bool(yyjson_obj_get(root, "hold")));
         owe_still_unload(app->still);
         pending_reply(ipc, 0, "load superseded");
         if (!once && !prepare) {
@@ -379,11 +400,14 @@ static void handle_command(void *context, struct owe_ipc_client *c, const char *
         /* intro-hold shows the prepared first frame and stays paused; a later
          * intro-start plays on from it. */
         bool hold = strcmp(cmd, "intro-hold") == 0;
-        if (app && strcmp(app->current_kind, "video") == 0 && (app->preparing || (app->intro && app->paused && !hold))) {
+        bool scene = app && strcmp(app->current_kind, "scene") == 0;
+        if (app && (scene || strcmp(app->current_kind, "video") == 0) &&
+            (app->preparing || (app->intro && app->paused && !hold))) {
             app->preparing = false;
             app->intro = true;
             app->paused = hold;
-            owe_mpv_set_paused(app->mpv, hold);
+            if (scene) owe_scene_set_paused(app->scene, hold);
+            else owe_mpv_set_paused(app->mpv, hold);
             owe_wayland_mark_intro(app->wl);
             owe_app_request_render();
             send_ok(c, NULL);
@@ -391,6 +415,8 @@ static void handle_command(void *context, struct owe_ipc_client *c, const char *
     } else if (strcmp(cmd, "intro-show") == 0) {
         if (app && app->intro && owe_still_has_image(app->transition)) {
             app->intro_waiting = false;
+            /* A scene's arrive part starts as the still over it begins to fade. */
+            owe_scene_rewind(app->scene);
             owe_app_request_render();
             send_ok(c, NULL);
         } else {

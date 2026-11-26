@@ -661,13 +661,25 @@ void owe_wayland_render_pending(struct owe_wayland *wl) {
                 continue;
             }
             out->frame_pending = 0;
-            if (owe_scene_ready(app->scene)) {
-                /* A scene draws its still and its pieces over it: an opaque frame. */
-                owe_scene_render_output(app->scene, out);
-            } else if (app->intro_waiting && app->transition &&
+            if (app->intro_waiting && app->transition &&
                 owe_still_has_image(app->transition)) {
                 owe_still_render_opaque(app->transition, out);
                 opaque = owe_still_opaque(app->transition);
+            } else if (owe_scene_ready(app->scene)) {
+                /* A scene draws its still and its pieces over it: an opaque
+                 * frame. A still fades over it as over a video. */
+                owe_scene_render_output(app->scene, out);
+                video_drawn = true;
+            } else if (owe_scene_loaded(app->scene)) {
+                /* Its pictures are still loading. Hold the outgoing still, or
+                 * leave the surface as it is, as for a video with no frame yet. */
+                if (app->transition && owe_still_has_image(app->transition)) {
+                    owe_still_render_opaque(app->transition, out);
+                    opaque = owe_still_opaque(app->transition);
+                } else {
+                    out->frame_pending = 1;
+                    continue;
+                }
             } else if (want_video && !owe_mpv_has_frame(app->mpv)) {
                 /* Until mpv has decoded a frame, drawing the video renders
                  * black. Hold the outgoing still, or leave the surface as it

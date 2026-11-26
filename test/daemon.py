@@ -537,6 +537,24 @@ def main():
                           for command in direct_commands),
                       "an intro started on its first frame starts on its video and still fades into the still",
                       json.dumps(direct_commands))
+                # A scene asked for as an intro plays once, and is given the still
+                # it has to belong to.
+                (root / "arrive").mkdir()
+                (root / "arrive/scene.jsonc").write_text("{}")
+                commands_before = len(commands_path.read_text().splitlines())
+                result = subprocess.run(cli + ["intro", "--start", "first-frame", "arrive/scene.jsonc"], env=env, cwd=root,
+                                        capture_output=True, text=True, timeout=8)
+                check(result.returncode == 0, "a scene plays as an intro to its end", result.stderr)
+                scene_commands = [json.loads(line) for line in
+                                  commands_path.read_text().splitlines()[commands_before:]]
+                scene_load = next((command for command in scene_commands
+                                   if command.get("cmd") == "load" and command.get("once")), {})
+                check(scene_load.get("kind") == "scene" and scene_load.get("still") == str(root / "still.png") and
+                      scene_load.get("path") == str(root / "arrive/scene.jsonc") and "from" not in scene_load,
+                      "a scene played as an intro is loaded as a scene, with its still", json.dumps(scene_commands))
+                check(any(command.get("cmd") == "intro-finish" and command.get("path") == str(root / "still.png")
+                          for command in scene_commands),
+                      "a scene played as an intro ends on the still", json.dumps(scene_commands))
                 # A launcher reveals the intro the moment its first frame is
                 # on screen, and learns of a clip that never showed one.
                 result = subprocess.run(cli + ["intro", "--start", "first-frame", "--print-shown", "good.mp4"], env=env,

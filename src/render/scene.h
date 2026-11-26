@@ -10,7 +10,10 @@
  * A scene that is asked to arrive plays its arrive part once, then idles. One
  * that is paused settles to rest, which is the still, and stops drawing;
  * resumed, it idles again from rest. So it can stop and start at any moment
- * without a jump. */
+ * without a jump.
+ *
+ * A scene can also stand in for an intro video: played once, it is its arrive
+ * part alone, held where it is on a pause, and ended on the still. */
 struct owe_scene;
 struct owe_wayland;
 struct owe_egl;
@@ -21,10 +24,12 @@ void owe_scene_free(struct owe_scene *s);
 
 /* Start loading the scene file at `path`. `still` is the picture it belongs to,
  * or NULL to find it from the scene's own name for it. With `arrive` the
- * scene's arrive part plays first. Returns 0, or -1 with the reason in
- * `error`. Pictures load in the background; owe_scene_ready tells when. */
-int owe_scene_load(struct owe_scene *s, const char *path, const char *still, bool arrive, int max_w, int max_h,
-                   char *error, size_t error_len);
+ * scene's arrive part plays first, then it idles. With `once` it is an intro:
+ * its arrive part plays and it ends on its last frame, which is the still.
+ * Returns 0, or -1 with the reason in `error`. Pictures load in the
+ * background; owe_scene_ready tells when. */
+int owe_scene_load(struct owe_scene *s, const char *path, const char *still, bool arrive, bool once, int max_w,
+                   int max_h, char *error, size_t error_len);
 void owe_scene_unload(struct owe_scene *s);
 
 /* A scene is loaded or loading. */
@@ -44,6 +49,10 @@ bool owe_scene_tick(struct owe_scene *s);
 bool owe_scene_needs_frames(struct owe_scene *s);
 
 void owe_scene_set_paused(struct owe_scene *s, bool paused);
+/* An intro has played to its end. */
+bool owe_scene_ended(struct owe_scene *s);
+/* An intro starts over from its first moment, as it is revealed. */
+void owe_scene_rewind(struct owe_scene *s);
 /* At rest and not drawing: what is on screen is the still. */
 bool owe_scene_resting(struct owe_scene *s);
 /* Seconds into the part that is playing. */

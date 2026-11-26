@@ -33,6 +33,7 @@ enum phase {
     PHASE_IDLE,
     PHASE_SETTLING, /* still moving as before, fading into the still */
     PHASE_RESTING,  /* the still, and nothing drawn after it */
+    PHASE_ENDED,    /* played once as an intro: its last frame, the still, stays */
 };
 
 struct owe_scene {
@@ -49,6 +50,11 @@ struct owe_scene {
     bool arriving;
     bool want_arrive;
     bool want_paused;
+    /* Played once, as an intro: it ends after its arrive part, and a pause
+     * holds it where it is instead of settling it. */
+    bool once;
+    bool held;
+    struct timespec held_at;
     struct timespec part_start;
     struct timespec settle_start;
     /* The moment the frame being drawn shows, the same on every output. */
@@ -183,8 +189,8 @@ static struct owe_still *start(struct owe_scene *s, const char *path, int max_w,
     return picture;
 }
 
-int owe_scene_load(struct owe_scene *s, const char *path, const char *still, bool arrive, int max_w, int max_h,
-                   char *error, size_t error_len) {
+int owe_scene_load(struct owe_scene *s, const char *path, const char *still, bool arrive, bool once, int max_w,
+                   int max_h, char *error, size_t error_len) {
     struct owe_scene_desc *desc;
     char found[OWE_SCENE_PATH];
     bool used[OWE_SCENE_MAX_AREAS] = { false };
@@ -201,9 +207,15 @@ int owe_scene_load(struct owe_scene *s, const char *path, const char *still, boo
         still = found;
     }
     if (owe_scene_check_still(desc, still, error, error_len) != 0) goto fail;
+    if (once && desc->arrive_seconds <= 0) {
+        snprintf(error, error_len, "the scene has no arrive part to play as an intro");
+        goto fail;
+    }
     owe_scene_unload(s);
     s->desc = desc;
-    s->want_arrive = arrive && desc->arrive_seconds > 0;
+    s->want_arrive = (arrive || once) && desc->arrive_seconds > 0;
+    s->once = once;
+    s->held = false;
     s->still = start(s, still, max_w, max_h);
     if (!s->still) {
         snprintf(error, error_len, "the scene's still cannot be loaded");
@@ -266,16 +278,29 @@ int owe_scene_fd(struct owe_scene *s) {
 }
 
 bool owe_scene_needs_frames(struct owe_scene *s) {
-    return s && (s->phase == PHASE_ARRIVE || s->phase == PHASE_IDLE || s->phase == PHASE_SETTLING);
+    return s && !s->held && (s->phase == PHASE_ARRIVE || s->phase == PHASE_IDLE || s->phase == PHASE_SETTLING);
+}
+
+bool owe_scene_ended(struct owe_scene *s) {
+    return s && s->phase == PHASE_ENDED;
 }
 
 bool owe_scene_resting(struct owe_scene *s) {
-    return s && s->phase == PHASE_RESTING;
+    /* An intro that has ended is its still too, and draws nothing more. */
+    return s && (s->phase == PHASE_RESTING || s->phase == PHASE_ENDED);
+}
+
+void owe_scene_rewind(struct owe_scene *s) {
+    if (!s || !s->once || s->phase != PHASE_ARRIVE) return;
+    clock_gettime(CLOCK_MONOTONIC, &s->part_start);
+    s->held_at = s->part_start;
+    s->frame_at = s->part_start;
 }
 
 double owe_scene_time(struct owe_scene *s) {
     struct timespec now;
     if (!s || (s->phase != PHASE_ARRIVE && s->phase != PHASE_IDLE)) return 0.0;
+    if (s->held) return seconds_between(&s->part_start, &s->held_at);
     clock_gettime(CLOCK_MONOTONIC, &now);
     return seconds_between(&s->part_start, &now);
 }
@@ -325,12 +350,29 @@ bool owe_scene_tick(struct owe_scene *s) {
             return false;
         }
         if (all == 0) return false;
-        if (s->want_paused) rest(s);
-        else begin(s, s->want_arrive ? PHASE_ARRIVE : PHASE_IDLE, &now);
+        if (s->once) {
+            /* An intro loaded paused waits on its first frame. */
+            begin(s, PHASE_ARRIVE, &now);
+            if (s->want_paused) {
+                s->held = true;
+                s->held_at = now;
+                set_timer(s, 0);
+            }
+        } else if (s->want_paused) {
+            rest(s);
+        } else {
+            begin(s, s->want_arrive ? PHASE_ARRIVE : PHASE_IDLE, &now);
+        }
         due = true;
-    } else if (s->phase == PHASE_ARRIVE && seconds_between(&s->part_start, &now) >= s->desc->arrive_seconds) {
-        /* The arrive part ended at rest, which is where the idle part starts. */
-        begin(s, PHASE_IDLE, &now);
+    } else if (s->phase == PHASE_ARRIVE && !s->held && seconds_between(&s->part_start, &now) >= s->desc->arrive_seconds) {
+        if (s->once) {
+            /* An intro ends on its last frame, which is the still. */
+            s->phase = PHASE_ENDED;
+            set_timer(s, 0);
+        } else {
+            /* The arrive part ended at rest, which is where the idle part starts. */
+            begin(s, PHASE_IDLE, &now);
+        }
         due = true;
     } else if (s->phase == PHASE_SETTLING && seconds_between(&s->settle_start, &now) >= SETTLE) {
         rest(s);
@@ -349,6 +391,26 @@ void owe_scene_set_paused(struct owe_scene *s, bool paused) {
     s->want_paused = paused;
     if (s->phase <= PHASE_LOADING) return;
     clock_gettime(CLOCK_MONOTONIC, &now);
+    if (s->once) {
+        /* An intro is held where it is and goes on from there. */
+        if (paused && s->phase == PHASE_ARRIVE && !s->held) {
+            s->held = true;
+            s->held_at = now;
+            set_timer(s, 0);
+        } else if (!paused && s->held) {
+            double waited = seconds_between(&s->held_at, &now);
+            s->part_start.tv_sec += (time_t)waited;
+            s->part_start.tv_nsec += (long)((waited - (double)(time_t)waited) * 1e9);
+            if (s->part_start.tv_nsec >= 1000000000L) {
+                s->part_start.tv_sec++;
+                s->part_start.tv_nsec -= 1000000000L;
+            }
+            s->held = false;
+            s->frame_at = now;
+            set_timer(s, s->desc->arrive_fps);
+        }
+        return;
+    }
     if (paused && (s->phase == PHASE_ARRIVE || s->phase == PHASE_IDLE)) {
         s->phase = PHASE_SETTLING;
         s->settle_start = now;
@@ -429,8 +491,9 @@ void owe_scene_render_output(struct owe_scene *s, struct owe_output *out) {
     for (i = 0; i < OWE_SCENE_MAX_AREAS; i++) look.masks[i] = owe_still_texture(s->masks[i], NULL, NULL);
     /* A paused scene settles from wherever its pieces are; at rest it is the still. */
     if (s->phase == PHASE_SETTLING) settling = smooth(seconds_between(&s->settle_start, &s->frame_at) / SETTLE);
-    if (s->phase == PHASE_RESTING) settling = 1.0;
-    owe_scene_draw(s->egl, out, s->desc, &look, s->arriving, seconds_between(&s->part_start, &s->frame_at), settling);
+    if (s->phase == PHASE_RESTING || s->phase == PHASE_ENDED) settling = 1.0;
+    owe_scene_draw(s->egl, out, s->desc, &look, s->arriving,
+                   seconds_between(&s->part_start, s->held ? &s->held_at : &s->frame_at), settling);
     s->frames++;
     s->frame_due = false;
 }
