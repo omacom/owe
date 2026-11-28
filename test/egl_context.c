@@ -4,15 +4,24 @@
 #include <wayland-egl.h>
 
 /* Record whether a window is given its size before or after its surface is
- * first made current. */
+ * first made current, and whether swap interval 0 is applied once per surface. */
 static int window_resizes;
 static int resized_w;
 static int resized_h;
 static bool current_before_resize;
 static EGLSurface watched_surface;
+static int swap_interval_calls;
+static EGLint last_swap_interval;
+static EGLSurface swap_interval_surface;
 static EGLBoolean test_make_current(EGLDisplay display, EGLSurface draw, EGLSurface read, EGLContext context) {
     if (draw == watched_surface && draw != EGL_NO_SURFACE && !window_resizes) current_before_resize = true;
     return eglMakeCurrent(display, draw, read, context);
+}
+static EGLBoolean test_swap_interval(EGLDisplay display, EGLint interval) {
+    swap_interval_calls++;
+    last_swap_interval = interval;
+    swap_interval_surface = eglGetCurrentSurface(EGL_DRAW);
+    return eglSwapInterval(display, interval);
 }
 static void test_window_resize(struct wl_egl_window *window, int width, int height, int dx, int dy) {
     (void)window;
@@ -24,9 +33,11 @@ static void test_window_resize(struct wl_egl_window *window, int width, int heig
 }
 
 #define eglMakeCurrent test_make_current
+#define eglSwapInterval test_swap_interval
 #define wl_egl_window_resize test_window_resize
 #include "../src/render/egl.c"
 #undef eglMakeCurrent
+#undef eglSwapInterval
 #undef wl_egl_window_resize
 #include <stdio.h>
 
@@ -106,14 +117,25 @@ static void check_api(EGLDisplay display, bool gles) {
     watched_surface = fresh;
     window_resizes = 0;
     current_before_resize = false;
+    swap_interval_calls = 0;
+    last_swap_interval = -1;
+    swap_interval_surface = EGL_NO_SURFACE;
     CHECK(owe_egl_prepare_output(&egl, &sized) == 0);
     CHECK(window_resizes == 1 && resized_w == 1920 && resized_h == 1080);
     CHECK(!current_before_resize);
+    CHECK(swap_interval_calls == 1 && last_swap_interval == 0 && swap_interval_surface == fresh);
     CHECK(owe_egl_prepare_output(&egl, &sized) == 0);
-    CHECK(window_resizes == 1);
+    CHECK(window_resizes == 1 && swap_interval_calls == 1);
+    /* Rebinding the same output surface after switching away must not repeat
+     * eglSwapInterval, and destroying the output must reset the flag. */
+    CHECK(eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, context));
+    egl.current = EGL_NO_SURFACE;
+    CHECK(owe_egl_prepare_output(&egl, &sized) == 0);
+    CHECK(swap_interval_calls == 1);
     watched_surface = EGL_NO_SURFACE;
     sized.egl_window = NULL;
     owe_egl_destroy_output(&egl, &sized);
+    CHECK(!sized.swap_interval_set);
     glDeleteBuffers(1, &egl.blit.vbo);
     glDeleteVertexArrays(1, &egl.blit.vao);
     glDeleteProgram(egl.blit.prog);

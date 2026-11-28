@@ -314,6 +314,7 @@ void owe_egl_destroy_output(struct owe_egl *egl, struct owe_output *out) {
         eglDestroySurface(egl->display, (EGLSurface)out->egl_surface);
         out->egl_surface = NULL;
     }
+    out->swap_interval_set = 0;
 }
 
 int owe_egl_prepare_output(struct owe_egl *egl, struct owe_output *out) {
@@ -339,6 +340,17 @@ int owe_egl_prepare_output(struct owe_egl *egl, struct owe_output *out) {
             return -1;
         }
         egl->current = (EGLSurface)out->egl_surface;
+        /* The renderer paces swaps with wl_surface.frame callbacks and libmpv
+         * updates. Leaving EGL's default swap interval at 1 lets egl-wayland2
+         * arm wp_fifo_v1/wp_presentation and block indefinitely inside
+         * eglSwapBuffers on occluded or non-presented surfaces, stalling IPC
+         * and shutdown. */
+        if (!out->swap_interval_set) {
+            if (!eglSwapInterval(egl->display, 0)) {
+                OWE_WARN("eglSwapInterval(0) failed: 0x%x", eglGetError());
+            }
+            out->swap_interval_set = 1;
+        }
         /* The context is first made current without a surface, which leaves the
          * default framebuffer's draw and read buffers at GL_NONE. NVIDIA keeps
          * that once a window surface is bound, so every frame would be dropped. */

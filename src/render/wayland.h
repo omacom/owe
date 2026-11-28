@@ -44,6 +44,7 @@ typedef struct owe_output {
     void *egl_surface;
     int egl_w;
     int egl_h;
+    int swap_interval_set;
     struct owe_output *next;
 } owe_output_t;
 
