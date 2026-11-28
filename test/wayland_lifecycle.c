@@ -6,7 +6,7 @@
 
 struct proxy { bool alive; };
 static struct proxy proxies[32];
-static int proxy_count, windows, surfaces, failure;
+static int proxy_count, windows, surfaces, failure, created_w, created_h;
 static owe_app_t app;
 
 static struct wl_proxy *new_proxy(void) {
@@ -33,10 +33,17 @@ struct wl_proxy *wl_proxy_marshal_flags(struct wl_proxy *proxy, uint32_t opcode,
     return new_proxy();
 }
 struct wl_egl_window *wl_egl_window_create(struct wl_surface *surface, int width, int height) {
-    (void)surface; (void)width; (void)height;
+    (void)surface;
     if (failure == 2) return NULL;
+    created_w = width;
+    created_h = height;
     windows++;
     return (struct wl_egl_window *)(uintptr_t)1;
+}
+void wl_egl_window_resize(struct wl_egl_window *window, int width, int height, int dx, int dy) {
+    (void)window; (void)dx; (void)dy;
+    created_w = width;
+    created_h = height;
 }
 void wl_egl_window_destroy(struct wl_egl_window *window) { (void)window; windows--; }
 void *owe_egl_create_window_surface(struct owe_egl *egl, void *window) {
@@ -57,20 +64,52 @@ int main(void) {
     app.egl = (struct owe_egl *)(uintptr_t)3;
     for (failure = 0; failure <= 3; failure++) {
         memset(proxies, 0, sizeof(proxies));
-        proxy_count = windows = surfaces = 0;
+        proxy_count = windows = surfaces = created_w = created_h = 0;
         struct owe_wayland wl = {0};
         wl.compositor = (struct wl_compositor *)(uintptr_t)4;
         wl.layer_shell = (struct zwlr_layer_shell_v1 *)(uintptr_t)5;
         wl.viewporter = (struct wp_viewporter *)(uintptr_t)6;
         wl.fractional_scale = (struct wp_fractional_scale_manager_v1 *)(uintptr_t)7;
         owe_output_t *out = output_new(&wl, (struct wl_output *)new_proxy(), 1);
-        if (failure) {
+        if (failure == 1) {
             CHECK(out == NULL);
         } else {
-            CHECK(out && wl.output_count == 1);
+            CHECK(out && wl.output_count == 1 && !out->egl_window && !out->egl_surface);
+            CHECK(windows == 0 && surfaces == 0);
+            /* Hotplugged output: EGL window and surface attach at the configured size. */
+            out->preferred_scale = 150;
+            layer_configure(out, out->layer, 1, 1920, 1080);
+            if (failure == 0) {
+                CHECK(out->egl_window && out->egl_surface);
+                CHECK(created_w == 2400 && created_h == 1350 && out->egl_w == 2400 && out->egl_h == 1350);
+                CHECK(windows == 1 && surfaces == 1);
+            } else {
+                CHECK(!out->egl_window && !out->egl_surface && windows == 0 && surfaces == 0);
+            }
             output_free(&wl, out);
         }
         CHECK(wl.output_count == 0 && wl.outputs == NULL && windows == 0 && surfaces == 0);
+        for (int i = 0; i < proxy_count; i++) CHECK(!proxies[i].alive);
+    }
+    /* Startup output: configured before EGL exists, then attached at its real size. */
+    failure = 0;
+    memset(proxies, 0, sizeof(proxies));
+    proxy_count = windows = surfaces = created_w = created_h = 0;
+    app.egl = NULL;
+    {
+        struct owe_wayland wl = {0};
+        wl.compositor = (struct wl_compositor *)(uintptr_t)4;
+        wl.layer_shell = (struct zwlr_layer_shell_v1 *)(uintptr_t)5;
+        owe_output_t *out = output_new(&wl, (struct wl_output *)new_proxy(), 1);
+        CHECK(out && !out->egl_window && !out->egl_surface);
+        layer_configure(out, out->layer, 1, 3840, 2160);
+        CHECK(!out->egl_window && !out->egl_surface);
+        app.egl = (struct owe_egl *)(uintptr_t)3;
+        owe_wayland_attach_egl(&wl, app.egl);
+        CHECK(out->egl_window && out->egl_surface);
+        CHECK(created_w == 3840 && created_h == 2160 && out->egl_w == 3840 && out->egl_h == 2160);
+        owe_wayland_destroy_outputs(&wl);
+        CHECK(wl.output_count == 0 && windows == 0 && surfaces == 0);
         for (int i = 0; i < proxy_count; i++) CHECK(!proxies[i].alive);
     }
     puts("Wayland creation failures release every owned proxy");
@@ -94,7 +133,7 @@ int main(void) {
     CHECK(wl.output_count == 1 && wl.outputs->registry_name == 7);
     /* Pending retry reports true only when a configured, unskipped, ready output
      * still has a frame pending (e.g. after DRM-off deferral or swap failure). */
-    wl.outputs->configured = 1;
+    layer_configure(wl.outputs, wl.outputs->layer, 1, 1920, 1080);
     wl.outputs->frame_ready = 1;
     wl.outputs->frame_pending = 0;
     wl.outputs->skip_render = 0;

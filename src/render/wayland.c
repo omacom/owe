@@ -37,6 +37,7 @@ struct owe_wayland {
 };
 
 static void output_free(struct owe_wayland *wl, owe_output_t *out);
+static void output_attach_egl(struct owe_wayland *wl, owe_output_t *out);
 
 void owe_output_buffer_size(const owe_output_t *out, int *w, int *h) {
     int scale120 = out->scale > 0 ? out->scale * 120 : 120;
@@ -168,8 +169,13 @@ static void layer_configure(void *data, struct zwlr_layer_surface_v1 *surface, u
     if (!out->configured) {
         out->configured = 1;
         out->frame_pending = 1;
+        output_attach_egl(out->owner, out);
+        if (out->egl_surface) {
+            owe_app_request_render();
+        }
     } else {
         out->frame_pending = 1;
+        output_attach_egl(out->owner, out);
         owe_app_request_render();
     }
 }
@@ -207,7 +213,6 @@ static void frame_done(void *data, struct wl_callback *cb, uint32_t time) {
 }
 
 static owe_output_t *output_new(struct owe_wayland *wl, struct wl_output *wl_output, uint32_t name) {
-    owe_app_t *app = owe_app_get();
     owe_output_t *out = calloc(1, sizeof(*out));
     struct wl_region *region;
     if (!out) {
@@ -256,13 +261,6 @@ static owe_output_t *output_new(struct owe_wayland *wl, struct wl_output *wl_out
     }
     wl_surface_commit(out->surface);
 
-    out->egl_window = wl_egl_window_create(out->surface, 64, 64);
-    if (!out->egl_window) goto fail;
-    if (app && app->egl) {
-        out->egl_surface = owe_egl_create_window_surface(app->egl, out->egl_window);
-        if (!out->egl_surface) goto fail;
-    }
-
     out->next = wl->outputs;
     wl->outputs = out;
     wl->output_count++;
@@ -274,6 +272,7 @@ fail:
 
 static void output_free(struct owe_wayland *wl, owe_output_t *out) {
     owe_app_t *app = owe_app_get();
+    struct owe_egl *egl = (wl && wl->egl) ? wl->egl : (app ? app->egl : NULL);
     owe_output_t **link;
     if (out->frame_callback) wl_callback_destroy(out->frame_callback);
     if (out->fractional) {
@@ -282,8 +281,8 @@ static void output_free(struct owe_wayland *wl, owe_output_t *out) {
     if (out->viewport) {
         wp_viewport_destroy(out->viewport);
     }
-    if (app && app->egl) {
-        owe_egl_destroy_output(app->egl, out);
+    if (egl) {
+        owe_egl_destroy_output(egl, out);
     }
     if (out->egl_window) {
         wl_egl_window_destroy(out->egl_window);
@@ -447,22 +446,61 @@ void owe_wayland_set_egl(struct owe_wayland *wl, struct owe_egl *egl) {
     }
 }
 
+/* Create the EGL window and surface only once layer_configure has supplied
+ * the output's real size. Creating them at a 64x64 placeholder lets
+ * egl-wayland v1 latch the first frame to 64x64 and makes egl-wayland2
+ * allocate and immediately discard a 64x64 buffer. */
+static void output_attach_egl(struct owe_wayland *wl, owe_output_t *out) {
+    owe_app_t *app = owe_app_get();
+    struct owe_egl *egl;
+    int w = 0;
+    int h = 0;
+    if (!wl || !out || !out->configured || out->egl_surface) {
+        return;
+    }
+    egl = wl->egl ? wl->egl : (app ? app->egl : NULL);
+    if (!egl) {
+        return;
+    }
+    owe_output_buffer_size(out, &w, &h);
+    if (w <= 0 || h <= 0) {
+        return;
+    }
+    if (!out->egl_window) {
+        out->egl_window = wl_egl_window_create(out->surface, w, h);
+        if (!out->egl_window) {
+            OWE_ERROR("wl_egl_window_create failed for output %s", out->name);
+            return;
+        }
+        out->egl_w = w;
+        out->egl_h = h;
+    } else if (out->egl_w != w || out->egl_h != h) {
+        wl_egl_window_resize(out->egl_window, w, h, 0, 0);
+        out->egl_w = w;
+        out->egl_h = h;
+    }
+    out->egl_surface = owe_egl_create_window_surface(egl, out->egl_window);
+    if (out->egl_surface) {
+        OWE_INFO("egl surface attached for output %s (%dx%d@%d)", out->name, out->width,
+                 out->height, out->scale);
+        out->frame_pending = 1;
+    } else {
+        OWE_ERROR("egl surface attach failed for output %s", out->name);
+        wl_egl_window_destroy(out->egl_window);
+        out->egl_window = NULL;
+        out->egl_w = 0;
+        out->egl_h = 0;
+    }
+}
+
 void owe_wayland_attach_egl(struct owe_wayland *wl, struct owe_egl *egl) {
     owe_output_t *out;
     if (!wl || !egl) {
         return;
     }
+    wl->egl = egl;
     for (out = wl->outputs; out; out = out->next) {
-        if (!out->egl_surface && out->egl_window) {
-            out->egl_surface = owe_egl_create_window_surface(egl, out->egl_window);
-            if (out->egl_surface) {
-                OWE_INFO("egl surface attached for output %s (%dx%d@%d)", out->name, out->width,
-                         out->height, out->scale);
-                out->frame_pending = 1;
-            } else {
-                OWE_ERROR("egl surface attach failed for output %s", out->name);
-            }
-        }
+        output_attach_egl(wl, out);
     }
 }
 

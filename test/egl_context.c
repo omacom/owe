@@ -132,6 +132,11 @@ static void check_api(EGLDisplay display, bool gles) {
     egl.current = EGL_NO_SURFACE;
     CHECK(owe_egl_prepare_output(&egl, &sized) == 0);
     CHECK(swap_interval_calls == 1);
+    /* An unconfigured 0x0 output must never call wl_egl_window_resize(0, 0). */
+    sized.width = 0;
+    sized.height = 0;
+    CHECK(owe_egl_prepare_output(&egl, &sized) == 0);
+    CHECK(window_resizes == 1);
     watched_surface = EGL_NO_SURFACE;
     sized.egl_window = NULL;
     owe_egl_destroy_output(&egl, &sized);
