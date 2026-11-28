@@ -265,12 +265,23 @@ int main(void) {
            !vaapi_interop_only("Mesa", "llvmpipe (LLVM 21.1.8, 256 bits)") &&
            !vaapi_interop_only("Broadcom", "V3D 7.1.10.2") && !vaapi_interop_only(NULL, NULL),
            "only Intel and AMD GL limit mpv to the VA-API interop");
+    verify(cuda_interop_only("NVIDIA Corporation") && !cuda_interop_only("nouveau") &&
+           !cuda_interop_only("Intel") && !cuda_interop_only(NULL),
+           "only proprietary NVIDIA GL selects the CUDA interop");
     verify(strcmp(default_hwdec("Intel", "Mesa Intel(R) UHD Graphics (ADL-S GT1)"), "vaapi,vaapi-copy") == 0 &&
            strcmp(default_hwdec("AMD", "AMD Radeon 860M Graphics (radeonsi, krackan1, ACO)"), "vaapi,vaapi-copy") == 0 &&
-           strcmp(default_hwdec("NVIDIA Corporation", "NVIDIA GeForce RTX 4070 Ti/PCIe/SSE2"), "auto-safe") == 0 &&
+           strcmp(default_hwdec("NVIDIA Corporation", "NVIDIA GeForce RTX 4070 Ti/PCIe/SSE2"), "nvdec,nvdec-copy") == 0 &&
+           strcmp(default_hwdec("Mesa", "llvmpipe (LLVM 21.1.8, 256 bits)"), "auto-safe") == 0 &&
            strcmp(default_hwdec(NULL, NULL), "auto-safe") == 0,
-           "Intel and AMD GL decode only with VA-API, other GPUs keep auto-safe");
+           "Intel/AMD use VA-API, NVIDIA uses NVDEC, other GPUs keep auto-safe");
     verify(strcmp(default_hwdec("nouveau", "NVE4"), "no") == 0, "Nouveau GL decodes in software");
+    verify(strcmp(default_hwdec_interop("Intel", "Mesa Intel(R) Arc(tm) B390 (PTL)", NULL), "vaapi") == 0 &&
+           strcmp(default_hwdec_interop("NVIDIA Corporation", "NVIDIA GeForce RTX 2080 SUPER/PCIe/SSE2", NULL), "cuda") == 0 &&
+           default_hwdec_interop("NVIDIA Corporation", "NVIDIA GeForce RTX 2080 SUPER/PCIe/SSE2", "vaapi") == NULL &&
+           strcmp(default_hwdec_interop("NVIDIA Corporation", "NVIDIA GeForce RTX 2080 SUPER/PCIe/SSE2", "no"), "no") == 0 &&
+           strcmp(default_hwdec_interop("nouveau", "NVE4", NULL), "no") == 0 &&
+           default_hwdec_interop("Broadcom", "V3D 7.1.10.2", NULL) == NULL,
+           "hwdec interop matches the selected GPU and respects OWE_HWDEC overrides");
     setenv("LIBVA_DRIVER_NAME", "nvidia", 1);
     drop_nvidia_va_driver("NVIDIA Corporation", "NVIDIA GeForce RTX 4070 Ti/PCIe/SSE2");
     bool kept_on_nvidia = getenv("LIBVA_DRIVER_NAME") != NULL;

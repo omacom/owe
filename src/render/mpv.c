@@ -105,22 +105,46 @@ static void log_startup_failure(mpv_handle *handle) {
 /* libmpv starts every hwdec interop with the render context. The CUDA
  * interop calls cuInit even when GL runs on Intel or AMD, where that interop
  * never works. cuInit wakes an NVIDIA GPU, and with libcuda but no NVIDIA GPU
- * it can take seconds. On Intel and AMD only the VA-API interop works. */
+ * it can take seconds. On Intel and AMD only the VA-API interop works. On
+ * NVIDIA's proprietary driver, loading all interops also opens
+ * libva-nvidia-driver and probes its formats, which adds a second CUDA/EGL
+ * context, startup latency, and hundreds of megabytes of RAM and VRAM. */
 static bool vaapi_interop_only(const char *vendor, const char *renderer) {
     return vendor && renderer &&
            (strstr(vendor, "Intel") || strstr(vendor, "AMD") || strstr(renderer, "radeonsi"));
 }
 
+static bool cuda_interop_only(const char *vendor) {
+    return vendor && strstr(vendor, "NVIDIA");
+}
+
 /* auto-safe tries Vulkan and NVDEC before VA-API, and their copy modes after
  * it. On Intel and AMD only VA-API decodes on the GPU that renders, so a
  * failed VA-API fell through to nvdec-copy, which wakes the NVIDIA GPU of a
- * hybrid laptop. Nouveau decodes video only with firmware that
+ * hybrid laptop. On NVIDIA's proprietary driver, NVDEC uses CUDA directly
+ * without going through libva-nvidia-driver (which can also keep the GPU
+ * pinned in P2 while parked). Nouveau decodes video only with firmware that
  * linux-firmware does not ship. Without it, its VA-API driver crashed the
  * renderer with SIGBUS instead of returning an error. */
 static const char *default_hwdec(const char *vendor, const char *renderer) {
     if (vaapi_interop_only(vendor, renderer)) return "vaapi,vaapi-copy";
+    if (cuda_interop_only(vendor)) return "nvdec,nvdec-copy";
     if (vendor && strstr(vendor, "nouveau")) return "no";
     return "auto-safe";
+}
+
+/* Skip unused hwdec interops at render-context creation. Software decode
+ * (hwdec=no, including Nouveau) needs no interop; Intel/AMD use only VA-API;
+ * default NVIDIA uses only CUDA while still letting an explicit OWE_HWDEC
+ * override (such as vaapi) probe other interops. */
+static const char *default_hwdec_interop(const char *vendor, const char *renderer,
+                                         const char *hwdec_override) {
+    const char *hwdec = (hwdec_override && *hwdec_override) ? hwdec_override
+                                                            : default_hwdec(vendor, renderer);
+    if (strcmp(hwdec, "no") == 0) return "no";
+    if (vaapi_interop_only(vendor, renderer)) return "vaapi";
+    if ((!hwdec_override || !*hwdec_override) && cuda_interop_only(vendor)) return "cuda";
+    return NULL;
 }
 
 /* Omarchy's NVIDIA setup sets LIBVA_DRIVER_NAME=nvidia for the session. When
@@ -227,10 +251,9 @@ struct owe_mpv *owe_mpv_new(struct owe_wayland *wl) {
     }
     mpv_request_log_messages(m->handle, "warn");
     set_opt(m->handle, "vo", "libmpv");
-    {
-        const char *hwdec = getenv("OWE_HWDEC");
-        set_opt(m->handle, "hwdec", hwdec && *hwdec ? hwdec : default_hwdec(vendor, renderer));
-    }
+    const char *hwdec_override = getenv("OWE_HWDEC");
+    set_opt(m->handle, "hwdec",
+            hwdec_override && *hwdec_override ? hwdec_override : default_hwdec(vendor, renderer));
     /* A video wallpaper plays its audio track through the default output.
      * Cover art stays off, and a session with no audio server keeps a null
      * output instead of failing the track. */
@@ -278,8 +301,9 @@ struct owe_mpv *owe_mpv_new(struct owe_wayland *wl) {
     set_opt(m->handle, "hwdec-extra-frames", "3");
     /* Audio and video stay in step. A silent file uses the default clock. */
     set_opt(m->handle, "video-sync", "audio");
-    if (vaapi_interop_only(vendor, renderer)) {
-        set_opt(m->handle, "gpu-hwdec-interop", "vaapi");
+    const char *interop = default_hwdec_interop(vendor, renderer, hwdec_override);
+    if (interop) {
+        set_opt(m->handle, "gpu-hwdec-interop", interop);
     }
     set_extra_options(m->handle);
     rc = mpv_initialize(m->handle);

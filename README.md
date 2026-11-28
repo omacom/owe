@@ -275,7 +275,9 @@ media is silent. Source files remain intact.
 - Hardware decode is on by default. When OpenGL renders on Intel or AMD,
   the renderer decodes with `vaapi,vaapi-copy` and ignores
   `LIBVA_DRIVER_NAME=nvidia`, so a hybrid laptop decodes on the GPU that
-  renders. Nouveau decodes in software, because its video decoder needs
+  renders. On NVIDIA's proprietary driver, it uses the CUDA interop with
+  `nvdec,nvdec-copy` so libmpv does not also initialize `libva-nvidia-driver`.
+  Nouveau decodes in software, because its video decoder needs
   firmware that `linux-firmware` does not ship. Other GPUs use
   `hwdec=auto-safe`. Override the decoder with the `OWE_HWDEC` environment
   variable.
